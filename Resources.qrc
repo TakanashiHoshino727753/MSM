@@ -1,0 +1,14 @@
+<RCC>
+    <qresource prefix="/icon">
+        <file alias="ApplicationIcon">Resources/MSM.ico</file>
+        <file alias="download">Resources/download.svg</file>
+        <file alias="close">Resources/close.svg</file>
+        <file alias="minimize">Resources/minimize.svg</file>
+        <file alias="maximize">Resources/maximize.svg</file>
+        <file alias="restore">Resources/restore.svg</file>
+        <file alias="remove">Resources/remove.svg</file>
+        <file alias="redownload">Resources/redownload.svg</file>
+        <file alias="pause">Resources/pause.svg</file>
+        <file alias="play">Resources/play.svg</file>
+    </qresource>
+</RCC>

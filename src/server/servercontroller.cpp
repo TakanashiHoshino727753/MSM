@@ -1,0 +1,352 @@
+/*
+ * servercontroller.cpp —— 单台服务端进程管理
+ * -------------------------------------------------
+ * 启动/停止/强停/发送指令，捕获控制台输出、追踪在线玩家、读写
+ * server.properties、列举 mods。每个 name 对应一个 QProcess，
+ * 控制台历史在进程结束后仍缓存供回看。
+ */
+#include "servercontroller.h"
+#include <QDir>
+#include <QDirIterator>
+#include <QFile>
+#include <QFileInfo>
+#include <QTextStream>
+#include <QRegularExpression>
+
+ServerController::ServerController(QObject *parent) : QObject(parent) {}
+
+bool ServerController::isRunning(const QString &name) const
+{
+    return m_procs.contains(name);
+}
+
+void ServerController::start(const QString &name, const QString &path,
+                             const QString &javaPath, int minMem, int maxMem)
+{
+    if (m_procs.contains(name)) {
+        emit consoleAppended(name, QStringLiteral("[MSM] 服务器已在运行"));
+        return;
+    }
+    const QString jar = path + QStringLiteral("/server.jar");
+    if (!QFile::exists(jar)) {
+        emit consoleAppended(name, QStringLiteral("[MSM] 未找到 server.jar，无法启动：") + jar);
+        return;
+    }
+
+    // 解析 Java 路径：默认 "java" 时优先使用创建服务器时记录的版本专属 Java
+    QString effectiveJava = javaPath;
+    if (effectiveJava.isEmpty() || effectiveJava == QLatin1String("java")) {
+        const QString stored = path + QStringLiteral("/.msm/java.txt");
+        QFile f(stored);
+        if (f.open(QIODevice::ReadOnly)) {
+            const QString p2 = QString::fromUtf8(f.readAll()).trimmed();
+            if (!p2.isEmpty() && QFile::exists(p2))
+                effectiveJava = p2;
+        }
+        // 兜底：递归扫描 {path}/ 下所有以 jvm 开头的目录里的 java.exe
+        // （兼容 jvm/、jvm-8/、jvm-21/、jvm-17/ 等不同命名）
+        if (effectiveJava.isEmpty() || effectiveJava == QLatin1String("java")) {
+            QDir baseDir(path);
+            const QFileInfoList jvms = baseDir.entryInfoList(
+                    QStringList() << QStringLiteral("jvm*"),
+                    QDir::Dirs | QDir::NoDotAndDotDot);
+            for (const QFileInfo &fi : jvms) {
+                QDirIterator it(fi.absoluteFilePath(),
+                                QStringList() << QStringLiteral("java.exe") << QStringLiteral("java"),
+                                QDir::Files, QDirIterator::Subdirectories);
+                if (it.hasNext()) {
+                    effectiveJava = it.next();
+                    break;
+                }
+            }
+        }
+    }
+
+    Proc p;
+    p.proc = new QProcess(this);
+    p.proc->setWorkingDirectory(path);
+    p.proc->setProcessChannelMode(QProcess::MergedChannels);
+
+    connect(p.proc, &QProcess::readyReadStandardOutput, this, [this, name]() {
+        handleOutput(name);
+    });
+    connect(p.proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, [this, name](int code, QProcess::ExitStatus s) { onFinished(name, code, s); });
+
+    QStringList args;
+    args << QStringLiteral("-Xms%1M").arg(minMem)
+         << QStringLiteral("-Xmx%1M").arg(maxMem)
+         << QStringLiteral("-jar") << QStringLiteral("server.jar")
+         << QStringLiteral("nogui");
+    p.proc->start(effectiveJava, args);
+    if (!p.proc->waitForStarted(5000)) {
+        emit consoleAppended(name, QStringLiteral("[MSM] 启动失败：无法执行 ") + effectiveJava +
+                                   QStringLiteral("（请确认已安装并加入 PATH）"));
+        p.proc->deleteLater();
+        return;
+    }
+
+    m_procs.insert(name, p);
+    emit consoleAppended(name, QStringLiteral("[MSM] 正在启动服务器…"));
+    emit stateChanged(name, true);
+    emit runningCountChanged();
+}
+
+void ServerController::handleOutput(const QString &name)
+{
+    auto it = m_procs.find(name);
+    if (it == m_procs.end())
+        return;
+    QProcess *proc = it->proc;
+    const QString data = QString::fromLocal8Bit(proc->readAllStandardOutput());
+    QStringList lines = data.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    for (QString line : lines) {
+        line = line.trimmed();
+        if (line.isEmpty())
+            continue;
+        it->console.append(line + QLatin1Char('\n'));
+        if (it->console.size() > 200000)
+            it->console = it->console.right(200000);
+        emit consoleAppended(name, line);
+
+        // 在线玩家追踪
+        QRegularExpression reJoin(QStringLiteral("(\\S+) joined the game"));
+        QRegularExpression reLeft(QStringLiteral("(\\S+) left the game"));
+        QRegularExpressionMatch m;
+        m = reJoin.match(line);
+        if (m.hasMatch()) {
+            const QString who = m.captured(1);
+            if (!it->playerList.contains(who)) {
+                it->playerList.append(who);
+                emit playersChanged(name, it->playerList);
+            }
+        } else if ((m = reLeft.match(line)).hasMatch()) {
+            const QString who = m.captured(1);
+            if (it->playerList.removeAll(who) > 0)
+                emit playersChanged(name, it->playerList);
+        }
+    }
+}
+
+void ServerController::onFinished(const QString &name, int, QProcess::ExitStatus)
+{
+    auto it = m_procs.find(name);
+    if (it == m_procs.end())
+        return;
+    it->proc->deleteLater();
+    m_consoleCache.insert(name, it->console);
+    m_procs.erase(it);
+    emit consoleAppended(name, QStringLiteral("[MSM] 服务器已停止"));
+    emit stateChanged(name, false);
+    emit playersChanged(name, {});
+    emit runningCountChanged();
+}
+
+void ServerController::stop(const QString &name)
+{
+    auto it = m_procs.find(name);
+    if (it == m_procs.end())
+        return;
+    it->proc->write("stop\n");
+}
+
+void ServerController::forceStop(const QString &name)
+{
+    auto it = m_procs.find(name);
+    if (it == m_procs.end())
+        return;
+    it->proc->kill();
+}
+
+void ServerController::send(const QString &name, const QString &cmd)
+{
+    auto it = m_procs.find(name);
+    if (it == m_procs.end())
+        return;
+    it->proc->write(cmd.toLocal8Bit() + "\n");
+}
+
+QString ServerController::getConsole(const QString &name) const
+{
+    auto it = m_procs.find(name);
+    if (it != m_procs.end())
+        return it->console;
+    return m_consoleCache.value(name);
+}
+
+QStringList ServerController::players(const QString &name) const
+{
+    auto it = m_procs.find(name);
+    if (it != m_procs.end())
+        return it->playerList;
+    return {};
+}
+
+QStringList ServerController::listMods(const QString &path) const
+{
+    QDir dir(path + QStringLiteral("/mods"));
+    if (!dir.exists())
+        return {};
+    QStringList names;
+    for (const QFileInfo &fi : dir.entryInfoList(QDir::Files))
+        names << fi.fileName();
+    return names;
+}
+
+namespace {
+QVariantMap parseProperties(QTextStream &ts)
+{
+    QVariantMap map;
+    while (!ts.atEnd()) {
+        const QString line = ts.readLine().trimmed();
+        if (line.isEmpty() || line.startsWith(QLatin1Char('#')))
+            continue;
+        const int idx = line.indexOf(QLatin1Char('='));
+        if (idx <= 0)
+            continue;
+        map.insert(line.left(idx).trimmed(), line.mid(idx + 1).trimmed());
+    }
+    return map;
+}
+
+void writeDefaultProperties(const QString &file)
+{
+    QDir().mkpath(QFileInfo(file).path());
+    QFile f(file);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text))
+        return;
+    QTextStream ts(&f);
+    ts.setEncoding(QStringConverter::Utf8);
+    const QStringList defaults = {
+        QStringLiteral("#Minecraft server properties (由 MSM 生成的默认配置)"),
+        QStringLiteral("allow-flight=false"),
+        QStringLiteral("allow-nether=true"),
+        QStringLiteral("difficulty=easy"),
+        QStringLiteral("enable-command-block=false"),
+        QStringLiteral("enable-rcon=false"),
+        QStringLiteral("force-gamemode=false"),
+        QStringLiteral("gamemode=survival"),
+        QStringLiteral("generate-structures=true"),
+        QStringLiteral("level-name=world"),
+        QStringLiteral("level-seed="),
+        QStringLiteral("level-type=minecraft:normal"),
+        QStringLiteral("max-build-height=256"),
+        QStringLiteral("max-players=20"),
+        QStringLiteral("max-world-size=29999984"),
+        QStringLiteral("motd=A Minecraft Server"),
+        QStringLiteral("online-mode=true"),
+        QStringLiteral("op-permission-level=4"),
+        QStringLiteral("player-idle-timeout=0"),
+        QStringLiteral("pvp=true"),
+        QStringLiteral("server-ip="),
+        QStringLiteral("server-port=25565"),
+        QStringLiteral("spawn-animals=true"),
+        QStringLiteral("spawn-monsters=true"),
+        QStringLiteral("spawn-protection=16"),
+        QStringLiteral("view-distance=10"),
+        QStringLiteral("white-list=false")
+    };
+    for (const QString &l : defaults)
+        ts << l << QLatin1Char('\n');
+}
+}
+
+QVariantMap ServerController::readProperties(const QString &path)
+{
+    if (path.isEmpty())
+        return {};
+    const QString file = path + QStringLiteral("/server.properties");
+    QFile f(file);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        // 文件不存在：写入默认 server.properties，便于查看与编辑
+        writeDefaultProperties(file);
+        QFile f2(file);
+        if (f2.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            QTextStream ts(&f2);
+            ts.setEncoding(QStringConverter::Utf8);
+            return parseProperties(ts);
+        }
+        return {};
+    }
+    QTextStream ts(&f);
+    ts.setEncoding(QStringConverter::Utf8);
+    return parseProperties(ts);
+}
+
+void ServerController::writeProperties(const QString &path, const QVariantMap &map)
+{
+    const QString file = path + QStringLiteral("/server.properties");
+    QStringList outLines;
+    bool changed = false;
+
+    QFile f(file);
+    if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QTextStream ts(&f);
+        ts.setEncoding(QStringConverter::Utf8);
+        while (!ts.atEnd()) {
+            QString line = ts.readLine();
+            if (line.trimmed().isEmpty() || line.trimmed().startsWith(QLatin1Char('#'))) {
+                outLines << line;
+                continue;
+            }
+            const int idx = line.indexOf(QLatin1Char('='));
+            if (idx <= 0) { outLines << line; continue; }
+            const QString key = line.left(idx).trimmed();
+            if (map.contains(key)) {
+                const QString val = map.value(key).toString();
+                outLines << (key + QStringLiteral("=") + val);
+                changed = true;
+            } else {
+                outLines << line;
+            }
+        }
+        f.close();
+    }
+
+    // 追加文件中不存在的键
+    for (auto it = map.begin(); it != map.end(); ++it) {
+        bool exists = false;
+        for (const QString &l : outLines) {
+            if (l.startsWith(it.key() + QLatin1Char('=')) || l.startsWith(it.key() + QStringLiteral(" ="))) {
+                exists = true;
+                break;
+            }
+        }
+        if (!exists) {
+            outLines << (it.key() + QStringLiteral("=") + it.value().toString());
+            changed = true;
+        }
+    }
+
+    if (!changed)
+        return;
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        emit consoleAppended(QString(), QStringLiteral("[MSM] 无法写入 server.properties"));
+        return;
+    }
+    QTextStream out(&f);
+    out.setEncoding(QStringConverter::Utf8);
+    for (const QString &l : outLines)
+        out << l << QLatin1Char('\n');
+    f.close();
+}
+
+QString ServerController::readServerJavaPath(const QString &path) const
+{
+    QFile f(path + QStringLiteral("/.msm/java.txt"));
+    if (!f.open(QIODevice::ReadOnly))
+        return QString();
+    return QString::fromUtf8(f.readAll()).trimmed();
+}
+
+void ServerController::setServerJavaPath(const QString &path, const QString &javaPath)
+{
+    QDir().mkpath(path + QStringLiteral("/.msm"));
+    QFile f(path + QStringLiteral("/.msm/java.txt"));
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return;
+    f.write(javaPath.toUtf8());
+    if (!javaPath.isEmpty())
+        f.write("\n");
+    f.close();
+}

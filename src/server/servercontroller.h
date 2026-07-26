@@ -1,0 +1,79 @@
+#pragma once
+#include <QObject>
+#include <QString>
+#include <QStringList>
+#include <QVariantMap>
+#include <QHash>
+#include <QProcess>
+
+// 服务器管理逻辑层（C++）：负责单个 Minecraft 服务端进程的
+// 启动 / 停止 / 强制停止 / 发送控制台指令，并实时捕获控制台输出、
+// 跟踪在线玩家、读写 server.properties、列举 mods。
+// 该层不依赖任何 UI 模块，QML 仅通过上下文属性 serverController 调用其
+// Q_INVOKABLE 方法并订阅信号来刷新界面，从而实现逻辑与界面解耦。
+class ServerController : public QObject
+{
+    Q_OBJECT
+    // 当前正在运行的服务器数量；QML 可据此显示“N 台运行中”或调整界面状态。
+    Q_PROPERTY(int runningCount READ runningCount NOTIFY runningCountChanged)
+public:
+    explicit ServerController(QObject *parent = nullptr);
+
+    // 正在运行的服务器数量（即 m_procs 中的进程数）
+    int runningCount() const { return m_procs.size(); }
+
+    // 判断指定服务器当前是否在运行
+    Q_INVOKABLE bool isRunning(const QString &name) const;
+    // 以给定的 java 路径与内存参数（最小/最大，单位 MB）启动一台服务器。
+    // name 用作进程键（控制台/状态索引），path 为服务端根目录（含核心 jar）。
+    Q_INVOKABLE void start(const QString &name, const QString &path,
+                           const QString &javaPath = QStringLiteral("java"),
+                           int minMem = 1024, int maxMem = 2048);
+    // 向服务端发送 stop 指令（优雅停止，等待存档保存后退出）
+    Q_INVOKABLE void stop(const QString &name);
+    // 强制终止进程（TerminateProcess），不等待存档；仅在无响应时兜底使用
+    Q_INVOKABLE void forceStop(const QString &name);
+    // 向运行中的服务端发送一条控制台指令（如 op、gamemode、whitelist 等）
+    Q_INVOKABLE void send(const QString &name, const QString &cmd);
+    // 取回指定服务器的完整控制台历史文本（进程结束后仍保留缓存）
+    Q_INVOKABLE QString getConsole(const QString &name) const;
+    // 取回当前在线玩家名列表
+    Q_INVOKABLE QStringList players(const QString &name) const;
+    // 列举指定服务端目录下的 mods（文件名列表）
+    Q_INVOKABLE QStringList listMods(const QString &path) const;
+    // 读取 server.properties 为键值映射（便于 QML 表单双向编辑）
+    Q_INVOKABLE QVariantMap readProperties(const QString &path);
+    // 将键值映射写回 server.properties（仅覆盖提供过的键，保留其余原值）
+    Q_INVOKABLE void writeProperties(const QString &path, const QVariantMap &map);
+    // 读取服务端目录中保存的、专用于该服务器的 Java 路径（可为空=用系统默认）
+    Q_INVOKABLE QString readServerJavaPath(const QString &path) const;
+    // 为该服务器单独设置/清空 Java 路径（写入 eula/启动配置或单独记录文件）
+    Q_INVOKABLE void setServerJavaPath(const QString &path, const QString &javaPath);
+
+signals:
+    // 某服务器新增一行控制台输出（QML 用于增量追加，避免整段重绘）
+    void consoleAppended(const QString &name, const QString &line);
+    // 服务器运行状态变化（运行中/已停止），QML 据此刷新卡片状态与 runningCount
+    void stateChanged(const QString &name, bool running);
+    // 在线玩家列表变化
+    void playersChanged(const QString &name, const QStringList &players);
+    // 运行服务器数量变化
+    void runningCountChanged();
+
+private:
+    // 读取并解析进程的标准输出/错误，逐行发出 consoleAppended 并提取玩家名单
+    void handleOutput(const QString &name);
+    // 进程结束回调：清理资源、发出 stateChanged(false)，保留控制台缓存
+    void onFinished(const QString &name, int exitCode, QProcess::ExitStatus status);
+
+    // 单个服务器进程运行态：保存进程指针、完整控制台、在线玩家
+    struct Proc {
+        QProcess *proc = nullptr;
+        QString console;
+        QStringList playerList;
+    };
+    // name -> 运行进程信息；同一时间同名仅允许一个进程
+    QHash<QString, Proc> m_procs;
+    // name -> 历史控制台文本；进程结束后仍保留，供用户事后查看日志
+    QHash<QString, QString> m_consoleCache;
+};

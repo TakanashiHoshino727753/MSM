@@ -1,0 +1,674 @@
+/*
+ * webuiserver.cpp —— 本地 Web 管理界面服务
+ * -------------------------------------------------
+ * 在 0.0.0.0:port 监听 HTTP，提供与本地端一致的单页管理面板（SPA 内嵌于
+ * webuiserver_spa.inc）。按路由分发业务（服务器启停、下载、创建/导入、设置），
+ * 以 JSON 接口与少量 HTML 文本回传；使用独立的 DownloadCatalog 实例与本地端隔离。
+ */
+#include "webuiserver.h"
+#include "servermanager.h"
+#include "servercontroller.h"
+#include "downloadmanager.h"
+#include "downloadlistmodel.h"
+#include "downloadcatalog.h"
+#include "createservercontroller.h"
+#include "modpackimporter.h"
+#include "settingscontroller.h"
+#include "javamanager.h"
+
+#include <QTcpSocket>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QUrlQuery>
+#include <QUrl>
+#include <QDir>
+#include <QColor>
+#include <QMetaObject>
+
+// ---------------- HTTP 工具 ----------------
+
+static QString urlDecode(const QString &s)
+{
+    QByteArray b = s.toUtf8();
+    return QUrl::fromPercentEncoding(b);
+}
+
+static QMap<QString, QString> parseQuery(const QString &q)
+{
+    QMap<QString, QString> out;
+    if (q.isEmpty()) return out;
+    const QStringList parts = q.split(QLatin1Char('&'), Qt::SkipEmptyParts);
+    for (const QString &p : parts) {
+        const int eq = p.indexOf(QLatin1Char('='));
+        if (eq < 0)
+            out[urlDecode(p)] = QString();
+        else
+            out[urlDecode(p.left(eq))] = urlDecode(p.mid(eq + 1));
+    }
+    return out;
+}
+
+// ---------------- 构造 / 生命周期 ----------------
+
+WebUIServer::WebUIServer(ServerManager *sm, ServerController *sc, DownloadManager *dm,
+                         CreateServerController *create, ModpackImporter *import,
+                         SettingsController *settings, QObject *monitor, JavaManager *java,
+                         QObject *parent)
+    : QObject(parent), m_sm(sm), m_sc(sc), m_create(create),
+      m_import(import), m_settings(settings), m_monitor(monitor), m_java(java)
+{
+    m_server = new QTcpServer(this);
+    connect(m_server, &QTcpServer::newConnection, this, &WebUIServer::onNewConnection);
+    // WebUI 使用独立的下载目录实例，与本地端界面互不干扰（仍共用底层 DownloadManager 完成真实下载）
+    m_dm = dm;   // 保存底层下载管理器，供 WebUI 暴露统一的“下载任务”列表
+    m_webCatalog = new DownloadCatalog(dm, this);
+    m_webCatalog->setJavaManager(m_java);
+    m_webCatalog->refresh();
+}
+
+void WebUIServer::setPort(int p)
+{
+    if (m_port == p) return;
+    m_port = p;
+    emit portChanged();
+    if (m_enabled && m_server->isListening()) {
+        // 端口变化：重启监听
+        m_server->close();
+        if (!m_server->listen(QHostAddress::Any, m_port)) {
+            m_error = m_server->errorString();
+            emit errorChanged();
+        } else {
+            m_error.clear();
+            emit errorChanged();
+            emit runningChanged();
+        }
+    }
+}
+
+void WebUIServer::setEnabled(bool on)
+{
+    if (m_enabled == on) return;
+    m_enabled = on;
+    if (on) {
+        if (!m_server->listen(QHostAddress::Any, m_port)) {
+            m_error = m_server->errorString();
+            emit errorChanged();
+        } else {
+            m_error.clear();
+            emit errorChanged();
+            emit runningChanged();
+        }
+    } else {
+        m_server->close();
+        emit runningChanged();
+    }
+}
+
+void WebUIServer::setThemeState(bool dark, const QColor &accent)
+{
+    m_dark = dark;
+    m_accent = accent;
+}
+
+// ---------------- 连接处理 ----------------
+
+void WebUIServer::onNewConnection()
+{
+    while (m_server->hasPendingConnections()) {
+        QTcpSocket *s = m_server->nextPendingConnection();
+        connect(s, &QTcpSocket::readyRead, this, &WebUIServer::onReadyRead);
+        connect(s, &QTcpSocket::disconnected, this, &WebUIServer::onDisconnected);
+    }
+}
+
+void WebUIServer::onDisconnected()
+{
+    QTcpSocket *s = qobject_cast<QTcpSocket *>(sender());
+    if (s) m_buffers.remove(s);
+}
+
+// 手动解析 HTTP/1.0 请求：累积收到的字节，直到出现空行（头结束）并凑齐
+// Content-Length 指定的 body，再一次性分发；未收齐时直接返回并等待后续 readyRead。
+// 每个连接的状态保存在 m_buffers，连接断开时由 onDisconnected 清理。
+void WebUIServer::onReadyRead()
+{
+    QTcpSocket *s = qobject_cast<QTcpSocket *>(sender());
+    if (!s) return;
+    m_buffers[s].append(s->readAll());
+
+    const int headerEnd = m_buffers[s].indexOf("\r\n\r\n");
+    if (headerEnd < 0) return; // 等待完整头部
+
+    const QByteArray head = m_buffers[s].left(headerEnd);
+    const QList<QByteArray> lines = head.split('\n');
+    if (lines.isEmpty()) return;
+    const QByteArray first = lines.at(0).trimmed();
+    const int sp1 = first.indexOf(' ');
+    const int sp2 = first.lastIndexOf(' ');
+    if (sp1 < 0 || sp2 < 0 || sp2 <= sp1) return;
+    const QString method = QString::fromLatin1(first.left(sp1));
+    const QString fullPath = QString::fromLatin1(first.mid(sp1 + 1, sp2 - sp1 - 1));
+
+    int cl = 0;
+    for (const QByteArray &l : lines) {
+        if (QString::fromUtf8(l).startsWith(QLatin1String("Content-Length:"), Qt::CaseInsensitive))
+            cl = l.mid(15).trimmed().toInt();
+    }
+    const int bodyStart = headerEnd + 4;
+    if (m_buffers[s].size() < bodyStart + cl) return; // 等待完整 body
+    const QByteArray body = m_buffers[s].mid(bodyStart, cl);
+    m_buffers[s].clear();
+
+    // 拆分 path 与 query 字符串（query 为 '?' 之后部分，不含 '?'）
+    QString path = fullPath, query;
+    const int qidx = fullPath.indexOf(QLatin1Char('?'));
+    if (qidx >= 0) {
+        path = fullPath.left(qidx);
+        query = fullPath.mid(qidx + 1);
+    }
+    dispatch(method, path, query, body, s);
+}
+
+// ---------------- 响应辅助 ----------------
+// 以下 send* 统一写出 HTTP 头（短连接：Connection: close，请求-响应后即断开），
+// 分别以 JSON / HTML / 纯文本 / 状态码回传；调用后均 disconnectFromHost。
+void WebUIServer::sendJson(QTcpSocket *sock, const QJsonObject &obj, int code)
+{
+    const QByteArray data = QJsonDocument(obj).toJson(QJsonDocument::Compact);
+    QByteArray resp = "HTTP/1.1 " + QByteArray::number(code) + " OK\r\n"
+                      "Content-Type: application/json; charset=utf-8\r\n"
+                      "Content-Length: " + QByteArray::number(data.size()) + "\r\n"
+                      "Connection: close\r\n\r\n" + data;
+    sock->write(resp);
+    sock->disconnectFromHost();
+}
+
+void WebUIServer::sendHtml(QTcpSocket *sock, const QString &html)
+{
+    const QByteArray data = html.toUtf8();
+    QByteArray resp = "HTTP/1.1 200 OK\r\n"
+                      "Content-Type: text/html; charset=utf-8\r\n"
+                      "Content-Length: " + QByteArray::number(data.size()) + "\r\n"
+                      "Connection: close\r\n\r\n" + data;
+    sock->write(resp);
+    sock->disconnectFromHost();
+}
+
+void WebUIServer::sendText(QTcpSocket *sock, const QString &text, const QString &ct)
+{
+    const QByteArray data = text.toUtf8();
+    QByteArray resp = "HTTP/1.1 200 OK\r\nContent-Type: " + ct.toUtf8() +
+                      "\r\nContent-Length: " + QByteArray::number(data.size()) +
+                      "\r\nConnection: close\r\n\r\n" + data;
+    sock->write(resp);
+    sock->disconnectFromHost();
+}
+
+void WebUIServer::sendStatus(QTcpSocket *sock, int code, const QString &msg)
+{
+    const QByteArray data = msg.toUtf8();
+    QByteArray resp = "HTTP/1.1 " + QByteArray::number(code) + " \r\n"
+                      "Content-Type: text/plain; charset=utf-8\r\n"
+                      "Content-Length: " + QByteArray::number(data.size()) + "\r\n"
+                      "Connection: close\r\n\r\n" + data;
+    sock->write(resp);
+    sock->disconnectFromHost();
+}
+
+// ---------------- 载荷构造 ----------------
+
+QJsonObject WebUIServer::themePayload() const
+{
+    QJsonObject o;
+    o[QStringLiteral("dark")] = m_dark;
+    o[QStringLiteral("accent")] = m_accent.name();
+    return o;
+}
+
+QJsonObject WebUIServer::settingsPayload() const
+{
+    QJsonObject o;
+    o[QStringLiteral("language")] = m_settings->language();
+    o[QStringLiteral("autoStart")] = m_settings->autoStart();
+    o[QStringLiteral("botEnabled")] = m_settings->botEnabled();
+    o[QStringLiteral("defaultServerDir")] = m_settings->defaultServerDir();
+    // 注意：webuiEnabled / webuiPort 对 WebUI 自身有害，不暴露
+    return o;
+}
+
+QJsonObject WebUIServer::statePayload()
+{
+    QJsonObject o;
+    o[QStringLiteral("theme")] = themePayload();
+    o[QStringLiteral("settings")] = settingsPayload();
+    QJsonObject sys;
+    sys[QStringLiteral("cpu")] = m_monitor ? m_monitor->property("cpuUsage").toDouble() : 0;
+    sys[QStringLiteral("mem")] = m_monitor ? m_monitor->property("memoryUsage").toDouble() : 0;
+    // 注意：监控侧栏只用 system(cpu/mem)。此处不再返回 servers，避免监控轮询（每 3 秒）
+    // 重复触发 serverListWithRunning()；前端监控改用轻量 /api/system 端点（见 dispatch 的 /system 路由）。
+    o[QStringLiteral("system")] = sys;
+    return o;
+}
+
+// 仅返回系统监控数据（CPU/内存），供侧栏监控轮询使用。
+// 与 statePayload 拆开，避免监控刷新每次都跑 serverListWithRunning() 这类较重的计算。
+QJsonObject WebUIServer::systemPayload()
+{
+    QJsonObject o;
+    o[QStringLiteral("cpu")] = m_monitor ? m_monitor->property("cpuUsage").toDouble() : 0;
+    o[QStringLiteral("mem")] = m_monitor ? m_monitor->property("memoryUsage").toDouble() : 0;
+    return o;
+}
+
+QJsonArray WebUIServer::serverListWithRunning() const
+{
+    QJsonArray arr;
+    for (const QVariant &v : m_sm->serverSummary()) {
+        QJsonObject o = QJsonObject::fromVariantMap(v.toMap());
+        o[QStringLiteral("running")] = m_sc->isRunning(o[QStringLiteral("name")].toString());
+        arr.append(o);
+    }
+    return arr;
+}
+
+// ---------------- 路由 ----------------
+
+// 路由分发：按 method + path 匹配业务端点并返回 JSON/HTML/状态；非 /api 路径返回 404，
+// 根路径返回内嵌 SPA。所有响应均为短连接（见 send*）。
+void WebUIServer::dispatch(const QString &method, const QString &path,
+                           const QString &query, const QByteArray &body, QTcpSocket *sock)
+{
+    if (path == QStringLiteral("/") || path == QStringLiteral("/index.html")) {
+        sendHtml(sock, m_spaHtml());
+        return;
+    }
+    if (path == QStringLiteral("/favicon.ico")) { sendStatus(sock, 204, QString()); return; }
+
+    if (!path.startsWith(QStringLiteral("/api/"))) { sendStatus(sock, 404, QStringLiteral("Not Found")); return; }
+
+    // query 已从 path 剥离，由 onReadyRead 解析后传入，避免参数被丢弃
+    const QMap<QString, QString> q = parseQuery(query);
+
+    QJsonObject bodyJson;
+    if (!body.isEmpty()) {
+        QJsonParseError err;
+        const QJsonDocument doc = QJsonDocument::fromJson(body, &err);
+        if (doc.isObject()) bodyJson = doc.object();
+    }
+
+    const QString api = path.mid(4); // 去掉 "/api"
+
+    // 服务器集合
+    if (api == QStringLiteral("/servers") && method == QStringLiteral("GET")) {
+        sendJson(sock, QJsonObject{{QStringLiteral("servers"), serverListWithRunning()}});
+        return;
+    }
+    // 单个服务器
+    if (api.startsWith(QStringLiteral("/servers/"))) {
+        QString rest = api.mid(9);
+        const int slash = rest.indexOf(QLatin1Char('/'));
+        const QString name = urlDecode(slash < 0 ? rest : rest.left(slash));
+        const QString action = slash < 0 ? QString() : rest.mid(slash + 1);
+        Server *srv = m_sm->serverByName(name);
+        if (!srv) { sendStatus(sock, 404, QStringLiteral("server not found")); return; }
+
+        if (action.isEmpty()) {
+            if (method == QStringLiteral("DELETE")) {
+                // 按服务器 name 在列表中定位索引后删除（与本地端删除服务器一致）
+                const QVariantList summary = m_sm->serverSummary();
+                int idx = -1;
+                for (int i = 0; i < summary.size(); ++i) {
+                    if (summary.at(i).toMap().value(QStringLiteral("name")).toString() == name) { idx = i; break; }
+                }
+                if (idx < 0) { sendStatus(sock, 404, QStringLiteral("server not found")); return; }
+                m_sm->removeServer(idx);
+                sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
+                return;
+            }
+            if (method != QStringLiteral("GET")) { sendStatus(sock, 405, QString()); return; }
+            QJsonObject o;
+            o[QStringLiteral("name")] = srv->name();
+            o[QStringLiteral("version")] = srv->version();
+            o[QStringLiteral("type")] = srv->type();
+            o[QStringLiteral("path")] = srv->path();
+            o[QStringLiteral("running")] = m_sc->isRunning(name);
+            o[QStringLiteral("players")] = QJsonArray::fromStringList(m_sc->players(name));
+            o[QStringLiteral("console")] = m_sc->getConsole(name);
+            o[QStringLiteral("properties")] = QJsonObject::fromVariantMap(m_sc->readProperties(srv->path()));
+            o[QStringLiteral("mods")] = QJsonArray::fromStringList(m_sc->listMods(srv->path()));
+            sendJson(sock, o);
+            return;
+        }
+        if (action == QStringLiteral("start")) {
+            const int min = q.value(QStringLiteral("min")).toInt();
+            const int max = q.value(QStringLiteral("max")).toInt();
+            // 在 ServerController 所在（主）线程执行，确保 stateChanged 信号从主线程发出，
+            // 可靠投递到本地端 QML；否则跨线程直呼信号可能丢失，导致本地端状态不切换。
+            QMetaObject::invokeMethod(m_sc, "start", Qt::QueuedConnection,
+                Q_ARG(QString, name), Q_ARG(QString, srv->path()),
+                Q_ARG(QString, QString()), Q_ARG(int, min > 0 ? min : 1024), Q_ARG(int, max > 0 ? max : 2048));
+            sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
+            return;
+        }
+        if (action == QStringLiteral("stop")) {
+            QMetaObject::invokeMethod(m_sc, "stop", Qt::QueuedConnection, Q_ARG(QString, name));
+            sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
+            return;
+        }
+        if (action == QStringLiteral("forcestop")) {
+            QMetaObject::invokeMethod(m_sc, "forceStop", Qt::QueuedConnection, Q_ARG(QString, name));
+            sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
+            return;
+        }
+        if (action == QStringLiteral("send")) {
+            QMetaObject::invokeMethod(m_sc, "send", Qt::QueuedConnection, Q_ARG(QString, name), Q_ARG(QString, q.value(QStringLiteral("cmd"))));
+            sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
+            return;
+        }
+        if (action == QStringLiteral("console")) {
+            sendJson(sock, QJsonObject{{QStringLiteral("console"), m_sc->getConsole(name)}});
+            return;
+        }
+        if (action == QStringLiteral("players")) {
+            sendJson(sock, QJsonObject{{QStringLiteral("players"), QJsonArray::fromStringList(m_sc->players(name))}});
+            return;
+        }
+        if (action == QStringLiteral("properties") && method == QStringLiteral("POST")) {
+            QVariantMap map;
+            for (auto it = bodyJson.begin(); it != bodyJson.end(); ++it)
+                map.insert(it.key(), it.value().toVariant());
+            m_sc->writeProperties(srv->path(), map);
+            sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
+            return;
+        }
+        sendStatus(sock, 404, QStringLiteral("unknown action"));
+        return;
+    }
+
+    // 下载中心
+    if (api == QStringLiteral("/catalog") && method == QStringLiteral("GET")) {
+        // 注意：仅在 /catalog/refresh 端点切换当前分类/类型；此处轮询只读取状态，
+        // 不得再 setCurrentKey，否则会在刷新异步加载前误判“已完成”导致轮询提前停止、分类切不动。
+        sendJson(sock, QJsonObject{
+            {QStringLiteral("items"), QJsonArray::fromVariantList(m_webCatalog->items())},
+            {QStringLiteral("currentKey"), m_webCatalog->currentKey()},
+            {QStringLiteral("serverType"), m_webCatalog->serverType()},
+            {QStringLiteral("saveDir"), m_webCatalog->saveDir()},
+            {QStringLiteral("status"), m_webCatalog->status()},
+            {QStringLiteral("loading"), m_webCatalog->loading()},
+            // 模组服多加载器状态
+            {QStringLiteral("mcReleases"), QJsonArray::fromStringList(m_webCatalog->mcReleases())},
+            {QStringLiteral("modVersion"), m_webCatalog->modVersion()},
+            {QStringLiteral("modLoaders"), QJsonArray::fromStringList(m_webCatalog->modLoaders())},
+            {QStringLiteral("selectedLoaders"), QJsonArray::fromStringList(m_webCatalog->selectedLoaders())}
+        });
+        return;
+    }
+    if (api == QStringLiteral("/catalog/refresh") && method == QStringLiteral("GET")) {
+        const QString cat = q.value(QStringLiteral("cat"));
+        const QString type = q.value(QStringLiteral("type"));
+        if (!cat.isEmpty()) m_webCatalog->setCurrentKey(cat);
+        if (!type.isEmpty()) m_webCatalog->setServerType(type);
+        m_webCatalog->refresh();
+        sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
+        return;
+    }
+    if (api == QStringLiteral("/catalog/download") && method == QStringLiteral("GET")) {
+        const int idx = q.value(QStringLiteral("index")).toInt();
+        m_webCatalog->download(idx);
+        sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
+        return;
+    }
+    if (api == QStringLiteral("/catalog/savedir") && method == QStringLiteral("GET")) {
+        const QString dir = q.value(QStringLiteral("dir"));
+        if (!dir.isEmpty()) m_webCatalog->setSaveDir(dir);
+        sendJson(sock, QJsonObject{{QStringLiteral("saveDir"), m_webCatalog->saveDir()}});
+        return;
+    }
+    if (api == QStringLiteral("/catalog/modversion") && method == QStringLiteral("GET")) {
+        const QString v = q.value(QStringLiteral("version"));
+        if (!v.isEmpty()) m_webCatalog->setModVersion(v);
+        sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
+        return;
+    }
+    if (api == QStringLiteral("/catalog/modloader") && method == QStringLiteral("GET")) {
+        const QString l = q.value(QStringLiteral("loader"));
+        if (!l.isEmpty()) m_webCatalog->toggleLoader(l);
+        sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
+        return;
+    }
+    if (api == QStringLiteral("/catalog/downloadselected") && method == QStringLiteral("GET")) {
+        m_webCatalog->downloadSelectedLoaders();
+        sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
+        return;
+    }
+    // 下载模组服安装器（与本地端“下载安装器”按钮一致）
+    if (api == QStringLiteral("/catalog/downloadloader") && method == QStringLiteral("GET")) {
+        m_webCatalog->downloadLoader(q.value(QStringLiteral("loader")));
+        sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
+        return;
+    }
+    // 下载列表项的暂停 / 继续 / 取消（与本地端下载列表一致）
+    if ((api == QStringLiteral("/catalog/pause") || api == QStringLiteral("/catalog/resume")
+         || api == QStringLiteral("/catalog/cancel")) && method == QStringLiteral("GET")) {
+        bool ok = false;
+        const int idx = q.value(QStringLiteral("index")).toInt(&ok);
+        if (api == QStringLiteral("/catalog/pause")) m_webCatalog->pause(idx);
+        else if (api == QStringLiteral("/catalog/resume")) m_webCatalog->resume(idx);
+        else m_webCatalog->cancel(idx);
+        sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
+        return;
+    }
+    if (api == QStringLiteral("/catalog/cleantempjava") && method == QStringLiteral("GET")) {
+        m_webCatalog->cleanupTempJava();
+        sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
+        return;
+    }
+    // 统一下载任务列表（与本地端“下载任务”面板同源）：GET 拉取，按 row 操作
+    if (api == QStringLiteral("/downloads") && method == QStringLiteral("GET")) {
+        DownloadListModel *dl = m_dm ? m_dm->downloadList() : nullptr;
+        sendJson(sock, QJsonObject{{QStringLiteral("items"), QJsonArray::fromVariantList(dl ? dl->items() : QVariantList())}});
+        return;
+    }
+    if ((api == QStringLiteral("/downloads/pause") || api == QStringLiteral("/downloads/resume")
+         || api == QStringLiteral("/downloads/cancel") || api == QStringLiteral("/downloads/restart")
+         || api == QStringLiteral("/downloads/remove")) && method == QStringLiteral("GET")) {
+        bool ok = false;
+        const int row = q.value(QStringLiteral("row")).toInt(&ok);
+        DownloadListModel *dl = m_dm ? m_dm->downloadList() : nullptr;
+        if (dl) {
+            if (api == QStringLiteral("/downloads/pause")) dl->pauseAt(row);
+            else if (api == QStringLiteral("/downloads/resume")) dl->resumeAt(row);
+            else if (api == QStringLiteral("/downloads/cancel")) dl->cancelAt(row);
+            else if (api == QStringLiteral("/downloads/restart")) dl->restartAt(row);
+            else dl->removeAt(row);
+        }
+        sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
+        return;
+    }
+    if (api == QStringLiteral("/downloads/clear") && method == QStringLiteral("GET")) {
+        DownloadListModel *dl = m_dm ? m_dm->downloadList() : nullptr;
+        if (dl) dl->clearFinished();
+        sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
+        return;
+    }
+
+    // 创建服务器
+    if (api == QStringLiteral("/createtypes") && method == QStringLiteral("GET")) {
+        QJsonArray a;
+        for (const QString &t : m_create->types()) a.append(t);
+        sendJson(sock, QJsonObject{{QStringLiteral("types"), a}});
+        return;
+    }
+    if (api == QStringLiteral("/versions") && method == QStringLiteral("GET")) {
+        QJsonArray a;
+        for (const QString &v : m_create->versions()) a.append(v);
+        sendJson(sock, QJsonObject{{QStringLiteral("versions"), a},
+                                   {QStringLiteral("type"), m_create->currentType()}});
+        return;
+    }
+    if (api == QStringLiteral("/create/loadversions") && method == QStringLiteral("GET")) {
+        const QString type = q.value(QStringLiteral("type"));
+        if (!type.isEmpty()) m_create->setCurrentType(type);
+        m_create->loadVersions();
+        sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
+        return;
+    }
+    if (api == QStringLiteral("/create") && method == QStringLiteral("POST")) {
+        // 从压缩包导入模式：复用 CreateServerController::importZip，跳过全新下载流程
+        if (bodyJson.contains(QStringLiteral("importMode")) && bodyJson.value(QStringLiteral("importMode")).toBool()) {
+            m_create->importZip(bodyJson.value(QStringLiteral("zipPath")).toString());
+            sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
+            return;
+        }
+        if (bodyJson.contains(QStringLiteral("type"))) m_create->setCurrentType(bodyJson.value(QStringLiteral("type")).toString());
+        // 内存分配（MB）：记录到 CreateServerController（与本地端内存字段一致）
+        if (bodyJson.contains(QStringLiteral("memory"))) { const int mem = bodyJson.value(QStringLiteral("memory")).toInt(); m_create->setMinMemory(mem); m_create->setMaxMemory(mem); }
+        if (bodyJson.contains(QStringLiteral("version"))) m_create->setCurrentVersion(bodyJson.value(QStringLiteral("version")).toString());
+        if (bodyJson.contains(QStringLiteral("name"))) m_create->setName(bodyJson.value(QStringLiteral("name")).toString());
+        if (bodyJson.contains(QStringLiteral("saveDir"))) m_create->setSaveDir(bodyJson.value(QStringLiteral("saveDir")).toString());
+        if (bodyJson.contains(QStringLiteral("eulaAccepted"))) m_create->setEulaAccepted(bodyJson.value(QStringLiteral("eulaAccepted")).toBool());
+        if (bodyJson.contains(QStringLiteral("selectedLoaders"))) {
+            QList<QString> loaders;
+            for (const QJsonValue &v : bodyJson.value(QStringLiteral("selectedLoaders")).toArray())
+                loaders << v.toString();
+            m_create->setSelectedLoaders(loaders);
+        }
+        m_create->create();
+        sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
+        return;
+    }
+    if (api == QStringLiteral("/create/progress") && method == QStringLiteral("GET")) {
+        QJsonObject o;
+        o[QStringLiteral("busy")] = m_create->busy();
+        o[QStringLiteral("done")] = m_create->done();
+        o[QStringLiteral("status")] = m_create->statusText();
+        o[QStringLiteral("progress")] = m_create->progress();
+        o[QStringLiteral("currentType")] = m_create->currentType();
+        o[QStringLiteral("currentVersion")] = m_create->currentVersion();
+        o[QStringLiteral("name")] = m_create->name();
+        o[QStringLiteral("saveDir")] = m_create->saveDir();
+
+        // Java 信息
+        const QString cv = m_create->currentVersion();
+        if (!cv.isEmpty()) {
+            const int feature = JavaManager::requiredFeature(cv);
+            const QString jp = m_java->javaPathFor(cv);
+            // 返回结构化字段，由前端根据全局语言用 T() 组合文案
+            o[QStringLiteral("java")] = feature;
+            o[QStringLiteral("javaFound")] = !jp.isEmpty();
+            if (!jp.isEmpty())
+                o[QStringLiteral("javaPath")] = QDir::toNativeSeparators(jp);
+        }
+
+        // 模组加载器（仅 mod 类型）
+        if (m_create->currentType() == QStringLiteral("mod")) {
+            QJsonArray loaders;
+            for (const QString &l : m_create->modLoaders()) {
+                QJsonObject lo;
+                lo[QStringLiteral("key")] = l;
+                lo[QStringLiteral("label")] = m_create->loaderLabel(l);
+                lo[QStringLiteral("compatible")] = m_create->loaderCompatible(l, cv);
+                lo[QStringLiteral("selected")] = m_create->selectedLoaders().contains(l);
+                loaders.append(lo);
+            }
+            o[QStringLiteral("modLoaders")] = loaders;
+        }
+
+        // 版本列表
+        QJsonArray a;
+        for (const QString &v : m_create->versions()) a.append(v);
+        o[QStringLiteral("versions")] = a;
+
+        sendJson(sock, o);
+        return;
+    }
+
+    // 导入整合包
+    if (api == QStringLiteral("/import") && method == QStringLiteral("POST")) {
+        if (bodyJson.contains(QStringLiteral("zipPath"))) m_import->setZipPath(bodyJson.value(QStringLiteral("zipPath")).toString());
+        if (bodyJson.contains(QStringLiteral("targetDir"))) m_import->setTargetDir(bodyJson.value(QStringLiteral("targetDir")).toString());
+        m_import->import();
+        sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
+        return;
+    }
+    if (api == QStringLiteral("/import/progress") && method == QStringLiteral("GET")) {
+        sendJson(sock, QJsonObject{
+            {QStringLiteral("busy"), m_import->busy()},
+            {QStringLiteral("done"), m_import->done()},
+            {QStringLiteral("status"), m_import->statusText()},
+            {QStringLiteral("progress"), m_import->progress()},
+            {QStringLiteral("modpackName"), m_import->modpackName()},
+            {QStringLiteral("detectedType"), m_import->detectedType()},
+            {QStringLiteral("loader"), m_import->loader()},
+            {QStringLiteral("gameVersion"), m_import->gameVersion()}
+        });
+        return;
+    }
+
+    // 设置（排除 webui 开关/端口）
+    if (api == QStringLiteral("/settings") && method == QStringLiteral("GET")) {
+        sendJson(sock, settingsPayload());
+        return;
+    }
+    if (api == QStringLiteral("/settings") && method == QStringLiteral("PUT")) {
+        if (bodyJson.contains(QStringLiteral("language"))) m_settings->setLanguage(bodyJson.value(QStringLiteral("language")).toString());
+        if (bodyJson.contains(QStringLiteral("autoStart"))) m_settings->setAutoStart(bodyJson.value(QStringLiteral("autoStart")).toBool());
+        if (bodyJson.contains(QStringLiteral("botEnabled"))) m_settings->setBotEnabled(bodyJson.value(QStringLiteral("botEnabled")).toBool());
+        if (bodyJson.contains(QStringLiteral("defaultServerDir"))) m_settings->setDefaultServerDir(bodyJson.value(QStringLiteral("defaultServerDir")).toString());
+        m_settings->apply();
+        sendJson(sock, settingsPayload());
+        return;
+    }
+
+    // 主题
+    if (api == QStringLiteral("/theme") && method == QStringLiteral("GET")) {
+        sendJson(sock, themePayload());
+        return;
+    }
+    if (api == QStringLiteral("/theme") && method == QStringLiteral("PUT")) {
+        const bool dark = bodyJson.value(QStringLiteral("dark")).toBool();
+        const QColor accent = QColor(bodyJson.value(QStringLiteral("accent")).toString());
+        m_dark = dark;
+        if (accent.isValid()) m_accent = accent;
+        emit themeChangeRequested(dark, m_accent);
+        sendJson(sock, themePayload());
+        return;
+    }
+
+    // Java
+    if (api == QStringLiteral("/java") && method == QStringLiteral("GET")) {
+        const QString mc = q.value(QStringLiteral("mc"));
+        sendJson(sock, QJsonObject::fromVariantMap(m_java->statusFor(mc)));
+        return;
+    }
+    if (api == QStringLiteral("/java/download") && method == QStringLiteral("GET")) {
+        const QString mc = q.value(QStringLiteral("mc"));
+        m_java->ensure(mc, [](bool, const QString &) {});
+        sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}, {QStringLiteral("downloading"), true}});
+        return;
+    }
+    // 设置手动 Java 目录（与本地端 Java 路径选择一致）
+    if (api == QStringLiteral("/java/sethome") && method == QStringLiteral("GET")) {
+        const QString dir = q.value(QStringLiteral("dir"));
+        if (!dir.isEmpty()) m_java->setManualJavaHome(dir);
+        sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
+        return;
+    }
+
+    // 整体状态（用于初始化：主题/设置）
+    if (api == QStringLiteral("/state") && method == QStringLiteral("GET")) {
+        sendJson(sock, statePayload());
+        return;
+    }
+    // 轻量系统监控：仅 CPU/内存。侧栏监控改用它，避免每 3 秒触发 serverListWithRunning()
+    if (api == QStringLiteral("/system") && method == QStringLiteral("GET")) {
+        sendJson(sock, systemPayload());
+        return;
+    }
+
+    sendStatus(sock, 404, QStringLiteral("Not Found"));
+}
+
+#include "webuiserver_spa.inc"
