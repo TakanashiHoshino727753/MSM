@@ -50,6 +50,10 @@
 #include <windows.h>
 #endif
 
+#include <cstdio>
+#include <QDirIterator>
+#include <QDebug>
+
 // 全局语言切换：本地端 QML 已全面使用 qsTr()，此处用一个读取 JSON 词典的自定义
 // 翻译器，在运行时按 settingsController.language 安装/卸载，实现"简体中文 / English"实时互译。
 // 词典为 { "中文原文": "English" }，缺失项回退到中文原文，因此未翻译文案不会报错。
@@ -553,6 +557,48 @@ private:
     bool m_busy = false;
 };
 
+// 诊断模式：在 cmd/控制台打印 qrc 资源路径、QML 导入路径等信息后退出（不启动 GUI）。
+// 用法：MinecraftServerManager.exe --console   （简写 -c / -diag）
+static void msmConsoleMsgHandler(QtMsgType, const QMessageLogContext &, const QString &msg)
+{
+    fprintf(stderr, "%s\n", msg.toLocal8Bit().constData());
+    fflush(stderr);
+}
+
+static int runConsoleDiagnostics(int argc, char *argv[])
+{
+#ifdef Q_OS_WIN
+    // 优先附加到父控制台（在已有 cmd 中运行）；失败则说明是双击启动，新建一个控制台窗口
+    if (!AttachConsole(ATTACH_PARENT_PROCESS))
+        AllocConsole();
+    freopen("CONOUT$", "w", stdout);
+    freopen("CONOUT$", "w", stderr);
+#endif
+    qInstallMessageHandler(msmConsoleMsgHandler);
+    QCoreApplication app(argc, argv);
+
+    fprintf(stdout, "=== Minecraft Server Manager 诊断模式 ===\n");
+    fprintf(stdout, "Qt 版本 : %s\n", qVersion());
+    fprintf(stdout, "程序目录 : %s\n", qPrintable(QCoreApplication::applicationDirPath()));
+    fprintf(stdout, "\n--- QML 导入路径 ---\n");
+    fprintf(stdout, "%s\n", qPrintable(QLibraryInfo::path(QLibraryInfo::Qml2ImportsPath)));
+    fprintf(stdout, "D:/Developer/Qt/6.11.1/mingw_64/qml\n");
+
+    fprintf(stdout, "\n--- 已注册 qrc 资源路径 ---\n");
+    QStringList paths;
+    QDirIterator it(QStringLiteral(":/"), QDir::AllEntries | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+    while (it.hasNext()) { it.next(); paths.append(it.filePath()); }
+    paths.sort();
+    for (const QString &p : paths)
+        fprintf(stdout, "%s\n", qPrintable(p));
+    fprintf(stdout, "\n共 %d 个 qrc 资源。\n", paths.size());
+
+    fprintf(stdout, "\n按 Enter 退出...");
+    fflush(stdout);
+    getchar();
+    return 0;
+}
+
 int main(int argc, char *argv[])
 {
     // 使用 Windows 原生 SChannel 作为 TLS 后端（无需额外 OpenSSL DLL），
@@ -562,6 +608,14 @@ int main(int argc, char *argv[])
     // 锁定 Qt RHI 渲染后端为 OpenGL：避免依赖 Vulkan 头文件/SDK（构建时
     // "Could NOT find WrapVulkanHeaders"、运行时无需 Vulkan），改用系统 OpenGL。
     qputenv("QSG_RHI_BACKEND", "opengl");
+
+    // 诊断模式：传入 --console / -c / -diag 时，打开 cmd 窗口打印 qrc 资源路径等信息后退出（不启动 GUI）
+    for (int i = 1; i < argc; ++i) {
+        const QString a = QString::fromLocal8Bit(argv[i]);
+        if (a == QStringLiteral("--console") || a == QStringLiteral("-c") || a == QStringLiteral("-diag")) {
+            return runConsoleDiagnostics(argc, argv);
+        }
+    }
 
     QApplication app(argc, argv);
     app.setQuitOnLastWindowClosed(false);
@@ -661,9 +715,13 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(QStringLiteral("themeAccent"), accentColor);
 
 
+    // 只用 Qt 自身安装位置解析出的 QML 导入目录；去掉原先硬编码的
+    // D:/Developer/Qt/6.11.1/mingw_64/qml —— 该绝对路径与机器不符时会导致
+    // QtQuick/QtQuick.Controls 等模块加载失败，进而 MainWindow 创建不出来（启动后无操作页面）。
     engine.addImportPath(QLibraryInfo::path(QLibraryInfo::Qml2ImportsPath));
-    engine.addImportPath(QStringLiteral("D:/Developer/Qt/6.11.1/mingw_64/qml"));
-    qDebug() << "[诊断] QML 导入路径:" << engine.importPathList();
+
+    // 启动即显示主操作页面：此前主窗口只在点击托盘时才创建，故启动后看不到任何界面。
+    controller.showMainWindow();
 
     return app.exec();
 }

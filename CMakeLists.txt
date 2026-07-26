@@ -42,7 +42,10 @@ set_source_files_properties(qml/I18n.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 set_source_files_properties(qml/PropsNames.js PROPERTIES QT_QML_SKIP_QMLDIR_ENTRY TRUE)
 
 # 可执行程序：仅包含入口 main.cpp + 资源，链接上述静态库
+# WIN32：将 exe 标记为 Windows GUI 子系统，避免启动时弹出空的 cmd/控制台窗口。
+# 需要命令行诊断时仍可加 --console 参数，程序会自行 AllocConsole 打开控制台。
 qt_add_executable(MinecraftServerManager
+    WIN32
     main.cpp
     app.rc
 )
