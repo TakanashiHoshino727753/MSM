@@ -8,6 +8,7 @@
 #include <QSettings>
 #include <QCoreApplication>
 #include <QFileInfo>
+#include <QDir>
 #ifdef Q_OS_WIN
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -57,7 +58,8 @@ void SettingsController::loadAutoStart()
 void SettingsController::saveAutoStart()
 {
     // 路径含空格时必须加引号，否则 Run 键启动时按空格拆分命令行，自启动失败。
-    QString path = QCoreApplication::applicationFilePath();
+    // 用 toNativeSeparators 把路径统一成 Windows 原生反斜杠，避免注册表里出现 "/"。
+    QString path = QDir::toNativeSeparators(QCoreApplication::applicationFilePath());
     if (path.contains(QLatin1Char(' ')))
         path = QStringLiteral("\"%1\"").arg(path);
 
