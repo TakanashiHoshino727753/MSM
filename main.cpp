@@ -642,60 +642,63 @@ int main(int argc, char *argv[])
     applyTheme(darkTheme, accentColor);                                          // 应用持久化调色板（须在样式之后）
     QQuickStyle::setStyle(QStringLiteral("Basic"));     // QML 控件样式（独立于原生控件）
 
+    // ===== 后端控制器（栈对象，按依赖顺序构造）=====
+    ServerManager serverManager;
+    SystemMonitor systemMonitor;
+    DownloadManager downloadManager;
+    // Java 运行环境管理：按 MC 版本选择并自动下载安装合适的 JDK。
+    // 显式注入统一下载管理器，Java 下载才能进入下载面板（并行/进度/暂停/取消/超时）。
+    JavaManager javaManager(&downloadManager);
+    // 下载中心 / 创建服务器的逻辑层（C++）；QML 只负责绑定与渲染
+    DownloadCatalog downloadCatalog(&downloadManager);
+    downloadCatalog.setJavaManager(&javaManager);
+    // 下载中心"模组服"安装到服务端：为每个加载器新建独立服务端实例，复用已验证安装流程
+    InstallCoordinator installCoordinator(&downloadManager, &serverManager, &javaManager);
+    CreateServerController createServer(&downloadManager, &serverManager, &javaManager);
+    ModpackImporter importModpack(&downloadManager, &serverManager);
+    ServerController serverController;
+    SettingsController settingsController;
+    // WebUI 本地 HTTP 服务：随设置开关/端口变化启动或停止
+    WebUIServer webuiServer(&serverManager, &serverController, &downloadManager, &createServer,
+                            &importModpack, &settingsController, &systemMonitor, &javaManager);
+
+    // QML 引擎放在所有后端控制器之后创建：退出时引擎最先析构，先销毁 QML 对象树；
+    // 此时所有上下文属性对象（控制器）尚未析构，绑定求值访问到的仍是有效对象，
+    // 避免退出时大量 "Cannot read property 'xxx' of null" 报错。
     QQmlApplicationEngine engine;
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed,
                      &app, []() { QCoreApplication::exit(-1); }, Qt::QueuedConnection);
 
-    AppController controller(&engine);
-    engine.rootContext()->setContextProperty(QStringLiteral("appController"), &controller);
+    // AppController 作为引擎子对象：引擎析构晚期（QObject 基类阶段）才销毁，
+    // 退出时 QML 仍可安全访问 appController。
+    AppController *appController = new AppController(&engine);
+    engine.rootContext()->setContextProperty(QStringLiteral("appController"), appController);
 
-    ServerManager serverManager;
-    SystemMonitor systemMonitor;
-    DownloadManager downloadManager;
+    // 注册各后端控制器为上下文属性（供 QML 绑定）
     engine.rootContext()->setContextProperty(QStringLiteral("serverManager"), &serverManager);
     engine.rootContext()->setContextProperty(QStringLiteral("systemMonitor"), &systemMonitor);
     engine.rootContext()->setContextProperty(QStringLiteral("downloadManager"), &downloadManager);
-
-    // Java 运行环境管理：按 MC 版本选择并自动下载安装合适的 JDK。
-    // 显式注入统一下载管理器，Java 下载才能进入下载面板（并行/进度/暂停/取消/超时）。
-    JavaManager javaManager(&downloadManager);
     engine.rootContext()->setContextProperty(QStringLiteral("javaManager"), &javaManager);
-
-    // 下载中心 / 创建服务器的逻辑层（C++）；QML 只负责绑定与渲染
-    DownloadCatalog downloadCatalog(&downloadManager);
     engine.rootContext()->setContextProperty(QStringLiteral("downloadCatalog"), &downloadCatalog);
-    downloadCatalog.setJavaManager(&javaManager);
+    engine.rootContext()->setContextProperty(QStringLiteral("installCoordinator"), &installCoordinator);
+    engine.rootContext()->setContextProperty(QStringLiteral("createServer"), &createServer);
+    engine.rootContext()->setContextProperty(QStringLiteral("importModpack"), &importModpack);
+    engine.rootContext()->setContextProperty(QStringLiteral("serverController"), &serverController);
+    engine.rootContext()->setContextProperty(QStringLiteral("settingsController"), &settingsController);
+    engine.rootContext()->setContextProperty(QStringLiteral("webuiServer"), &webuiServer);
 
-    // 下载中心"模组服"安装到服务端：为每个加载器新建独立服务端实例，复用已验证安装流程
-    InstallCoordinator installCoordinator(&downloadManager, &serverManager, &javaManager);
-    engine.rootContext()->setContextProperty("installCoordinator", &installCoordinator);
     QObject::connect(&installCoordinator, &InstallCoordinator::status,
                      &downloadCatalog, &DownloadCatalog::setStatus);
 
-    CreateServerController createServer(&downloadManager, &serverManager, &javaManager);
-    engine.rootContext()->setContextProperty(QStringLiteral("createServer"), &createServer);
-
-    ModpackImporter importModpack(&downloadManager, &serverManager);
-    engine.rootContext()->setContextProperty(QStringLiteral("importModpack"), &importModpack);
-
-    ServerController serverController;
-    engine.rootContext()->setContextProperty(QStringLiteral("serverController"), &serverController);
-
-    SettingsController settingsController;
-    engine.rootContext()->setContextProperty(QStringLiteral("settingsController"), &settingsController);
-    controller.setSettingsController(&settingsController);
+    appController->setSettingsController(&settingsController);
 
     // 语言切换：QML 侧通过 I18n.t(I18n.lang) 绑定自动重算；
     // C++ 侧 tray 菜单通过 AppController::m_dict 查表 + m_sc->language() 决定中/英。
-    controller.rebuildTrayMenu();
+    appController->rebuildTrayMenu();
 
     QObject::connect(&settingsController, &SettingsController::languageChanged,
-                     &app, [&]() { controller.rebuildTrayMenu(); });
+                     appController, [&]() { appController->rebuildTrayMenu(); });
 
-    // WebUI 本地 HTTP 服务：随设置开关/端口变化启动或停止
-    WebUIServer webuiServer(&serverManager, &serverController, &downloadManager, &createServer,
-                            &importModpack, &settingsController, &systemMonitor, &javaManager);
-    engine.rootContext()->setContextProperty(QStringLiteral("webuiServer"), &webuiServer);
     webuiServer.setThemeState(darkTheme, accentColor);
     webuiServer.setPort(settingsController.webuiPort());
     webuiServer.setEnabled(settingsController.webuiEnabled());
@@ -705,15 +708,14 @@ int main(int argc, char *argv[])
                      [&webuiServer, &settingsController]() { webuiServer.setPort(settingsController.webuiPort()); });
     // WebUI 内修改主题 → 应用回本地端
     QObject::connect(&webuiServer, &WebUIServer::themeChangeRequested,
-                     &controller, &AppController::setTheme);
+                     appController, &AppController::setTheme);
     // 本地端修改主题 → 同步给 WebUI
-    QObject::connect(&controller, &AppController::themeApplied,
+    QObject::connect(appController, &AppController::themeApplied,
                      &webuiServer, &WebUIServer::setThemeState);
 
     // 持久化主题下发给 QML 单例 Theme（加载即生效：文字/背景颜色随之切换）
     engine.rootContext()->setContextProperty(QStringLiteral("themeDark"), darkTheme);
     engine.rootContext()->setContextProperty(QStringLiteral("themeAccent"), accentColor);
-
 
     // 只用 Qt 自身安装位置解析出的 QML 导入目录；去掉原先硬编码的
     // D:/Developer/Qt/6.11.1/mingw_64/qml —— 该绝对路径与机器不符时会导致
@@ -721,7 +723,7 @@ int main(int argc, char *argv[])
     engine.addImportPath(QLibraryInfo::path(QLibraryInfo::Qml2ImportsPath));
 
     // 启动即显示主操作页面：此前主窗口只在点击托盘时才创建，故启动后看不到任何界面。
-    controller.showMainWindow();
+    appController->showMainWindow();
 
     return app.exec();
 }
