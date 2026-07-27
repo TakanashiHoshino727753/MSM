@@ -72,6 +72,14 @@ public:
     // 版本/类型自动探测；要求 EULA 已同意（调用方负责）。
     Q_INVOKABLE void importZip(const QString &zipPath);
 
+    // 判断保存目录是否已存在且非空（含任意文件/子目录），用于创建前校验，
+    // 避免覆盖已有内容/已存在的服务器目录。
+    Q_INVOKABLE bool dirOccupied(const QString &path) const {
+        QDir d(path);
+        if (!d.exists()) return false;
+        return !d.entryList(QDir::AllEntries | QDir::NoDotAndDotDot).isEmpty();
+    }
+
     // 内存分配（MB）。创建时不启动服务器，此处仅记录，供后续启动时读取；
     // 与本地端 CreateServerDialog 的内存字段行为一致（展示 + 记录，未强制回写启动）。
     Q_INVOKABLE void setMinMemory(int v) { m_minMemory = v; }

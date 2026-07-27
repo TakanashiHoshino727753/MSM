@@ -948,7 +948,7 @@ void JavaManager::fetchInstaller(int feature, const QUrl &url, const QString &li
             : QStringLiteral("https://www.oracle.com/");
     req.setRawHeader(QByteArrayLiteral("Referer"), referer.toUtf8());
     // 甲骨文 otn 链接（17/11 归档页）与 java.com 的 JRE 8 下载前需接受许可协议
-    req.setHeader(QNetworkRequest::CookieHeader, QStringLiteral("oraclelicense=accept-license"));
+    req.setRawHeader(QByteArrayLiteral("Cookie"), QByteArrayLiteral("oraclelicense=accept-license"));
     if (resuming) {
         // 请求从断点之后继续。若服务器不支持 Range，会回 200(整文件)；finished 里检测到后截断重来。
         req.setRawHeader(QByteArrayLiteral("Range"),

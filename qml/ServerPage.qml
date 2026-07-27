@@ -407,13 +407,13 @@ Item {
                         clip: true
                         boundsBehavior: Flickable.StopAtBounds
                         delegate: Rectangle {
-                            width: parent.width
+                            width: consoleView.width
                             height: consoleLine.implicitHeight + 6
                             color: index % 2 === 0 ? "transparent" : Qt.rgba(0,0,0,0.04)
                 Text {
                     id: consoleLine
                     x: 6; y: 3
-                    width: parent.width - 12
+                    width: consoleView.width - 12
                     text: line
                     color: root.consoleColor(line)
                                 font.pointSize: 11
@@ -665,7 +665,22 @@ Item {
             }
             RowLayout { spacing: 8; Layout.leftMargin: 14; Layout.rightMargin: 14; Layout.bottomMargin: 14; Layout.topMargin: 8
                 Item { Layout.fillWidth: true }
-                Button { text: I18n.t("取消", I18n.lang); background: Rectangle { color: parent.hovered ? Theme.panel : Theme.bg; radius: 6; border.color: Theme.border } onClicked: propsPopup.close() }
+                Button {
+                    text: I18n.t("取消", I18n.lang)
+                    background: Rectangle {
+                        radius: 6
+                        border.color: Theme.danger
+                        color: parent.hovered ? Qt.darker(Theme.danger, 1.18) : Theme.danger
+                    }
+                    contentItem: Label {
+                        text: parent.text
+                        color: Theme.dark ? "#ffffff" : "#5c160c"
+                        horizontalAlignment: Qt.AlignHCenter
+                        verticalAlignment: Qt.AlignVCenter
+                        font: parent.font
+                    }
+                    onClicked: propsPopup.close()
+                }
                 Button {
                     text: I18n.t("保存", I18n.lang)
                     contentItem: Label { text: parent.text; color: Theme.text; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; font: parent.font }
@@ -684,8 +699,10 @@ Item {
             Label { text: I18n.t("删除服务器", I18n.lang); font.pixelSize: 15; font.bold: true; color: Theme.danger; padding: 14 }
             Rectangle { height: 1; color: Theme.border }
             Label {
-                text: I18n.t("确定删除服务器 “%1” 吗？此操作不可撤销。").arg(root.serverName)
-                color: Theme.text; wrapMode: Text.Wrap
+                text: root.running
+                    ? I18n.t("服务器正在运行，请先停止服务器后再删除。", I18n.lang)
+                    : I18n.t("确定删除服务器 “%1” 吗？此操作不可撤销。").arg(root.serverName)
+                color: root.running ? Theme.danger : Theme.text; wrapMode: Text.Wrap
                 Layout.fillWidth: true
                 Layout.leftMargin: 14; Layout.rightMargin: 14
                 Layout.topMargin: 14; Layout.bottomMargin: 14
@@ -699,6 +716,7 @@ Item {
                 AccentButton {
                     text: I18n.t("删除", I18n.lang)
                     accentColor: Theme.danger
+                    enabled: !root.running
                     onClicked: { serverManager.removeServer(root.serverIndex); delDlg.close(); }
                 }
             }

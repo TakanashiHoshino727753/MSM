@@ -315,6 +315,11 @@ void WebUIServer::dispatch(const QString &method, const QString &path,
 
         if (action.isEmpty()) {
             if (method == QStringLiteral("DELETE")) {
+                // 运行中的服务器不允许删除：必须先停止（与本地端删除校验一致）
+                if (m_sc->isRunning(name)) {
+                    sendStatus(sock, 409, QStringLiteral("server is running, stop it first"));
+                    return;
+                }
                 // 按服务器 name 在列表中定位索引后删除（与本地端删除服务器一致）
                 const QVariantList summary = m_sm->serverSummary();
                 int idx = -1;

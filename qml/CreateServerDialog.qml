@@ -29,6 +29,15 @@ ApplicationWindow {
     property bool importMode: false
     property string importZipPath: ""
 
+    // 目标保存目录校验：若已存在且非空（可能已有服务器），提示用户改名/换路径
+    property string pathError: ""
+    function validatePath() {
+        if (createServer.dirOccupied(createServer.saveDir))
+            pathError = I18n.t("该文件夹已存在且包含文件，可能已有服务器。请更改名称或选择其他路径。", I18n.lang)
+        else
+            pathError = ""
+    }
+
     // 模组服：根据当前 MC 版本剔除不再兼容的勾选
     function recomputeLoaders() {
         var kept = []
@@ -50,6 +59,7 @@ ApplicationWindow {
         nameField.text = createServer.name
         pathField.text = createServer.saveDir
         nameSyncing = false
+        validatePath()
         javaPathField.text = javaManager.manualJavaHome()
         typeBox.currentIndex = 0
         verBox.currentIndex = 0
@@ -114,6 +124,7 @@ ApplicationWindow {
         }
         function onSaveDirChanged() {
             pathField.text = createServer.saveDir
+            validatePath()
         }
     }
 
@@ -291,6 +302,15 @@ ApplicationWindow {
                         background: Rectangle { color: parent.hovered ? Theme.panel : Theme.bg; radius: 6; border.color: Theme.border }
                         onClicked: dirDialog.open()
                     }
+                }
+
+                Label {
+                    visible: pathError !== ""
+                    text: pathError
+                    color: Theme.danger
+                    font.pixelSize: 11
+                    wrapMode: Text.Wrap
+                    Layout.fillWidth: true
                 }
 
                 // 压缩包导入模式：选择已下载/已打包的服务器压缩包
@@ -483,7 +503,7 @@ ApplicationWindow {
             Button {
                 text: createServer.done ? I18n.t("完成", I18n.lang) : (importMode ? I18n.t("导入压缩包", I18n.lang) : I18n.t("下载并安装", I18n.lang))
                 Layout.fillWidth: true
-                enabled: !createServer.busy && (!importMode || importZipPath !== "")
+                enabled: !createServer.busy && (!importMode || importZipPath !== "") && pathError === ""
                 palette.buttonText: "white"; palette.windowText: "white"
                 onClicked: {
                     if (createServer.done) window.close()
