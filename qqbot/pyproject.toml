@@ -1,0 +1,36 @@
+[project]
+name = "msm-qq-bot"
+version = "0.1.0"
+description = "Minecraft Server Manager QQ 机器人（NoneBot v11 + NapCat），通过 WebUI HTTP 接口控制 MC 服务器"
+requires-python = ">=3.9"
+dependencies = [
+    "nonebot2[fastapi,reverse-ws]",
+    "nonebot-adapter-onebot",
+    "httpx",
+]
+
+[tool.nonebot]
+adapters = ["nonebot.adapters.onebot.v11"]
+# 反向 WebSocket：NoneBot 作为 WS 服务端，NapCat 主动连过来
+driver = ["~fastapi", "~reverse-ws"]
+host = "0.0.0.0"
+port = 8080
+onebot_access_token = ""
+
+# ---- 自定义配置（供 msm_control 插件读取）----
+# MSM 内置控制通道地址（独立于 WebUI，默认端口 25585）；WebUI 关闭时本插件仍可用
+msm_control_url = "http://127.0.0.1:25585"
+# 指定默认操作的服务器名；留空则自动选第一个运行中的，没有则选第一个
+msm_target_server = ""
+# 允许通过「命令」转发的 MC 指令白名单（逗号分隔，小写）
+msm_allowed_commands = "list,say,op,deop,gamemode,whitelist,kick,ban,tp,tell,me,gamerule,time,weather,difficulty,save,reload,execute"
+# 管理员 QQ 号（逗号分隔）；留空表示不限制，所有人可用
+msm_admins = ""
+# 管理员私信 QQ 号：服务器异常退出时日志私信到此号（留空则不推送异常日志）
+msm_admin = ""
+# 占用概览等“all”推送目标，格式 group:群号,private:QQ号（逗号分隔，留空则关闭推送）
+msm_notify_targets = ""
+
+command_start = ["", "/"]
+nickname = ["MC管家"]
+superusers = []

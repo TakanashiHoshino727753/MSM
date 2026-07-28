@@ -1,0 +1,4 @@
+nonebot2[fastapi,reverse-ws]
+nonebot-adapter-onebot
+httpx
+websockets
