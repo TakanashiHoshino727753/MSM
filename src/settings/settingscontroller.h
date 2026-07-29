@@ -22,6 +22,14 @@ class SettingsController : public QObject
     Q_PROPERTY(QString webuiCertPath READ webuiCertPath WRITE setWebuiCertPath NOTIFY webuiCertPathChanged)
     Q_PROPERTY(QString webuiKeyPath READ webuiKeyPath WRITE setWebuiKeyPath NOTIFY webuiKeyPathChanged)
 
+    // Webhook 通知（崩溃 / 启停 / 玩家进服推送）：URL、类型(discord|wecom|generic)、总开关与三类事件开关
+    Q_PROPERTY(QString webhookUrl READ webhookUrl WRITE setWebhookUrl NOTIFY webhookUrlChanged)
+    Q_PROPERTY(QString webhookType READ webhookType WRITE setWebhookType NOTIFY webhookTypeChanged)
+    Q_PROPERTY(bool webhookEnabled READ webhookEnabled WRITE setWebhookEnabled NOTIFY webhookEnabledChanged)
+    Q_PROPERTY(bool webhookCrash READ webhookCrash WRITE setWebhookCrash NOTIFY webhookCrashChanged)
+    Q_PROPERTY(bool webhookState READ webhookState WRITE setWebhookState NOTIFY webhookStateChanged)
+    Q_PROPERTY(bool webhookPlayer READ webhookPlayer WRITE setWebhookPlayer NOTIFY webhookPlayerChanged)
+
     Q_PROPERTY(bool napcatEnabled READ napcatEnabled WRITE setNapcatEnabled NOTIFY napcatEnabledChanged)
     Q_PROPERTY(QString napcatPath READ napcatPath WRITE setNapcatPath NOTIFY napcatPathChanged)
     Q_PROPERTY(bool nonebotEnabled READ nonebotEnabled WRITE setNonebotEnabled NOTIFY nonebotEnabledChanged)
@@ -54,6 +62,19 @@ public:
     void setWebuiCertPath(const QString &v);
     QString webuiKeyPath() const { return m_webuiKeyPath; }
     void setWebuiKeyPath(const QString &v);
+
+    QString webhookUrl() const { return m_webhookUrl; }
+    void setWebhookUrl(const QString &v);
+    QString webhookType() const { return m_webhookType; }
+    void setWebhookType(const QString &v);
+    bool webhookEnabled() const { return m_webhookEnabled; }
+    void setWebhookEnabled(bool v);
+    bool webhookCrash() const { return m_webhookCrash; }
+    void setWebhookCrash(bool v);
+    bool webhookState() const { return m_webhookState; }
+    void setWebhookState(bool v);
+    bool webhookPlayer() const { return m_webhookPlayer; }
+    void setWebhookPlayer(bool v);
 
     bool napcatEnabled() const { return m_napcat; }
     void setNapcatEnabled(bool v);
@@ -103,6 +124,13 @@ signals:
     void webuiCertPathChanged();
     void webuiKeyPathChanged();
 
+    void webhookUrlChanged();
+    void webhookTypeChanged();
+    void webhookEnabledChanged();
+    void webhookCrashChanged();
+    void webhookStateChanged();
+    void webhookPlayerChanged();
+
     void napcatEnabledChanged();
     void napcatPathChanged();
     void nonebotEnabledChanged();
@@ -125,6 +153,13 @@ private:
     bool m_webuiExposeLan = false;
     QString m_webuiCertPath;
     QString m_webuiKeyPath;
+
+    QString m_webhookUrl;
+    QString m_webhookType = QStringLiteral("discord");
+    bool m_webhookEnabled = false;
+    bool m_webhookCrash = true;
+    bool m_webhookState = true;
+    bool m_webhookPlayer = false;
 
     bool m_napcat = false;
     QString m_napcatPath;

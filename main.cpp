@@ -46,6 +46,7 @@
 #include "webuiserver.h"
 #include "botcontroller.h"
 #include "proxycontroller.h"
+#include "notifier.h"
 
 #ifdef Q_OS_WIN
 #define WIN32_LEAN_AND_MEAN
@@ -740,6 +741,52 @@ int main(int argc, char *argv[])
 
     // Velocity 反向代理聚合：多台同时运行的服务器共用一个入口端口
     ProxyController proxyController(&serverManager, &serverController, &javaManager);
+
+    // Webhook 通知器：崩溃 / 启停 / 玩家进服推送
+    Notifier notifier;
+    auto syncNotifier = [&]() {
+        notifier.setUrl(settingsController.webhookUrl());
+        notifier.setType(settingsController.webhookType());
+        notifier.setEnabled(settingsController.webhookEnabled());
+        notifier.setNotifyCrash(settingsController.webhookCrash());
+        notifier.setNotifyState(settingsController.webhookState());
+        notifier.setNotifyPlayer(settingsController.webhookPlayer());
+    };
+    syncNotifier();
+    QObject::connect(&settingsController, &SettingsController::webhookUrlChanged, &notifier, syncNotifier);
+    QObject::connect(&settingsController, &SettingsController::webhookTypeChanged, &notifier, syncNotifier);
+    QObject::connect(&settingsController, &SettingsController::webhookEnabledChanged, &notifier, syncNotifier);
+    QObject::connect(&settingsController, &SettingsController::webhookCrashChanged, &notifier, syncNotifier);
+    QObject::connect(&settingsController, &SettingsController::webhookStateChanged, &notifier, syncNotifier);
+    QObject::connect(&settingsController, &SettingsController::webhookPlayerChanged, &notifier, syncNotifier);
+
+    // 后端事件 → Webhook
+    QObject::connect(&serverController, &ServerController::serverError, &notifier,
+                     [&](const QString &name, const QString &) {
+                         if (notifier.notifyCrash())
+                             notifier.send(QStringLiteral("服务器异常退出"),
+                                           name + QStringLiteral(" 异常退出，已尝试自动重启"));
+                     });
+    QObject::connect(&serverController, &ServerController::stateChanged, &notifier,
+                     [&](const QString &name, bool running) {
+                         if (notifier.notifyState())
+                             notifier.send(running ? QStringLiteral("服务器已启动") : QStringLiteral("服务器已停止"), name);
+                     });
+    QObject::connect(&serverController, &ServerController::playerJoined, &notifier,
+                     [&](const QString &name, const QString &who) {
+                         if (notifier.notifyPlayer())
+                             notifier.send(QStringLiteral("玩家进服"), who + QStringLiteral(" 进入了 ") + name);
+                     });
+    // 代理事件 → Webhook
+    QObject::connect(&proxyController, &ProxyController::crashed, &notifier, [&]() {
+        if (notifier.notifyCrash())
+            notifier.send(QStringLiteral("代理异常退出"), QStringLiteral("Velocity 代理异常退出，已尝试自动重启"));
+    });
+    QObject::connect(&proxyController, &ProxyController::runningChanged, &notifier, [&]() {
+        if (notifier.notifyState())
+            notifier.send(proxyController.running() ? QStringLiteral("代理已启动") : QStringLiteral("代理已停止"),
+                          QStringLiteral("Velocity 代理"));
+    });
     // QML 引擎放在所有后端控制器之后创建：退出时引擎最先析构，先销毁 QML 对象树；
     // 此时所有上下文属性对象（控制器）尚未析构，绑定求值访问到的仍是有效对象，
     // 避免退出时大量 "Cannot read property 'xxx' of null" 报错。

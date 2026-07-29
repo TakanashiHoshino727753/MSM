@@ -51,6 +51,13 @@ SettingsController::SettingsController(QObject *parent) : QObject(parent)
     m_botLinkedStart = s.value(QStringLiteral("app/botLinkedStart"), false).toBool();
     m_bot = s.value(QStringLiteral("app/botEnabled"), m_napcat && m_nonebot).toBool();
 
+    m_webhookUrl = s.value(QStringLiteral("app/webhookUrl")).toString();
+    m_webhookType = s.value(QStringLiteral("app/webhookType"), QStringLiteral("discord")).toString();
+    m_webhookEnabled = s.value(QStringLiteral("app/webhookEnabled"), false).toBool();
+    m_webhookCrash = s.value(QStringLiteral("app/webhookCrash"), true).toBool();
+    m_webhookState = s.value(QStringLiteral("app/webhookState"), true).toBool();
+    m_webhookPlayer = s.value(QStringLiteral("app/webhookPlayer"), false).toBool();
+
     qDebug() << "[SET] raw botLinkedStart=" << s.value(QStringLiteral("app/botLinkedStart"))
              << "toBool=" << m_botLinkedStart
              << "botEnabled=" << s.value(QStringLiteral("app/botEnabled"))
@@ -159,6 +166,30 @@ void SettingsController::setWebuiKeyPath(const QString &v)
     const QString p = stripFileUrl(v);
     if (m_webuiKeyPath != p) { m_webuiKeyPath = p; emit webuiKeyPathChanged(); }
 }
+void SettingsController::setWebhookUrl(const QString &v)
+{
+    if (m_webhookUrl != v) { m_webhookUrl = v; emit webhookUrlChanged(); }
+}
+void SettingsController::setWebhookType(const QString &v)
+{
+    if (m_webhookType != v) { m_webhookType = v; emit webhookTypeChanged(); }
+}
+void SettingsController::setWebhookEnabled(bool v)
+{
+    if (m_webhookEnabled != v) { m_webhookEnabled = v; emit webhookEnabledChanged(); }
+}
+void SettingsController::setWebhookCrash(bool v)
+{
+    if (m_webhookCrash != v) { m_webhookCrash = v; emit webhookCrashChanged(); }
+}
+void SettingsController::setWebhookState(bool v)
+{
+    if (m_webhookState != v) { m_webhookState = v; emit webhookStateChanged(); }
+}
+void SettingsController::setWebhookPlayer(bool v)
+{
+    if (m_webhookPlayer != v) { m_webhookPlayer = v; emit webhookPlayerChanged(); }
+}
 void SettingsController::regenerateWebuiToken()
 {
     m_webuiToken = generateWebuiToken();
@@ -223,6 +254,12 @@ void SettingsController::apply()
     s.setValue(QStringLiteral("app/botUsageInterval"), m_botUsageInterval);
     s.setValue(QStringLiteral("app/botLinkedStart"), m_botLinkedStart);
     s.setValue(QStringLiteral("app/botEnabled"), m_bot);
+    s.setValue(QStringLiteral("app/webhookUrl"), m_webhookUrl);
+    s.setValue(QStringLiteral("app/webhookType"), m_webhookType);
+    s.setValue(QStringLiteral("app/webhookEnabled"), m_webhookEnabled);
+    s.setValue(QStringLiteral("app/webhookCrash"), m_webhookCrash);
+    s.setValue(QStringLiteral("app/webhookState"), m_webhookState);
+    s.setValue(QStringLiteral("app/webhookPlayer"), m_webhookPlayer);
 
     s.sync();
     saveAutoStart();

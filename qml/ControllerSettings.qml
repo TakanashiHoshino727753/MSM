@@ -687,6 +687,80 @@ ApplicationWindow {
                         }
                     }
 
+                    // 运维与通知
+                    Rectangle {
+                        Layout.fillWidth: true
+                        radius: Theme.radius
+                        color: Theme.panel
+                        implicitHeight: cardO.height + 32
+                        ColumnLayout {
+                            id: cardO
+                            x: 16; y: 16
+                            width: parent.width - 32
+                            spacing: 12
+                            Label { text: I18n.t("运维与通知", I18n.lang); color: Theme.text; font.bold: true; font.pixelSize: 15 }
+                            Label { text: I18n.t("Webhook 通知：崩溃、启停、玩家进服时向群/频道推送。", I18n.lang); color: Theme.textMuted; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label { text: I18n.t("启用 Webhook", I18n.lang); Layout.fillWidth: true; color: Theme.text }
+                                Switch { checked: settingsController.webhookEnabled; onToggled: { settingsController.webhookEnabled = checked; settingsController.apply() } }
+                                Label { text: I18n.t("类型", I18n.lang); color: Theme.text }
+                                ComboBox {
+                                    model: [I18n.t("Discord", I18n.lang), I18n.t("企业微信", I18n.lang), I18n.t("通用 JSON", I18n.lang)]
+                                    Component.onCompleted: {
+                                        var m = ["discord", "wecom", "generic"]
+                                        currentIndex = Math.max(0, m.indexOf(settingsController.webhookType))
+                                    }
+                                    onCurrentIndexChanged: {
+                                        var m = ["discord", "wecom", "generic"]
+                                        var v = m[currentIndex]
+                                        if (v !== settingsController.webhookType) { settingsController.webhookType = v; settingsController.apply() }
+                                    }
+                                }
+                            }
+                            TextField {
+                                Layout.fillWidth: true
+                                placeholderText: I18n.t("Webhook 地址（https://...）", I18n.lang)
+                                text: settingsController.webhookUrl
+                                color: Theme.text
+                                background: Rectangle { color: Theme.panelAlt; radius: 6; border.color: Theme.border }
+                                onEditingFinished: { settingsController.webhookUrl = text; settingsController.apply() }
+                            }
+                            Label { text: I18n.t("通知事件", I18n.lang); color: Theme.text; font.pixelSize: 12 }
+                            Flow {
+                                Layout.fillWidth: true
+                                spacing: 12
+                                RowLayout { spacing: 6
+                                    Switch { checked: settingsController.webhookCrash; onToggled: { settingsController.webhookCrash = checked; settingsController.apply() } }
+                                    Label { text: I18n.t("崩溃", I18n.lang); color: Theme.text }
+                                }
+                                RowLayout { spacing: 6
+                                    Switch { checked: settingsController.webhookState; onToggled: { settingsController.webhookState = checked; settingsController.apply() } }
+                                    Label { text: I18n.t("启停", I18n.lang); color: Theme.text }
+                                }
+                                RowLayout { spacing: 6
+                                    Switch { checked: settingsController.webhookPlayer; onToggled: { settingsController.webhookPlayer = checked; settingsController.apply() } }
+                                    Label { text: I18n.t("玩家进服", I18n.lang); color: Theme.text }
+                                }
+                            }
+
+                            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.border }
+
+                            Label { text: I18n.t("后端崩溃自动重启", I18n.lang); color: Theme.text; font.bold: true; font.pixelSize: 13 }
+                            RowLayout { Layout.fillWidth: true
+                                Switch { checked: serverController.autoRestart; onToggled: { serverController.autoRestart = checked } }
+                                Label { text: I18n.t("崩溃后自动重拉起后端（指数退避）", I18n.lang); color: Theme.text; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                            }
+                            RowLayout { spacing: 6
+                                Label { text: I18n.t("最大重试", I18n.lang); color: Theme.text }
+                                SpinBox { from: 0; to: 50; value: serverController.maxRetries; onValueChanged: if (value !== serverController.maxRetries) serverController.maxRetries = value }
+                                Label { text: I18n.t("退避基数(秒)", I18n.lang); color: Theme.text }
+                                SpinBox { from: 1; to: 300; value: serverController.backoffSec; onValueChanged: if (value !== serverController.backoffSec) serverController.backoffSec = value }
+                            }
+                        }
+                    }
+
                     Item { Layout.fillHeight: true }
 
                     RowLayout {

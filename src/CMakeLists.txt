@@ -60,6 +60,14 @@ add_library(msm_settings STATIC
 target_link_libraries(msm_settings PUBLIC Qt6::Core)
 target_include_directories(msm_settings PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/settings)
 
+# ---- Webhook 通知（崩溃 / 启停 / 玩家进服推送）----
+add_library(msm_notify STATIC
+    notify/notifier.h
+    notify/notifier.cpp
+)
+target_link_libraries(msm_notify PUBLIC Qt6::Core Qt6::Network)
+target_include_directories(msm_notify PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/notify)
+
 # ---- Velocity 反向代理聚合（多服务器统一入口端口，依赖 server 读取端口/服务器列表）----
 add_library(msm_proxy STATIC
     proxy/proxycontroller.h

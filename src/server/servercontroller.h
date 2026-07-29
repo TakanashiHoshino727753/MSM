@@ -25,11 +25,22 @@ class ServerController : public QObject
     Q_OBJECT
     // 当前正在运行的服务器数量；QML 可据此显示“N 台运行中”或调整界面状态。
     Q_PROPERTY(int runningCount READ runningCount NOTIFY runningCountChanged)
+    // 后端崩溃（非主动停止）后是否自动拉起；重试次数与退避基数可配。
+    Q_PROPERTY(bool autoRestart READ autoRestart WRITE setAutoRestart NOTIFY autoRestartChanged)
+    Q_PROPERTY(int maxRetries READ maxRetries WRITE setMaxRetries NOTIFY maxRetriesChanged)
+    Q_PROPERTY(int backoffSec READ backoffSec WRITE setBackoffSec NOTIFY backoffSecChanged)
 public:
     explicit ServerController(QObject *parent = nullptr);
 
     // 正在运行的服务器数量（即 m_procs 中的进程数）
     int runningCount() const { return m_procs.size(); }
+
+    bool autoRestart() const { return m_autoRestart; }
+    void setAutoRestart(bool v);
+    int maxRetries() const { return m_maxRetries; }
+    void setMaxRetries(int v);
+    int backoffSec() const { return m_backoffSec; }
+    void setBackoffSec(int v);
 
     // 判断指定服务器当前是否在运行
     Q_INVOKABLE bool isRunning(const QString &name) const;
@@ -80,9 +91,14 @@ signals:
     void runningCountChanged();
     // 服务器异常退出（崩溃 / 非 0 退出且非主动强关），携带尾部日志供上报
     void serverError(const QString &name, const QString &logTail);
+    // 有玩家进入服务器（用于 Webhook 推送），who 为玩家名
+    void playerJoined(const QString &name, const QString &who);
     // 启动前发现端口冲突（holder=占用端口的另一台受管服务器名；为空表示被系统其他程序占用）。
     // 收到该信号说明本次 start 已被取消，由 UI 决定是否 assignFreePort 后重新 start。
     void portConflict(const QString &name, const QString &path, int port, const QString &holder);
+    void autoRestartChanged();
+    void maxRetriesChanged();
+    void backoffSecChanged();
 
 private:
     // 读取并解析进程的标准输出/错误，逐行发出 consoleAppended 并提取玩家名单
@@ -108,4 +124,12 @@ private:
     mutable QHash<QString, QPair<qint64, qint64>> m_usageSamples;
     // 被主动 forceStop 的服务器：退出时不视为报错
     QSet<QString> m_intentionalKill;
+
+    // 崩溃自动重启：记录启动参数用于重拉起，以及每服重试计数与全局配置
+    struct StartArgs { QString path; QString javaPath; int minMem = 1024; int maxMem = 2048; };
+    QHash<QString, StartArgs> m_args;
+    QMap<QString, int> m_retryCount;
+    bool m_autoRestart = true;
+    int m_maxRetries = 5;
+    int m_backoffSec = 5;
 };

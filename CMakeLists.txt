@@ -97,6 +97,7 @@ target_link_libraries(MinecraftServerManager PRIVATE
     msm_webui
     msm_bot
     msm_proxy
+    msm_notify
 )
 
 install(TARGETS MinecraftServerManager

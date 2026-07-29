@@ -156,6 +156,26 @@ Item {
                         color: Theme.textMuted; font.pixelSize: 11
                         text: I18n.t("关闭此选项后，停止代理时后端服务器将继续运行（仅停止由本代理自动拉起的后端）。", I18n.lang)
                     }
+
+                    // 代理崩溃自动重拉起开关
+                    Row {
+                        spacing: 10
+                        Switch {
+                            id: autoRestartSwitch
+                            checked: proxyController.autoRestart
+                            onCheckedChanged: if (checked !== proxyController.autoRestart) proxyController.autoRestart = checked
+                        }
+                        Label {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: I18n.t("代理崩溃后自动重拉起", I18n.lang)
+                            color: Theme.text
+                        }
+                    }
+                    Label {
+                        width: parent.width; wrapMode: Text.Wrap
+                        color: Theme.textMuted; font.pixelSize: 11
+                        text: I18n.t("代理异常退出时按指数退避（最多 5 次）自动重启；手动停止不触发。", I18n.lang)
+                    }
                 }
             }
 

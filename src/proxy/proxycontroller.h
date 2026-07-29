@@ -37,6 +37,7 @@ class ProxyController : public QObject
     Q_PROPERTY(QString proxyDir READ proxyDir CONSTANT)
     Q_PROPERTY(bool offlineMode READ offlineMode WRITE setOfflineMode NOTIFY offlineModeChanged)
     Q_PROPERTY(bool stopBackendsWithProxy READ stopBackendsWithProxy WRITE setStopBackendsWithProxy NOTIFY stopBackendsWithProxyChanged)
+    Q_PROPERTY(bool autoRestart READ autoRestart WRITE setAutoRestart NOTIFY autoRestartChanged)
 public:
     explicit ProxyController(ServerManager *sm, ServerController *sc,
                              JavaManager *java = nullptr, QObject *parent = nullptr);
@@ -47,6 +48,8 @@ public:
     void setOfflineMode(bool v);
     bool stopBackendsWithProxy() const { return m_stopBackendsWithProxy; }
     void setStopBackendsWithProxy(bool v);
+    bool autoRestart() const { return m_autoRestart; }
+    void setAutoRestart(bool v);
 
     bool running() const { return m_proc && m_proc->state() != QProcess::NotRunning; }
     bool installed() const;
@@ -82,6 +85,9 @@ signals:
     void installProgressChanged();
     void offlineModeChanged();
     void stopBackendsWithProxyChanged();
+    void autoRestartChanged();
+    void crashed();          // 代理异常退出（非用户主动停止），用于通知/自动重拉起
+    void portConflict(int port);  // 启动前入口端口被占用
     void consoleAppended(const QString &line);
 
 private:
@@ -118,5 +124,10 @@ private:
     bool m_busy = false;
     bool m_offlineMode = true;   // 默认关掉正版验证，离线/非正版玩家也能进
     bool m_stopBackendsWithProxy = true;  // 停止代理时一并停止由本代理拉起的后端
+    bool m_autoRestart = true;   // 代理崩溃后自动重拉起
+    int m_maxRetries = 5;        // 自动重拉起最大次数
+    int m_backoffSec = 5;        // 退避基数（秒），实际延迟 = base * 2^(attempt-1)
+    int m_retryCount = 0;        // 当前连续重拉起次数
+    bool m_expectedExit = false; // true 表示本次退出为用户主动停止，不触发自动重拉起
     QStringList m_autoStarted;   // 本次启动代理时自动拉起的后端名称
 };

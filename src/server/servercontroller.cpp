@@ -14,8 +14,43 @@
 #include <QRegularExpression>
 #include <QTcpServer>
 #include <QHostAddress>
+#include <QTimer>
+#include <QSettings>
 
-ServerController::ServerController(QObject *parent) : QObject(parent) {}
+ServerController::ServerController(QObject *parent) : QObject(parent)
+{
+    QSettings s(QStringLiteral("MSM"), QStringLiteral("MSM"));
+    m_autoRestart = s.value(QStringLiteral("server/autoRestart"), true).toBool();
+    m_maxRetries = s.value(QStringLiteral("server/maxRetries"), 5).toInt();
+    m_backoffSec = s.value(QStringLiteral("server/backoffSec"), 5).toInt();
+}
+
+void ServerController::setAutoRestart(bool v)
+{
+    if (v == m_autoRestart)
+        return;
+    m_autoRestart = v;
+    QSettings(QStringLiteral("MSM"), QStringLiteral("MSM")).setValue(QStringLiteral("server/autoRestart"), v);
+    emit autoRestartChanged();
+}
+
+void ServerController::setMaxRetries(int v)
+{
+    if (v == m_maxRetries)
+        return;
+    m_maxRetries = v;
+    QSettings(QStringLiteral("MSM"), QStringLiteral("MSM")).setValue(QStringLiteral("server/maxRetries"), v);
+    emit maxRetriesChanged();
+}
+
+void ServerController::setBackoffSec(int v)
+{
+    if (v == m_backoffSec)
+        return;
+    m_backoffSec = v;
+    QSettings(QStringLiteral("MSM"), QStringLiteral("MSM")).setValue(QStringLiteral("server/backoffSec"), v);
+    emit backoffSecChanged();
+}
 
 bool ServerController::isRunning(const QString &name) const
 {
@@ -29,6 +64,7 @@ void ServerController::start(const QString &name, const QString &path,
         emit consoleAppended(name, QStringLiteral("[MSM] 服务器已在运行"));
         return;
     }
+    m_args[name] = {path, javaPath, minMem, maxMem};
     const QString jar = path + QStringLiteral("/server.jar");
     if (!QFile::exists(jar)) {
         emit consoleAppended(name, QStringLiteral("[MSM] 未找到 server.jar，无法启动：") + jar);
@@ -111,6 +147,7 @@ void ServerController::start(const QString &name, const QString &path,
     }
 
     m_procs.insert(name, p);
+    m_retryCount.remove(name);
     m_startTime.insert(name, QDateTime::currentMSecsSinceEpoch());
     m_ports.insert(name, port);
     m_intentionalKill.remove(name);
@@ -146,6 +183,7 @@ void ServerController::handleOutput(const QString &name)
             if (!it->playerList.contains(who)) {
                 it->playerList.append(who);
                 emit playersChanged(name, it->playerList);
+                emit playerJoined(name, who);
             }
         } else if ((m = reLeft.match(line)).hasMatch()) {
             const QString who = m.captured(1);
@@ -173,8 +211,25 @@ void ServerController::onFinished(const QString &name, int exitCode, QProcess::E
     emit playersChanged(name, {});
     emit runningCountChanged();
     // 非主动强关却异常退出（崩溃 / 非 0 退出码）→ 上报错误日志
-    if (!intentional && (status == QProcess::CrashExit || exitCode != 0))
+    if (!intentional && (status == QProcess::CrashExit || exitCode != 0)) {
         emit serverError(name, tail);
+        // 后端崩溃自动拉起：指数退避，最多 m_maxRetries 次；EULA 未同意或用户已手动停止则不再拉起
+        if (m_autoRestart && !tail.contains(QLatin1String("eula"), Qt::CaseInsensitive)
+            && m_retryCount[name] < m_maxRetries) {
+            const int attempt = ++m_retryCount[name];
+            const int delay = m_backoffSec * (1 << (attempt - 1));
+            emit consoleAppended(name, QStringLiteral("[MSM] 后端异常退出，%1 秒后自动重启（第 %2/%3 次）")
+                                          .arg(delay).arg(attempt).arg(m_maxRetries));
+            const StartArgs a = m_args.value(name);
+            QTimer::singleShot(delay * 1000, this, [this, name, a, attempt]() {
+                if (m_intentionalKill.contains(name)) {
+                    m_retryCount.remove(name);
+                    return;
+                }
+                start(name, a.path, a.javaPath, a.minMem, a.maxMem);
+            });
+        }
+    }
 }
 
 void ServerController::stop(const QString &name)

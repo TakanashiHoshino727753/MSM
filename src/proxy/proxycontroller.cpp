@@ -38,6 +38,9 @@ ProxyController::ProxyController(ServerManager *sm, ServerController *sc,
                      QStringLiteral("&3MSM 聚合服务器")).toString();
     m_offlineMode = s.value(QStringLiteral("proxy/offlineMode"), true).toBool();
     m_stopBackendsWithProxy = s.value(QStringLiteral("proxy/stopBackendsWithProxy"), true).toBool();
+    m_autoRestart = s.value(QStringLiteral("proxy/autoRestart"), true).toBool();
+    m_maxRetries = s.value(QStringLiteral("proxy/maxRetries"), 5).toInt();
+    m_backoffSec = s.value(QStringLiteral("proxy/backoffSec"), 5).toInt();
     m_status = installed() ? QStringLiteral("已安装，未运行") : QStringLiteral("未安装");
 }
 
@@ -86,6 +89,15 @@ void ProxyController::setStopBackendsWithProxy(bool v)
     m_stopBackendsWithProxy = v;
     QSettings().setValue(QStringLiteral("proxy/stopBackendsWithProxy"), v);
     emit stopBackendsWithProxyChanged();
+}
+
+void ProxyController::setAutoRestart(bool v)
+{
+    if (v == m_autoRestart)
+        return;
+    m_autoRestart = v;
+    QSettings().setValue(QStringLiteral("proxy/autoRestart"), v);
+    emit autoRestartChanged();
 }
 
 void ProxyController::setStatus(const QString &s)
@@ -524,6 +536,14 @@ void ProxyController::start(const QString &javaPath)
     if (!syncConfig())
         return;
 
+    // P3：入口端口冲突预检（复用后端 ServerController 的端口探测）
+    if (m_sc && !m_sc->isPortFree(quint16(m_proxyPort))) {
+        appendConsole(QStringLiteral("[MSM] 错误：代理入口端口 %1 已被占用，无法启动（请改端口或释放占用）").arg(m_proxyPort));
+        setStatus(QStringLiteral("端口 %1 被占用").arg(m_proxyPort));
+        emit portConflict(m_proxyPort);
+        return;
+    }
+
     // 同步配置（改写后端 online-mode）后，自动拉起所有未运行的后端；否则 Velocity 无后端可连。
     m_autoStarted.clear();
     if (m_sm && m_sc) {
@@ -592,11 +612,33 @@ void ProxyController::launchProcess(const QString &java)
     });
     connect(m_proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, [this](int code, QProcess::ExitStatus) {
-                appendConsole(QStringLiteral("[MSM] 代理已停止（退出码 %1）").arg(code));
                 m_proc->deleteLater();
                 m_proc = nullptr;
+                if (m_expectedExit) {
+                    // 用户主动停止：不触发崩溃通知/自动重拉起
+                    m_expectedExit = false;
+                    m_retryCount = 0;
+                    appendConsole(QStringLiteral("[MSM] 代理已停止（退出码 %1）").arg(code));
+                    setStatus(QStringLiteral("已安装，未运行"));
+                    emit runningChanged();
+                    return;
+                }
+                // 异常退出（崩溃）：通知并尝试自动重拉起
+                emit crashed();
+                appendConsole(QStringLiteral("[MSM] 代理异常退出（退出码 %1）").arg(code));
                 setStatus(QStringLiteral("已安装，未运行"));
                 emit runningChanged();
+                if (m_autoRestart && m_retryCount < m_maxRetries) {
+                    const int attempt = ++m_retryCount;
+                    const int delay = m_backoffSec * (1 << (attempt - 1));
+                    appendConsole(QStringLiteral("[MSM] %1 秒后自动重启代理（第 %2/%3 次）")
+                                  .arg(delay).arg(attempt).arg(m_maxRetries));
+                    QTimer::singleShot(delay * 1000, this, [this]() {
+                        if (m_expectedExit)
+                            return;   // 期间已被用户手动停止
+                        start();
+                    });
+                }
             });
 
     QStringList args;
@@ -620,6 +662,8 @@ void ProxyController::stop()
 {
     if (!running())
         return;
+    m_expectedExit = true;   // 标记本次退出为用户主动停止，避免触发崩溃重拉起
+    m_retryCount = 0;
     // 停止代理时一并停止由本代理拉起的后端（可拆卸开关控制）
     if (m_stopBackendsWithProxy && m_sc) {
         const QStringList list = m_autoStarted;
