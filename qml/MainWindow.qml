@@ -122,10 +122,8 @@ ApplicationWindow {
                     palette.windowText: Theme.text; palette.buttonText: Theme.text; palette.brightText: Theme.text
                     background: Rectangle {
                         color: bOverview.checked ? Theme.accent : Theme.accentSoft
-                        // 左侧永远圆角；当没有服务器页签时（仅一个页面）右侧也圆角
+                        // 左侧永远圆角（右侧由最后的“代理聚合”页签收尾）
                         topLeftRadius: Theme.radius; bottomLeftRadius: Theme.radius
-                        topRightRadius: (serverManager ? serverManager.count : 0) === 0 ? Theme.radius : 0
-                        bottomRightRadius: (serverManager ? serverManager.count : 0) === 0 ? Theme.radius : 0
                     }
                 }
                 Repeater {
@@ -137,10 +135,17 @@ ApplicationWindow {
                         palette.windowText: Theme.text; palette.buttonText: Theme.text; palette.brightText: Theme.text
                         background: Rectangle {
                             color: bServer.checked ? Theme.accent : Theme.accentSoft
-                            // 最后一个服务器页签：右两圆角
-                            topRightRadius: index === (serverManager ? serverManager.count - 1 : -1) ? Theme.radius : 0
-                            bottomRightRadius: index === (serverManager ? serverManager.count - 1 : -1) ? Theme.radius : 0
                         }
+                    }
+                }
+                // 代理聚合页签：永远位于最后，右两圆角收尾
+                TabButton {
+                    id: bProxy
+                    text: I18n.t("代理聚合", I18n.lang)
+                    palette.windowText: Theme.text; palette.buttonText: Theme.text; palette.brightText: Theme.text
+                    background: Rectangle {
+                        color: bProxy.checked ? Theme.accent : Theme.accentSoft
+                        topRightRadius: Theme.radius; bottomRightRadius: Theme.radius
                     }
                 }
             }
@@ -189,11 +194,73 @@ ApplicationWindow {
                     model: serverManager ? serverManager.servers : null
                 ServerPage { serverName: modelData.name; serverVersion: modelData.version; serverType: modelData.type; serverPath: modelData.path; serverIndex: index }
             }
+                ProxyPage { }
         }
         }
     }
     }
 
     DownloadsPanel { id: downloadsPanel }
+
+    // ---- 多开端口冲突：启动被取消时弹窗，允许一键自动分配空闲端口后重新启动 ----
+    ModalPopup {
+        id: portConflictPopup
+        popupWidth: 480
+        popupHeight: 200
+        property string srvName: ""
+        property string srvPath: ""
+        property int    port: 0
+        property string holder: ""
+        contentItem: Column {
+            spacing: 14
+            padding: 20
+            Label {
+                text: I18n.t("端口冲突", I18n.lang)
+                font.pixelSize: 17; font.bold: true; color: Theme.text
+            }
+            Label {
+                width: parent.width - 40
+                wrapMode: Text.Wrap
+                color: Theme.text
+                text: (portConflictPopup.holder !== ""
+                       ? I18n.t("端口 %1 已被服务器“%2”占用，无法同时启动。", I18n.lang)
+                             .replace("%1", portConflictPopup.port).replace("%2", portConflictPopup.holder)
+                       : I18n.t("端口 %1 已被其他程序占用，无法启动。", I18n.lang)
+                             .replace("%1", portConflictPopup.port))
+                      + " " + I18n.t("可自动分配一个空闲端口并立即启动。", I18n.lang)
+            }
+            Row {
+                spacing: 10
+                anchors.right: parent.right; anchors.rightMargin: 20
+                Button {
+                    text: I18n.t("自动分配端口并启动", I18n.lang)
+                    palette.windowText: "white"; palette.buttonText: "white"
+                    background: Rectangle { color: parent.hovered ? Theme.accentHover : Theme.accent; radius: 6 }
+                    onClicked: {
+                        var np = serverController.assignFreePort(portConflictPopup.srvPath)
+                        portConflictPopup.close()
+                        if (np > 0)
+                            serverController.start(portConflictPopup.srvName, portConflictPopup.srvPath)
+                    }
+                }
+                Button {
+                    text: I18n.t("取消", I18n.lang)
+                    palette.windowText: Theme.text; palette.buttonText: Theme.text
+                    background: Rectangle { color: parent.hovered ? Theme.panel : Theme.bg; radius: 6; border.color: Theme.border }
+                    onClicked: portConflictPopup.close()
+                }
+            }
+        }
+    }
+    Connections {
+        target: serverController
+        function onPortConflict(name, path, port, holder) {
+            portConflictPopup.srvName = name
+            portConflictPopup.srvPath = path
+            portConflictPopup.port = port
+            portConflictPopup.holder = holder
+            portConflictPopup.open()
+        }
+    }
 }
 

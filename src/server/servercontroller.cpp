@@ -12,6 +12,8 @@
 #include <QFileInfo>
 #include <QTextStream>
 #include <QRegularExpression>
+#include <QTcpServer>
+#include <QHostAddress>
 
 ServerController::ServerController(QObject *parent) : QObject(parent) {}
 
@@ -30,6 +32,28 @@ void ServerController::start(const QString &name, const QString &path,
     const QString jar = path + QStringLiteral("/server.jar");
     if (!QFile::exists(jar)) {
         emit consoleAppended(name, QStringLiteral("[MSM] 未找到 server.jar，无法启动：") + jar);
+        return;
+    }
+
+    // ---- 多开端口冲突检测：与其他运行中的受管服务器或系统进程抢占同一端口时取消启动 ----
+    const int port = serverPort(path);
+    QString holder;
+    bool conflict = false;
+    for (auto it = m_ports.cbegin(); it != m_ports.cend(); ++it) {
+        if (it.value() == port && it.key() != name) {
+            holder = it.key();
+            conflict = true;
+            break;
+        }
+    }
+    if (!conflict && !isPortFree(port))
+        conflict = true;    // holder 留空 = 被系统其他程序占用
+    if (conflict) {
+        emit consoleAppended(name, QStringLiteral("[MSM] 端口 %1 已被%2占用，启动已取消（可自动分配空闲端口后重试）")
+                                       .arg(port)
+                                       .arg(holder.isEmpty() ? QStringLiteral("其他程序")
+                                                             : QStringLiteral("服务器“%1”").arg(holder)));
+        emit portConflict(name, path, port, holder);
         return;
     }
 
@@ -88,6 +112,7 @@ void ServerController::start(const QString &name, const QString &path,
 
     m_procs.insert(name, p);
     m_startTime.insert(name, QDateTime::currentMSecsSinceEpoch());
+    m_ports.insert(name, port);
     m_intentionalKill.remove(name);
     emit consoleAppended(name, QStringLiteral("[MSM] 正在启动服务器…"));
     emit stateChanged(name, true);
@@ -141,6 +166,7 @@ void ServerController::onFinished(const QString &name, int exitCode, QProcess::E
     m_consoleCache.insert(name, it->console);
     m_procs.erase(it);
     m_startTime.remove(name);
+    m_ports.remove(name);
     m_usageSamples.remove(name);
     emit consoleAppended(name, QStringLiteral("[MSM] 服务器已停止"));
     emit stateChanged(name, false);
@@ -392,6 +418,50 @@ void ServerController::writeProperties(const QString &path, const QVariantMap &m
     for (const QString &l : outLines)
         out << l << QLatin1Char('\n');
     f.close();
+}
+
+int ServerController::serverPort(const QString &path) const
+{
+    QFile f(path + QStringLiteral("/server.properties"));
+    if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        while (!f.atEnd()) {
+            const QString line = QString::fromUtf8(f.readLine()).trimmed();
+            if (line.startsWith(QStringLiteral("server-port="))) {
+                bool ok = false;
+                const int p = line.mid(12).trimmed().toInt(&ok);
+                if (ok && p > 0 && p < 65536)
+                    return p;
+            }
+        }
+    }
+    return 25565;
+}
+
+bool ServerController::isPortFree(int port) const
+{
+    if (port <= 0 || port >= 65536)
+        return false;
+    QTcpServer probe;
+    const bool ok = probe.listen(QHostAddress::AnyIPv4, quint16(port));
+    probe.close();
+    return ok;
+}
+
+int ServerController::assignFreePort(const QString &path)
+{
+    const int base = serverPort(path);
+    QSet<int> used;
+    for (auto it = m_ports.cbegin(); it != m_ports.cend(); ++it)
+        used.insert(it.value());
+    for (int p = base + 1; p < base + 500 && p < 65536; ++p) {
+        if (used.contains(p) || !isPortFree(p))
+            continue;
+        QVariantMap m;
+        m.insert(QStringLiteral("server-port"), QString::number(p));
+        writeProperties(path, m);
+        return p;
+    }
+    return -1;
 }
 
 QString ServerController::readServerJavaPath(const QString &path) const

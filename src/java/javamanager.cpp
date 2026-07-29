@@ -407,6 +407,18 @@ QString JavaManager::javaPathFor(const QString &mcVersion)
 
 void JavaManager::javaPathForAsync(int feature, std::function<void(const QString &)> cb)
 {
+    // 显式 installBase（每台服务器独立目录）：以本地目录为权威，绝不跨服务器复用其他服的缓存路径；
+    // 本地未安装时只探测系统/PATH（不含其他服务器目录），仍为空才由 ensure 下载到本目录。
+    if (!m_installBase.isEmpty()) {
+        const QString inst = installedJava(feature);
+        if (!inst.isEmpty()) { m_javaCache[feature] = inst; cb(inst); return; }
+        detectJava(feature, [this, feature, cb](const QString &r) {
+            if (!r.isEmpty()) { m_javaCache[feature] = r; emit javaResolved(feature, r); }
+            cb(r);
+        });
+        return;
+    }
+    // 共享/管理层模式：用全局缓存避免重复探测
     auto it = m_javaCache.constFind(feature);
     if (it != m_javaCache.constEnd() && !it.value().isEmpty()) { cb(it.value()); return; }
     const QString inst = installedJava(feature);

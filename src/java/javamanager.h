@@ -75,6 +75,8 @@ public:
     qreal progress() const;
     QString statusText() const;
     QString errorText() const;
+    // 同步查询某特性版本已就绪的 JDK 路径（命中缓存/已安装目录时立即返回，否则返回空、不触发下载）
+    QString javaPathFor(int feature);
     // 是否存在尚未清理的临时 Java 目录（下载中心 / 安装器用完即删后会变回 false）
     bool hasTempJava() const;
 
@@ -100,7 +102,6 @@ private:
     // 扫描常见安装目录 + Minecraft 运行时，异步回调 (匹配到的 java 路径，空=未找到)
     void scanCommonJava(int feature, std::function<void(const QString &)> cb);
     // 同步返回：优先缓存/已安装目录（毫秒级，绝不阻塞）；未知时触发后台异步探测并先返回空
-    QString javaPathFor(int feature);
     // 异步权威解析：已安装/已缓存则立即回调，否则完整探测后回调（用于"是否需要下载"的判定）
     void javaPathForAsync(int feature, std::function<void(const QString &)> cb);
     // 后台异步刷新某 feature 的缓存（幂等：同一 feature 不重复探测）

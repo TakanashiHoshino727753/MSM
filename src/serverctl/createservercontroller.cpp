@@ -1404,20 +1404,28 @@ QString CreateServerController::findLoaderJar(const QString &dir, const QString 
     return good.first();
 }
 
-// 统一解析/按需安装 Java：优先复用已安装 Java，缺失时由 JavaManager 按 MC 版本自动下载安装。
+// 统一解析/按需安装 Java：每台服务器持有独立 JDK（目录内 jvm-{feature}/），
+// 缺失时由 JavaManager 下载安装到本服务器目录，绝不跨服务器复用其他服的缓存路径。
 void CreateServerController::resolveJava(std::function<void(const QString &)> cb)
 {
-    const QString have = m_java ? m_java->javaPathFor(m_currentVersion) : QString();
-    if (!have.isEmpty()) {
-        cb(have);
+    const int feature = JavaManager::requiredFeature(m_currentVersion);
+    const QString localDir = m_saveDir + QStringLiteral("/jvm-") + QString::number(feature);
+    // 先设 installBase 为本服务器目录，确保后续解析/下载都针对本目录
+    if (m_java)
+        m_java->setInstallBase(localDir);
+    const QString localJava = localDir + QStringLiteral("/bin/java.exe");
+    if (QFile::exists(localJava)) {
+        if (m_java)
+            m_java->setInstallBase(QString());   // 复用本目录既有 JDK，无需下载，复位避免泄漏
+        cb(localJava);
         return;
     }
     if (m_java) {
         setStatus(QStringLiteral("正在准备 Java 运行环境（按版本自动下载）…"));
-        // 让 Java 装到本服务器目录下的 jvm-{feature}/，与服务端核心同目录、不需要管理层
-        const int feature = JavaManager::requiredFeature(m_currentVersion);
-        m_java->setInstallBase(m_saveDir + QStringLiteral("/jvm-") + QString::number(feature));
+        // 下载到本服务器目录下的 jvm-{feature}/，与服务端核心同目录、不需要管理层
         m_java->ensure(m_currentVersion, [this, cb](bool ok, QString path) {
+            if (m_java)
+                m_java->setInstallBase(QString());   // 复位，避免影响下载中心等其他调用
             if (!ok) {
                 setBusy(false);
                 setStatus(QStringLiteral("自动准备 Java 失败：") + m_java->errorText()

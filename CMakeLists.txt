@@ -69,6 +69,7 @@ qt_add_qml_module(MinecraftServerManager
         qml/CreateServerDialog.qml
         qml/ImportModpackDialog.qml
         qml/ControllerSettings.qml
+        qml/ProxyPage.qml
         qml/ComboBoxEx.qml
         qml/ComboBoxEditable.qml
         qml/AccentButton.qml
@@ -95,6 +96,7 @@ target_link_libraries(MinecraftServerManager PRIVATE
     msm_settings
     msm_webui
     msm_bot
+    msm_proxy
 )
 
 install(TARGETS MinecraftServerManager

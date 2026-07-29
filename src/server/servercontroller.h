@@ -61,6 +61,14 @@ public:
     // 运行中服务器的资源占用快照（CPU%/内存MB/在线人数/运行时长）
     Q_INVOKABLE QVariantList runningServerUsages() const;
 
+    // ---- 多开端口管理 ----
+    // 读取 server.properties 中的 server-port（缺失/非法时返回默认 25565）
+    Q_INVOKABLE int serverPort(const QString &path) const;
+    // 探测端口是否空闲（尝试绑定 0.0.0.0:port）
+    Q_INVOKABLE bool isPortFree(int port) const;
+    // 为该服务器自动分配一个空闲端口并写回 server.properties；返回新端口（失败返回 -1）
+    Q_INVOKABLE int assignFreePort(const QString &path);
+
 signals:
     // 某服务器新增一行控制台输出（QML 用于增量追加，避免整段重绘）
     void consoleAppended(const QString &name, const QString &line);
@@ -72,6 +80,9 @@ signals:
     void runningCountChanged();
     // 服务器异常退出（崩溃 / 非 0 退出且非主动强关），携带尾部日志供上报
     void serverError(const QString &name, const QString &logTail);
+    // 启动前发现端口冲突（holder=占用端口的另一台受管服务器名；为空表示被系统其他程序占用）。
+    // 收到该信号说明本次 start 已被取消，由 UI 决定是否 assignFreePort 后重新 start。
+    void portConflict(const QString &name, const QString &path, int port, const QString &holder);
 
 private:
     // 读取并解析进程的标准输出/错误，逐行发出 consoleAppended 并提取玩家名单
@@ -91,6 +102,8 @@ private:
     QHash<QString, QString> m_consoleCache;
     // name -> 启动时刻（毫秒），用于计算运行时长
     QHash<QString, qint64> m_startTime;
+    // name -> 启动时占用的 server-port（用于多开端口冲突检测）
+    QHash<QString, int> m_ports;
     // name -> 上一次采样的 (CPU 时间, 墙钟时间)，用于增量计算 CPU 占用率
     mutable QHash<QString, QPair<qint64, qint64>> m_usageSamples;
     // 被主动 forceStop 的服务器：退出时不视为报错

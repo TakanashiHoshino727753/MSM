@@ -45,6 +45,7 @@
 #include "settingscontroller.h"
 #include "webuiserver.h"
 #include "botcontroller.h"
+#include "proxycontroller.h"
 
 #ifdef Q_OS_WIN
 #define WIN32_LEAN_AND_MEAN
@@ -736,6 +737,9 @@ int main(int argc, char *argv[])
                      &botController, [&](const QString &name, const QString &tail) {
                          botController.pushError(name, tail);
                      });
+
+    // Velocity 反向代理聚合：多台同时运行的服务器共用一个入口端口
+    ProxyController proxyController(&serverManager, &serverController, &javaManager);
     // QML 引擎放在所有后端控制器之后创建：退出时引擎最先析构，先销毁 QML 对象树；
     // 此时所有上下文属性对象（控制器）尚未析构，绑定求值访问到的仍是有效对象，
     // 避免退出时大量 "Cannot read property 'xxx' of null" 报错。
@@ -761,6 +765,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(QStringLiteral("settingsController"), &settingsController);
     engine.rootContext()->setContextProperty(QStringLiteral("webuiServer"), &webuiServer);
     engine.rootContext()->setContextProperty(QStringLiteral("botController"), &botController);
+    engine.rootContext()->setContextProperty(QStringLiteral("proxyController"), &proxyController);
 
     QObject::connect(&installCoordinator, &InstallCoordinator::status,
                      &downloadCatalog, &DownloadCatalog::setStatus);

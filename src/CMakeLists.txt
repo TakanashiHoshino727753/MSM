@@ -39,7 +39,7 @@ add_library(msm_server STATIC
     server/servercontroller.h
     server/servercontroller.cpp
 )
-target_link_libraries(msm_server PUBLIC Qt6::Core Qt6::Qml Psapi)
+target_link_libraries(msm_server PUBLIC Qt6::Core Qt6::Qml Qt6::Network Psapi)
 target_include_directories(msm_server PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/server)
 
 # ---- 服务器创建 / 模组包导入（依赖 download + server + java）----
@@ -59,6 +59,14 @@ add_library(msm_settings STATIC
 )
 target_link_libraries(msm_settings PUBLIC Qt6::Core)
 target_include_directories(msm_settings PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/settings)
+
+# ---- Velocity 反向代理聚合（多服务器统一入口端口，依赖 server 读取端口/服务器列表）----
+add_library(msm_proxy STATIC
+    proxy/proxycontroller.h
+    proxy/proxycontroller.cpp
+)
+target_link_libraries(msm_proxy PUBLIC Qt6::Core Qt6::Network msm_server)
+target_include_directories(msm_proxy PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/proxy)
 
 # ---- QQ 机器人控制（独立管理 NapCat / NoneBot 外部进程，与 WebUI 解耦）----
 add_library(msm_bot STATIC
