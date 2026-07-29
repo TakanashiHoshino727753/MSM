@@ -5,6 +5,8 @@
 #include <QColor>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QSslServer>
+#include <QSslConfiguration>
 #include <QMap>
 #include <QByteArray>
 #include <QJsonObject>
@@ -18,6 +20,7 @@ class ModpackImporter;
 class SettingsController;
 class SystemMonitor;
 class JavaManager;
+class BotController;
 
 // 本地 WebUI 服务：在 0.0.0.0:端口 监听 HTTP，提供与本地端功能/设计一致的单页管理面板。
 // 除“关闭 WebUI”这类有害设置外，其余功能与本地端保持一致；弹窗（创建/导入）改为标签页切换。
@@ -27,6 +30,7 @@ class WebUIServer : public QObject
     Q_PROPERTY(bool running READ isRunning NOTIFY runningChanged)
     Q_PROPERTY(int port READ port NOTIFY portChanged)
     Q_PROPERTY(QString error READ error NOTIFY errorChanged)
+    Q_PROPERTY(bool https READ isHttps NOTIFY runningChanged)   // 是否以 HTTPS 提供
 
 public:
     explicit WebUIServer(ServerManager *sm,
@@ -42,13 +46,18 @@ public:
     bool isRunning() const { return m_server && m_server->isListening(); }
     int port() const { return m_port; }
     QString error() const { return m_error; }
+    bool isHttps() const { return m_https; }
 
     void setPort(int p);
     void setEnabled(bool on);
+    Q_INVOKABLE void rebind();   // 重新监听（暴露范围/证书变化时）
     bool enabled() const { return m_enabled; }
 
     // 由本地端主题变化同步调用，使 WebUI 与本地端主题保持一致
     Q_INVOKABLE void setThemeState(bool dark, const QColor &accent);
+
+    // 接入本地机器人控制器，使 WebUI 可控制/查看本地插件（QQ 机器人）状态
+    void setBotController(BotController *bot);
 
 signals:
     void runningChanged();
@@ -63,11 +72,19 @@ private slots:
 
 private:
     void dispatch(const QString &method, const QString &path, const QString &query,
-                  const QByteArray &body, QTcpSocket *sock);
+                  const QMap<QString, QString> &hdr, const QByteArray &body, QTcpSocket *sock);
     void sendJson(QTcpSocket *sock, const QJsonObject &obj, int code = 200);
     void sendHtml(QTcpSocket *sock, const QString &html);
     void sendText(QTcpSocket *sock, const QString &text, const QString &ct);
     void sendStatus(QTcpSocket *sock, int code, const QString &msg);
+
+    // 安全：TLS 与令牌
+    bool startListen();                 // 配置 TLS 并按设置绑定地址开始监听
+    void relisten();                    // 重新监听（端口/暴露范围变化时）
+    bool setupTls();                    // 配置 SSL（自签或用户证书），成功返回 true
+    void ensureSelfSignedCert(const QString &cerPath);  // 自动生成自签证书进 Windows 存储
+    QString certDir() const;            // 自签证书 .cer 存放目录
+    bool checkToken(const QMap<QString, QString> &hdr, const QMap<QString, QString> &q) const;
 
     // 各业务处理
     QJsonObject statePayload();
@@ -89,12 +106,15 @@ private:
     QObject *m_monitor = nullptr;
     JavaManager *m_java = nullptr;
     DownloadManager *m_dm = nullptr;   // 底层下载管理器，供 WebUI 暴露统一的“下载任务”列表
+    BotController *m_bot = nullptr;     // 本地机器人控制器（本地插件），用于 WebUI 控制/状态展示
 
     int m_port = 25575;
     bool m_enabled = false;
     bool m_dark = true;
     QColor m_accent = QColor(QStringLiteral("#4f8cff"));
     QString m_error;
+    bool m_https = false;      // 当前是否以 HTTPS 提供
+    QSslConfiguration m_sslConf;   // HTTPS 时的 SSL 配置（明文模式不使用）
 
     QMap<QTcpSocket *, QByteArray> m_buffers;
 };

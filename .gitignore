@@ -82,3 +82,8 @@ CMakeLists.txt.user*
 .uic/
 /build*/
 /.qtcreator/
+
+# 部署产物（windeployqt 输出、临时诊断脚本、打包 zip）
+/deploy/
+*_windeploy.log
+msm.log

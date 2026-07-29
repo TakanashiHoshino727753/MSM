@@ -13,40 +13,110 @@
 from nonebot import on_message, get_driver, get_bots
 from nonebot.adapters.onebot.v11 import Bot, MessageEvent
 from nonebot.log import logger
-import httpx
 import asyncio
 import json
+try:
+    import tomllib
+except ImportError:  # Python < 3.11
+    tomllib = None
 import websockets
 import threading
+import urllib.parse
+import urllib.request
+import urllib.error
+from pathlib import Path
 
 driver = get_driver()
 config = driver.config
 
+def _load_msm_config():
+    """直接读取 nonebot 目录下的 pyproject.toml 获取 msm_* 配置。
+
+    注意：NoneBot 的 driver.config 并不会把 [tool.nonebot] 里的自定义键（msm_token 等）
+    暴露为属性，直接 getattr(config, "msm_token") 会得到空串，导致带令牌的 WS 被 MSM
+    以 401 拒绝。因此这里直接解析 pyproject.toml（最可靠），仅在解析失败时回退到 config。
+    """
+    tb = {}
+    try:
+        _pf = Path(__file__).resolve().parent.parent / "pyproject.toml"
+        if _pf.exists():
+            with open(_pf, "rb") as _f:
+                tb = tomllib.load(_f).get("tool", {}).get("nonebot", {})
+    except Exception as e:  # noqa: BLE001
+        logger.warning("msm_control: 读取 pyproject.toml 失败，回退到 driver.config: %s", e)
+
+    def _get(key, default):
+        v = tb.get(key)
+        if v is None:
+            v = getattr(config, key, default)
+        return v if v is not None else default
+
+    raw_allowed = _get("msm_allowed_commands", "")
+    if isinstance(raw_allowed, str):
+        allowed = [x.strip() for x in raw_allowed.split(",") if x.strip()]
+    else:
+        allowed = [str(x).strip() for x in raw_allowed if str(x).strip()]
+    if not allowed:
+        allowed = ["op", "deop", "gamemode", "tp", "give", "kick", "ban", "pardon",
+                   "whitelist", "time", "weather", "say", "tell", "msg", "list", "stop"]
+
+    raw_admins = _get("msm_admins", "")
+    if isinstance(raw_admins, str):
+        admins = [x.strip() for x in raw_admins.split(",") if x.strip()]
+    else:
+        admins = [str(x).strip() for x in raw_admins if str(x).strip()]
+
+    return {
+        "msm_control_url": str(_get("msm_control_url", "http://127.0.0.1:25585")
+                               or "http://127.0.0.1:25585").strip().rstrip("/")
+                               or "http://127.0.0.1:25585",
+        "msm_token": str(_get("msm_token", "") or "").strip(),
+        "msm_admin": str(_get("msm_admin", "") or "").strip(),
+        "msm_notify_targets": str(_get("msm_notify_targets", "") or "").strip(),
+        "msm_allowed_commands": allowed,
+        "msm_admins": admins,
+    }
+
+
+_CFG = _load_msm_config()
 # MSM 内置控制通道（独立于 WebUI）
-CONTROL_URL = (getattr(config, "msm_control_url", "http://127.0.0.1:25585") or "http://127.0.0.1:25585").rstrip("/")
+CONTROL_URL = _CFG["msm_control_url"]
+# 控制通道访问令牌（与 WebUI 共用），非本机连接必须携带，否则 25585 拒绝
+TOKEN = _CFG["msm_token"]
 # 管理员私信 QQ 号：用于接收服务器异常退出日志
-ADMIN = str(getattr(config, "msm_admin", "") or "").strip()
+ADMIN = _CFG["msm_admin"]
 # 占用概览等“all”推送目标，格式 group:群号,private:QQ号
 NOTIFY_TARGETS = []
-for _item in (getattr(config, "msm_notify_targets", "") or "").split(","):
+for _item in _CFG["msm_notify_targets"].split(","):
     _item = _item.strip()
     if not _item or ":" not in _item:
         continue
     _t, _id = _item.split(":", 1)
     NOTIFY_TARGETS.append((_t.strip().lower(), _id.strip()))
 # 转发到 MC 的控制台指令白名单
-ALLOWED = set(getattr(config, "msm_allowed_commands",
-                      ["op", "deop", "gamemode", "tp", "give", "kick", "ban", "pardon",
-                       "whitelist", "time", "weather", "say", "tell", "msg", "list", "stop"]) or [])
+ALLOWED = set(_CFG["msm_allowed_commands"])
 # 允许使用敏感指令的 QQ 号；留空=不限制
-ADMINS = set(str(x).strip() for x in (getattr(config, "msm_admins", "") or []) if str(x).strip())
+ADMINS = set(_CFG["msm_admins"])
 
 
 def _api(method: str, path: str, **kwargs):
-    """请求 MSM 控制通道，返回解析后的 JSON（失败返回带 success=False 的字典）。"""
+    """请求 MSM 控制通道，返回解析后的 JSON（失败返回带 success=False 的字典）。
+
+    使用标准库 urllib（无需额外依赖 httpx），同步调用由调用方放入线程。
+    """
     try:
-        r = httpx.request(method, CONTROL_URL + path, timeout=10, **kwargs)
-        return r.json()
+        headers = dict(kwargs.pop("headers", {}))
+        if TOKEN:
+            headers.setdefault("Authorization", "Bearer " + TOKEN)
+        payload = kwargs.pop("json", None)
+        body = json.dumps(payload).encode("utf-8") if payload is not None else None
+        if body is not None:
+            headers.setdefault("Content-Type", "application/json")
+        req = urllib.request.Request(
+            CONTROL_URL + path, data=body, headers=headers, method=method
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
     except Exception as e:  # noqa: BLE001
         logger.warning("msm_control: API %s %s 失败: %s", method, path, e)
         return {"success": False, "message": f"连接 MSM 控制通道失败：{e}"}
@@ -333,12 +403,33 @@ async def _send_msg(bot, target_type, target_id, message):
         logger.warning("msm_control: 推送发送失败 %s->%s: %s", target_type, target_id, e)
 
 
+async def _set_nick(bot, nick):
+    try:
+        await bot.call_api("set_qq_profile", nickname=nick)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("msm_control: 更新昵称失败: %s", e)
+
+
 async def _dispatch_push(data):
     """处理 MSM 经由 WebSocket 推来的消息，转发到 QQ。
 
     本函数在后台线程的事件循环内运行，故发送 QQ 需借助 run_coroutine_threadsafe
     调度到 nonebot 主事件循环（_nb_loop，由首个 QQ 消息到来时捕获）。
     """
+    # 状态推送：{type:"nick", nick:"MSM丨CPU23%丨内存6.2/16G丨1服"}
+    # 不发消息刷屏，而是把设备占用写进机器人 QQ 昵称。
+    if (data.get("type") or "").lower() == "nick":
+        nick = (data.get("nick") or "").strip()
+        bots = get_bots()
+        if not nick or not bots or _nb_loop is None:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                _set_nick(next(iter(bots.values())), nick), _nb_loop
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("msm_control: 昵称更新调度失败: %s", e)
+        return
     message = (data.get("message") or "").strip()
     if not message:
         return
@@ -378,6 +469,8 @@ async def _ws_loop():
         ws_url = "ws://" + base[7:] + "/ws"
     else:
         ws_url = "ws://" + base + "/ws"
+    if TOKEN:
+        ws_url += "?token=" + urllib.parse.quote(TOKEN, safe="")
     logger.info("msm_control: 连接 MSM 控制通道(WS) %s", ws_url)
     while True:
         try:

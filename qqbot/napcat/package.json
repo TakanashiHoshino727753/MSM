@@ -1,6 +1,5 @@
 {
   "name": "napcat-plugin-msm",
-  "plugin": "MSM 控制器",
   "version": "1.0.0",
   "description": "把 QQ 消息桥接到 MSM 内置控制通道(25585)，直接控制 Minecraft 服务器",
   "author": "MSM",
@@ -11,6 +10,8 @@
     "dev": "vite build --watch"
   },
   "napcat": {
+    "type": "extension",
+    "name": "napcat-plugin-msm",
     "tags": ["工具", "游戏", "Minecraft"],
     "minVersion": "4.14.0",
     "homepage": "https://github.com/yourname/napcat-plugin-msm"

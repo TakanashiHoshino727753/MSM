@@ -22,6 +22,8 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS
     Widgets
     Network
     Svg
+    WebSockets
+    HttpServer
 )
 
 qt_standard_project_setup(REQUIRES 6.8)
@@ -68,6 +70,7 @@ qt_add_qml_module(MinecraftServerManager
         qml/ImportModpackDialog.qml
         qml/ControllerSettings.qml
         qml/ComboBoxEx.qml
+        qml/ComboBoxEditable.qml
         qml/AccentButton.qml
         qml/SubtleButton.qml
         qml/PropsNames.js
@@ -83,6 +86,7 @@ target_link_libraries(MinecraftServerManager PRIVATE
     Qt6::Widgets
     Qt6::Network
     Qt6::Svg
+    Qt6::WebSockets
     msm_core
     msm_download
     msm_java
@@ -90,6 +94,7 @@ target_link_libraries(MinecraftServerManager PRIVATE
     msm_serverctl
     msm_settings
     msm_webui
+    msm_bot
 )
 
 install(TARGETS MinecraftServerManager

@@ -5,6 +5,15 @@
 #include <QVariantMap>
 #include <QHash>
 #include <QProcess>
+#include <QSet>
+#include <QPair>
+#include <QDateTime>
+
+#ifdef Q_OS_WIN
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <psapi.h>
+#endif
 
 // 服务器管理逻辑层（C++）：负责单个 Minecraft 服务端进程的
 // 启动 / 停止 / 强制停止 / 发送控制台指令，并实时捕获控制台输出、
@@ -49,6 +58,8 @@ public:
     Q_INVOKABLE QString readServerJavaPath(const QString &path) const;
     // 为该服务器单独设置/清空 Java 路径（写入 eula/启动配置或单独记录文件）
     Q_INVOKABLE void setServerJavaPath(const QString &path, const QString &javaPath);
+    // 运行中服务器的资源占用快照（CPU%/内存MB/在线人数/运行时长）
+    Q_INVOKABLE QVariantList runningServerUsages() const;
 
 signals:
     // 某服务器新增一行控制台输出（QML 用于增量追加，避免整段重绘）
@@ -59,6 +70,8 @@ signals:
     void playersChanged(const QString &name, const QStringList &players);
     // 运行服务器数量变化
     void runningCountChanged();
+    // 服务器异常退出（崩溃 / 非 0 退出且非主动强关），携带尾部日志供上报
+    void serverError(const QString &name, const QString &logTail);
 
 private:
     // 读取并解析进程的标准输出/错误，逐行发出 consoleAppended 并提取玩家名单
@@ -76,4 +89,10 @@ private:
     QHash<QString, Proc> m_procs;
     // name -> 历史控制台文本；进程结束后仍保留，供用户事后查看日志
     QHash<QString, QString> m_consoleCache;
+    // name -> 启动时刻（毫秒），用于计算运行时长
+    QHash<QString, qint64> m_startTime;
+    // name -> 上一次采样的 (CPU 时间, 墙钟时间)，用于增量计算 CPU 占用率
+    mutable QHash<QString, QPair<qint64, qint64>> m_usageSamples;
+    // 被主动 forceStop 的服务器：退出时不视为报错
+    QSet<QString> m_intentionalKill;
 };

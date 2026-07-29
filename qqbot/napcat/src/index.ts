@@ -1,4 +1,7 @@
 import type { PluginModule } from "napcat-types";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 export { plugin_config_ui } from "./config";
 
 // =============================================================================
@@ -6,7 +9,7 @@ export { plugin_config_ui } from "./config";
 //
 // 通信模型（单通道，与 WebUI / NoneBot 解耦）：
 //   QQ 消息 ──NapCat(本插件)──HTTP──> MSM 控制通道(127.0.0.1:25585)
-//   MSM ──WebSocket(25585 /ws)──> 本插件 ──> QQ（占用概览 / 异常日志 / 指令反馈）
+//   MSM ──WebSocket(25585 /ws)──> 本插件 ──> QQ（昵称状态 / 异常日志 / 指令反馈）
 //
 // 编码说明：全程使用 JS 字符串(UTF-16) + 全局 fetch/WebSocket(UTF-8)。
 //   QQ 中文/emoji 在 NapCat 侧已是标准 UTF-8 字符串，发给 MSM 时 JSON 自动按
@@ -20,6 +23,7 @@ interface Cfg {
   msm_admins: string;
   msm_admin: string;
   msm_notify_targets: string;
+  msm_token: string;   // 控制通道访问令牌（与 WebUI 共用），非本机连接必须携带
 }
 
 const DEFAULT_CFG: Cfg = {
@@ -30,6 +34,7 @@ const DEFAULT_CFG: Cfg = {
   msm_admins: "",
   msm_admin: "",
   msm_notify_targets: "",
+  msm_token: "",
 };
 
 let cfg: Cfg = { ...DEFAULT_CFG };
@@ -47,12 +52,24 @@ function log(level: "info" | "warn" | "error", ...args: any[]): void {
 async function api(method: string, path: string, body?: any): Promise<any> {
   const url = cfg.msm_control_url.replace(/\/+$/, "") + path;
   try {
+    const headers: any = { "Content-Type": "application/json" };
+    if (cfg.msm_token) headers["Authorization"] = "Bearer " + cfg.msm_token;
     const init: any = {
       method,
-      headers: { "Content-Type": "application/json" },
+      headers,
     };
     if (body !== undefined) init.body = JSON.stringify(body);
     const resp = await fetch(url, init);
+    if (!resp.ok) {
+      let detail = "";
+      try {
+        const j = await resp.json();
+        detail = j.message || JSON.stringify(j);
+      } catch {
+        detail = await resp.text();
+      }
+      return { success: false, status: resp.status, message: detail };
+    }
     return await resp.json();
   } catch (e: any) {
     const detail = e && e.message ? e.message : String(e);
@@ -159,6 +176,10 @@ async function h_servers(ctx: any, event: any) {
 async function h_players(ctx: any, event: any, rest: string) {
   const [name] = await pickName(rest);
   const data = await api("GET", "/api/players" + (name ? `?name=${name}` : ""));
+  if (!data || data.success === false) {
+    await send(ctx, event, "查询失败：" + (data && data.message ? data.message : "未知错误"));
+    return;
+  }
   const pl = data.players || [];
   await send(ctx, event, pl.length ? "在线：" + pl.join("、") : "无在线玩家");
 }
@@ -342,6 +363,23 @@ async function dispatch(ctx: any, event: any, text: string): Promise<void> {
 
 // ---------- MSM -> QQ 推送（WS 长连接） ----------
 async function dispatchPush(data: any): Promise<void> {
+  // 状态推送：{type:"nick", nick:"MSM丨CPU23%丨内存6.2/16G丨1服"}
+  // 不发消息刷屏，而是把设备占用写进机器人 QQ 昵称。
+  if ((data.type || "").toString().toLowerCase() === "nick") {
+    const nick = (data.nick || "").toString().trim();
+    if (!nick || !ctxRef) return;
+    try {
+      await ctxRef.actions.call(
+        "set_qq_profile",
+        { nickname: nick },
+        ctxRef.adapterName,
+        ctxRef.pluginManager.config
+      );
+    } catch (e: any) {
+      log("warn", `更新昵称失败: ${e && e.message ? e.message : e}`);
+    }
+    return;
+  }
   const message = (data.message || "").toString().trim();
   if (!message || !ctxRef) return;
   const scope = (data.scope || "all").toString().toLowerCase();
@@ -382,7 +420,7 @@ function wsLoop(): void {
     .replace(/\/+$/, "")
     .replace(/^https:\/\//, "wss://")
     .replace(/^http:\/\//, "ws://");
-  const wsUrl = base + "/ws";
+  const wsUrl = base + "/ws" + (cfg.msm_token ? "?token=" + encodeURIComponent(cfg.msm_token) : "");
   log("info", `连接 MSM 控制通道(WS) ${wsUrl}`);
   try {
     const ws: any = new WebSocket(wsUrl);
@@ -418,12 +456,81 @@ function applyConfig(incoming: any): void {
   }
 }
 
+// ---------- 配置持久化 ----------
+// NapCat 调用 plugin_set_config 时参数顺序为 (ctx, config)（部分版本为 (config)）。
+// 从参数列表里挑出「最像配置」的那个：包含任一 DEFAULT_CFG 键的普通对象。
+function pickConfigArg(args: any[]): any {
+  for (const a of args) {
+    if (a && typeof a === "object" && !Array.isArray(a)) {
+      for (const k of Object.keys(DEFAULT_CFG)) {
+        if (k in a) return a;
+      }
+    }
+  }
+  return null;
+}
+
+// 插件自身目录下的 config.json（NapCat 不替第三方插件持久化时的兜底存储）
+const PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url));
+const LOCAL_CONFIG = path.join(PLUGIN_DIR, "config.json");
+
+// 候选配置文件：优先 NapCat 提供的 ctx.configPath，其次插件目录内 config.json
+function configFiles(): string[] {
+  const out: string[] = [];
+  const p = ctxRef && (ctxRef.configPath || ctxRef.config_path);
+  if (typeof p === "string" && p)
+    out.push(p.endsWith(".json") ? p : path.join(p, "config.json"));
+  out.push(LOCAL_CONFIG);
+  return out;
+}
+
+function loadConfigFromDisk(): void {
+  // 逆序应用：让优先级高的（NapCat configPath）最后覆盖
+  const files = configFiles().reverse();
+  for (const f of files) {
+    try {
+      if (fs.existsSync(f)) applyConfig(JSON.parse(fs.readFileSync(f, "utf-8")));
+    } catch (e: any) {
+      log("warn", `读取配置失败 ${f}: ${e && e.message ? e.message : e}`);
+    }
+  }
+}
+
+function saveConfigToDisk(): void {
+  const text = JSON.stringify(cfg, null, 2);
+  for (const f of configFiles()) {
+    try {
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(f, text, "utf-8");
+    } catch (e: any) {
+      log("warn", `保存配置失败 ${f}: ${e && e.message ? e.message : e}`);
+    }
+  }
+}
+
+function onConfigUpdated(oldUrl: string): void {
+  // 控制通道地址变化时重建 WS 长连接
+  if (cfg.msm_control_url !== oldUrl) {
+    if (wsRef) {
+      try { wsRef.close(); } catch (_) { /* noop */ }
+      wsRef = null;
+    }
+    if (wsTimer) {
+      clearTimeout(wsTimer);
+      wsTimer = null;
+    }
+    wsLoop();
+  }
+}
+
 // ---------- 生命周期 ----------
 export const plugin_init: PluginModule["plugin_init"] = async (ctx: any, ...rest: any[]) => {
   ctxRef = ctx;
-  // NapCat 可能在 init 时通过第二参数或 ctx 注入已保存配置
-  const injected = rest[0] || (ctx && ctx.config) || null;
+  // 优先级：默认值 < 磁盘上已保存的配置 < NapCat 注入的配置
+  loadConfigFromDisk();
+  const injected = pickConfigArg([...rest, ctx && ctx.config]);
   applyConfig(injected);
+  saveConfigToDisk();
   log("info", `MSM 插件已加载，控制通道=${cfg.msm_control_url}`);
   wsLoop();
 };
@@ -451,24 +558,25 @@ export const plugin_cleanup: PluginModule["plugin_cleanup"] = (ctx: any) => {
 
 export const plugin_get_config: PluginModule["plugin_get_config"] = () => ({ ...cfg });
 
-export const plugin_set_config: PluginModule["plugin_set_config"] = (config: any) => {
-  applyConfig(config);
+// 注意：NapCat 调用时首参往往是 ctx（(ctx, config)），不能假定 config 在第一位，
+// 否则会把 ctx 当成配置、真正的配置被丢弃 —— 这正是"配置保存不了"的根因。
+export const plugin_set_config: PluginModule["plugin_set_config"] = (...args: any[]) => {
+  const config = pickConfigArg(args);
+  if (config) {
+    const oldUrl = cfg.msm_control_url;
+    applyConfig(config);
+    saveConfigToDisk();
+    onConfigUpdated(oldUrl);
+    log("info", "配置已更新并保存");
+  }
   return true;
 };
 
-export const plugin_on_config_change: PluginModule["plugin_on_config_change"] = (config: any) => {
+export const plugin_on_config_change: PluginModule["plugin_on_config_change"] = (...args: any[]) => {
+  const config = pickConfigArg(args);
+  if (!config) return;
   const oldUrl = cfg.msm_control_url;
   applyConfig(config);
-  // 控制通道地址变化时重建 WS 长连接
-  if (cfg.msm_control_url !== oldUrl) {
-    if (wsRef) {
-      try { wsRef.close(); } catch (_) { /* noop */ }
-      wsRef = null;
-    }
-    if (wsTimer) {
-      clearTimeout(wsTimer);
-      wsTimer = null;
-    }
-    wsLoop();
-  }
+  saveConfigToDisk();
+  onConfigUpdated(oldUrl);
 };

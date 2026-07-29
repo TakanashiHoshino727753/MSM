@@ -87,6 +87,11 @@ public:
             if (s->name() == name) return s;
         return nullptr;
     }
+    Q_INVOKABLE int indexOfServer(const QString &name) const {
+        for (int i = 0; i < m_servers.size(); ++i)
+            if (m_servers.at(i)->name() == name) return i;
+        return -1;
+    }
 
     Q_INVOKABLE void addServer(const QString &name, const QString &version,
                                const QString &type = QString(),

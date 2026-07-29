@@ -44,6 +44,7 @@
 #include "javamanager.h"
 #include "settingscontroller.h"
 #include "webuiserver.h"
+#include "botcontroller.h"
 
 #ifdef Q_OS_WIN
 #define WIN32_LEAN_AND_MEAN
@@ -53,6 +54,49 @@
 #include <cstdio>
 #include <QDirIterator>
 #include <QDebug>
+#include <QFile>
+#include <QDateTime>
+#include <QMessageLogContext>
+
+// 文件日志：当 exe 同目录存在 msm.log.enabled 标记文件时，把所有 Qt/QML 日志
+// 同时追加写入 msm.log。用于无控制台（schtasks/session 0）场景下的排错。
+static int  g_logState = 0; // 0=未判定 1=启用 2=禁用
+static QFile g_logFile;
+static void msmMessageOutput(QtMsgType type, const QMessageLogContext &ctx, const QString &msg)
+{
+    if (g_logState == 0) {
+        QString dir = QCoreApplication::instance()
+                          ? QCoreApplication::applicationDirPath()
+                          : QDir::currentPath();
+        if (QFile::exists(dir + QStringLiteral("/msm.log.enabled")))
+            g_logState = 1;
+        else
+            g_logState = 2;
+    }
+    if (g_logState == 1) {
+        if (!g_logFile.isOpen()) {
+            g_logFile.setFileName(QCoreApplication::applicationDirPath()
+                                  + QStringLiteral("/msm.log"));
+            (void)g_logFile.open(QIODevice::Append | QIODevice::Text);
+        }
+        const char *level = "?";
+        switch (type) {
+            case QtDebugMsg: level = "DBG"; break;
+            case QtInfoMsg:  level = "INF"; break;
+            case QtWarningMsg: level = "WRN"; break;
+            case QtCriticalMsg: level = "CRT"; break;
+            case QtFatalMsg: level = "FTL"; break;
+        }
+        QByteArray line = QDateTime::currentDateTime()
+                              .toString(QStringLiteral("yyyy-MM-dd hh:mm:ss.zzz")).toLocal8Bit();
+        line += ' '; line += level; line += ' ';
+        if (ctx.category && ctx.category[0]) { line += ctx.category; line += ' '; }
+        line += msg.toLocal8Bit(); line += '\n';
+        g_logFile.write(line);
+        g_logFile.flush();
+    }
+    qt_message_output(type, ctx, msg);
+}
 
 // 全局语言切换：本地端 QML 已全面使用 qsTr()，此处用一个读取 JSON 词典的自定义
 // 翻译器，在运行时按 settingsController.language 安装/卸载，实现"简体中文 / English"实时互译。
@@ -601,6 +645,7 @@ static int runConsoleDiagnostics(int argc, char *argv[])
 
 int main(int argc, char *argv[])
 {
+    qInstallMessageHandler(msmMessageOutput);
     // 使用 Windows 原生 SChannel 作为 TLS 后端（无需额外 OpenSSL DLL），
     // 修复发布/运行目录下因找不到 OpenSSL 而"所有 HTTPS 请求失败（网络异常）"的问题。
     qputenv("QT_TLS_BACKEND", "schannel");
@@ -619,6 +664,9 @@ int main(int argc, char *argv[])
 
     QApplication app(argc, argv);
     app.setQuitOnLastWindowClosed(false);
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, []() {
+        qDebug() << "[APP] aboutToQuit";
+    });
 
     // 设置应用图标：让任务栏/运行窗口使用 MSM.ico（exe 资源图标只影响资源管理器文件图标，
     // 运行时窗口与任务栏按钮需显式设置才会显示，否则为默认空白图标）。
@@ -662,6 +710,32 @@ int main(int argc, char *argv[])
     WebUIServer webuiServer(&serverManager, &serverController, &downloadManager, &createServer,
                             &importModpack, &settingsController, &systemMonitor, &javaManager);
 
+    // QQ 机器人控制：独立管理 NapCat / NoneBot 外部进程，内置与 WebUI 解耦的控制通道
+    BotController botController(&serverManager, &serverController, &settingsController, &downloadManager);
+    webuiServer.setBotController(&botController);
+    botController.setNapcatPath(settingsController.napcatPath());
+    botController.setNonebotDir(settingsController.nonebotDir());
+    botController.setUsageInterval(settingsController.botUsageInterval());
+    botController.setBotLinkedStart(settingsController.botLinkedStart());   // 联动启动开关（默认关闭）
+    qDebug() << "[APP] before setBotEnabled; linkedStart=" << settingsController.botLinkedStart()
+             << "botEnabled=" << settingsController.botEnabled();
+    botController.setBotEnabled(settingsController.botEnabled());
+    qDebug() << "[APP] after setBotEnabled";
+    QObject::connect(&settingsController, &SettingsController::botEnabledChanged,
+                     &botController, [&]() { botController.setBotEnabled(settingsController.botEnabled()); });
+    QObject::connect(&settingsController, &SettingsController::napcatPathChanged,
+                     &botController, [&]() { botController.setNapcatPath(settingsController.napcatPath()); });
+    QObject::connect(&settingsController, &SettingsController::nonebotDirChanged,
+                     &botController, [&]() { botController.setNonebotDir(settingsController.nonebotDir()); });
+    QObject::connect(&settingsController, &SettingsController::botUsageIntervalChanged,
+                     &botController, [&]() { botController.setUsageInterval(settingsController.botUsageInterval()); });
+    QObject::connect(&settingsController, &SettingsController::botLinkedStartChanged,
+                     &botController, [&]() { botController.setBotLinkedStart(settingsController.botLinkedStart()); });
+    // MSM -> QQ：仅在服务器异常退出时把日志私信管理员（不再主动推送启停事件）
+    QObject::connect(&serverController, &ServerController::serverError,
+                     &botController, [&](const QString &name, const QString &tail) {
+                         botController.pushError(name, tail);
+                     });
     // QML 引擎放在所有后端控制器之后创建：退出时引擎最先析构，先销毁 QML 对象树；
     // 此时所有上下文属性对象（控制器）尚未析构，绑定求值访问到的仍是有效对象，
     // 避免退出时大量 "Cannot read property 'xxx' of null" 报错。
@@ -686,6 +760,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(QStringLiteral("serverController"), &serverController);
     engine.rootContext()->setContextProperty(QStringLiteral("settingsController"), &settingsController);
     engine.rootContext()->setContextProperty(QStringLiteral("webuiServer"), &webuiServer);
+    engine.rootContext()->setContextProperty(QStringLiteral("botController"), &botController);
 
     QObject::connect(&installCoordinator, &InstallCoordinator::status,
                      &downloadCatalog, &DownloadCatalog::setStatus);

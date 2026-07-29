@@ -1,14 +1,16 @@
 /*
  * settingscontroller.cpp —— MSM 自身设置持久化
  * -------------------------------------------------
- * 开机自启（Windows 注册表 Run 键）、语言、WebUI 开关/端口、机器人开关、
- * 默认服务器目录。所有值经 QSettings(MSM) 读写；主题状态在 AppController 持久化。
+ * 开机自启（Windows 注册表 Run 键）、语言、WebUI 开关/端口、
+ * QQ 机器人（NapCat / NoneBot）开关与路径、默认服务器目录。
+ * 所有值经 QSettings(MSM) 读写；主题状态在 AppController 持久化。
  */
 #include "settingscontroller.h"
 #include <QSettings>
 #include <QCoreApplication>
 #include <QFileInfo>
 #include <QDir>
+#include <QRandomGenerator>
 #ifdef Q_OS_WIN
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -17,13 +19,45 @@
 
 static const char *RUN_KEY = "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 
+// 生成 32 位十六进制访问令牌
+static QString generateWebuiToken()
+{
+    QString out;
+    out.reserve(32);
+    QRandomGenerator *rng = QRandomGenerator::system();
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < 32; ++i)
+        out.append(QLatin1Char(hex[rng->bounded(16)]));
+    return out;
+}
+
 SettingsController::SettingsController(QObject *parent) : QObject(parent)
 {
     QSettings s(QStringLiteral("MSM"), QStringLiteral("MSM"));
     m_language = s.value(QStringLiteral("app/language"), QStringLiteral("简体中文")).toString();
     m_webui = s.value(QStringLiteral("app/webui"), false).toBool();
     m_webuiPort = s.value(QStringLiteral("app/webuiPort"), 25575).toInt();
-    m_bot = s.value(QStringLiteral("app/bot"), false).toBool();
+    m_webuiToken = s.value(QStringLiteral("app/webuiToken")).toString();
+    if (m_webuiToken.isEmpty())
+        m_webuiToken = generateWebuiToken();   // 首次运行自动生成，避免无令牌导致接口裸奔
+    m_webuiExposeLan = s.value(QStringLiteral("app/webuiExposeLan"), false).toBool();
+    m_webuiCertPath = s.value(QStringLiteral("app/webuiCertPath")).toString();
+    m_webuiKeyPath = s.value(QStringLiteral("app/webuiKeyPath")).toString();
+    m_napcat = s.value(QStringLiteral("app/napcat"), false).toBool();
+    m_napcatPath = s.value(QStringLiteral("app/napcatPath")).toString();
+    m_nonebot = s.value(QStringLiteral("app/nonebot"), false).toBool();
+    m_nonebotDir = s.value(QStringLiteral("app/nonebotDir")).toString();
+    m_botUsageInterval = s.value(QStringLiteral("app/botUsageInterval"), 300).toInt();
+    m_botLinkedStart = s.value(QStringLiteral("app/botLinkedStart"), false).toBool();
+    m_bot = s.value(QStringLiteral("app/botEnabled"), m_napcat && m_nonebot).toBool();
+
+    qDebug() << "[SET] raw botLinkedStart=" << s.value(QStringLiteral("app/botLinkedStart"))
+             << "toBool=" << m_botLinkedStart
+             << "botEnabled=" << s.value(QStringLiteral("app/botEnabled"))
+             << "toBool=" << m_bot
+             << "napcat=" << s.value(QStringLiteral("app/napcat")) << "toBool=" << m_napcat
+             << "nonebot=" << s.value(QStringLiteral("app/nonebot")) << "toBool=" << m_nonebot;
+
     loadAutoStart();
 }
 
@@ -106,9 +140,70 @@ void SettingsController::setWebuiPort(int v)
 {
     if (m_webuiPort != v) { m_webuiPort = v; emit webuiPortChanged(); }
 }
+void SettingsController::setWebuiToken(const QString &v)
+{
+    const QString t = v.trimmed();
+    if (m_webuiToken != t) { m_webuiToken = t; emit webuiTokenChanged(); }
+}
+void SettingsController::setWebuiExposeLan(bool v)
+{
+    if (m_webuiExposeLan != v) { m_webuiExposeLan = v; emit webuiExposeLanChanged(); }
+}
+void SettingsController::setWebuiCertPath(const QString &v)
+{
+    const QString p = stripFileUrl(v);
+    if (m_webuiCertPath != p) { m_webuiCertPath = p; emit webuiCertPathChanged(); }
+}
+void SettingsController::setWebuiKeyPath(const QString &v)
+{
+    const QString p = stripFileUrl(v);
+    if (m_webuiKeyPath != p) { m_webuiKeyPath = p; emit webuiKeyPathChanged(); }
+}
+void SettingsController::regenerateWebuiToken()
+{
+    m_webuiToken = generateWebuiToken();
+    emit webuiTokenChanged();
+}
+void SettingsController::setNapcatEnabled(bool v)
+{
+    if (m_napcat != v) { m_napcat = v; emit napcatEnabledChanged(); }
+}
+void SettingsController::setNapcatPath(const QString &v)
+{
+    const QString p = stripFileUrl(v);
+    if (m_napcatPath != p) { m_napcatPath = p; emit napcatPathChanged(); }
+}
+void SettingsController::setNonebotEnabled(bool v)
+{
+    if (m_nonebot != v) { m_nonebot = v; emit nonebotEnabledChanged(); }
+}
+void SettingsController::setNonebotDir(const QString &v)
+{
+    const QString p = stripFileUrl(v);
+    if (m_nonebotDir != p) { m_nonebotDir = p; emit nonebotDirChanged(); }
+}
+void SettingsController::setBotUsageInterval(int v)
+{
+    const int n = qMax(0, v);
+    if (m_botUsageInterval != n) { m_botUsageInterval = n; emit botUsageIntervalChanged(); }
+}
+
+void SettingsController::setBotLinkedStart(bool v)
+{
+    if (m_botLinkedStart != v) { m_botLinkedStart = v; emit botLinkedStartChanged(); }
+}
+
 void SettingsController::setBotEnabled(bool v)
 {
-    if (m_bot != v) { m_bot = v; emit botEnabledChanged(); }
+    if (m_bot == v)
+        return;
+    m_bot = v;
+    // 主开关同时驱动两个子开关的内部状态，保持 /api/status 等逻辑一致
+    m_napcat = v;
+    m_nonebot = v;
+    emit botEnabledChanged();
+    emit napcatEnabledChanged();
+    emit nonebotEnabledChanged();
 }
 
 void SettingsController::apply()
@@ -117,7 +212,18 @@ void SettingsController::apply()
     s.setValue(QStringLiteral("app/language"), m_language);
     s.setValue(QStringLiteral("app/webui"), m_webui);
     s.setValue(QStringLiteral("app/webuiPort"), m_webuiPort);
-    s.setValue(QStringLiteral("app/bot"), m_bot);
+    s.setValue(QStringLiteral("app/webuiToken"), m_webuiToken);
+    s.setValue(QStringLiteral("app/webuiExposeLan"), m_webuiExposeLan);
+    s.setValue(QStringLiteral("app/webuiCertPath"), m_webuiCertPath);
+    s.setValue(QStringLiteral("app/webuiKeyPath"), m_webuiKeyPath);
+    s.setValue(QStringLiteral("app/napcat"), m_napcat);
+    s.setValue(QStringLiteral("app/napcatPath"), m_napcatPath);
+    s.setValue(QStringLiteral("app/nonebot"), m_nonebot);
+    s.setValue(QStringLiteral("app/nonebotDir"), m_nonebotDir);
+    s.setValue(QStringLiteral("app/botUsageInterval"), m_botUsageInterval);
+    s.setValue(QStringLiteral("app/botLinkedStart"), m_botLinkedStart);
+    s.setValue(QStringLiteral("app/botEnabled"), m_bot);
+
     s.sync();
     saveAutoStart();
 }

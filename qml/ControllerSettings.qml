@@ -1,5 +1,5 @@
 ﻿// ControllerSettings.qml —— 应用设置窗口
-// 职责：外观（深浅色 / 主题色）、语言与开机自启、WebUI 与机器人开关及端口、
+// 职责：外观（深浅色 / 主题色）、语言与开机自启、WebUI 开关及端口、
 // 默认服务器目录。修改即时经 settingsController / appController 持久化。
 // 无边框窗口，圆角跟随 Theme；最大化时圆角归零。
 import QtQuick
@@ -68,7 +68,8 @@ ApplicationWindow {
                     spacing: 6
                     Label { text: I18n.t("外观", I18n.lang); color: Theme.textMuted; font.bold: true }
                     Label { text: I18n.t("语言与自启", I18n.lang); color: Theme.textMuted; font.bold: true }
-                    Label { text: I18n.t("WebUI 与机器人", I18n.lang); color: Theme.textMuted; font.bold: true }
+                    Label { text: I18n.t("WebUI", I18n.lang); color: Theme.textMuted; font.bold: true }
+                    Label { text: I18n.t("QQ 机器人", I18n.lang); color: Theme.textMuted; font.bold: true }
                     Item { Layout.fillHeight: true }
                     Label { text: "Minecraft Server Manager"; color: Theme.textMuted; font.pixelSize: 11 }
                 }
@@ -230,7 +231,7 @@ ApplicationWindow {
                         }
                     }
 
-                    // WebUI 与机器人
+                    // WebUI
                     Rectangle {
                         Layout.fillWidth: true
                         radius: Theme.radius
@@ -241,7 +242,7 @@ ApplicationWindow {
                             x: 16; y: 16
                             width: parent.width - 32
                             spacing: 12
-                            Label { text: I18n.t("WebUI 与机器人", I18n.lang); color: Theme.text; font.bold: true; font.pixelSize: 15 }
+                            Label { text: I18n.t("WebUI", I18n.lang); color: Theme.text; font.bold: true; font.pixelSize: 15 }
                             RowLayout {
                                 Layout.fillWidth: true
                                 Label { text: I18n.t("启用 WebUI", I18n.lang); Layout.fillWidth: true; color: Theme.text }
@@ -330,7 +331,7 @@ ApplicationWindow {
                                 Label {
                                     Layout.fillWidth: true
                                     text: webuiServer.running
-                                          ? I18n.t("运行中 · http://localhost:%1", I18n.lang).arg(webuiServer.port)
+                                          ? I18n.t("运行中 · %2://localhost:%1", I18n.lang).arg(webuiServer.port).arg(webuiServer.https ? "https" : "http")
                                           : (settingsController.webuiEnabled
                                              ? I18n.t("启动失败：%1", I18n.lang).arg(webuiServer.error)
                                              : I18n.t("未启用", I18n.lang))
@@ -341,17 +342,346 @@ ApplicationWindow {
                                     text: I18n.t("打开", I18n.lang)
                                     enabled: webuiServer.running
                                     palette.buttonText: Theme.text; palette.windowText: Theme.text
-                                    onClicked: Qt.openUrlExternally("http://localhost:" + webuiServer.port)
+                                    onClicked: Qt.openUrlExternally((webuiServer.https ? "https" : "http") + "://localhost:" + webuiServer.port + "/?token=" + encodeURIComponent(settingsController.webuiToken))
                                     background: Rectangle { color: parent.enabled ? (parent.hovered ? Theme.panelAlt : Theme.bg) : Theme.bg; radius: 6; border.color: Theme.border }
                                 }
                             }
-                            Label { text: I18n.t("启用后 WebUI 会在本地端口启动一个管理面板，可通过浏览器访问并启停服务器。", I18n.lang); color: Theme.textMuted; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
+
+                            // 访问令牌（所有接口必须携带，防止局域网内任意设备控制服务器）
                             RowLayout {
                                 Layout.fillWidth: true
-                                Label { text: I18n.t("启用机器人插件", I18n.lang); Layout.fillWidth: true; color: Theme.text }
+                                Label { text: I18n.t("访问令牌", I18n.lang); color: Theme.text }
+                                TextField {
+                                    id: tokenField
+                                    Layout.fillWidth: true
+                                    readOnly: true
+                                    text: settingsController.webuiToken
+                                    color: Theme.text
+                                    font.family: "Consolas, Menlo, monospace"
+                                    selectByMouse: true
+                                    background: Rectangle { color: Theme.panelAlt; radius: 6; border.color: Theme.border }
+                                }
+                                Button {
+                                    text: I18n.t("复制", I18n.lang)
+                                    palette.buttonText: Theme.text; palette.windowText: Theme.text
+                                    onClicked: { tokenField.selectAll(); tokenField.copy(); toast(I18n.t("已复制访问令牌", I18n.lang)) }
+                                    background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
+                                }
+                                Button {
+                                    text: I18n.t("重新生成", I18n.lang)
+                                    palette.buttonText: Theme.text; palette.windowText: Theme.text
+                                    onClicked: settingsController.regenerateWebuiToken()
+                                    background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
+                                }
+                            }
+
+                            // 暴露到局域网（默认仅本机；开启后需令牌，且有被扫描风险）
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: I18n.t("暴露到局域网", I18n.lang)
+                                    color: Theme.text
+                                    wrapMode: Text.Wrap
+                                }
+                                Switch {
+                                    checked: settingsController.webuiExposeLan
+                                    onToggled: {
+                                        settingsController.webuiExposeLan = checked
+                                        settingsController.apply()
+                                        if (webuiServer.running) webuiServer.rebind()
+                                    }
+                                }
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: I18n.t("默认仅本机(127.0.0.1)可访问，最为安全。开启“暴露到局域网”后将监听 0.0.0.0，局域网/手机可访问，但必须凭访问令牌，且存在被扫描的风险。", I18n.lang)
+                                color: Theme.textMuted; font.pixelSize: 12; wrapMode: Text.Wrap
+                            }
+
+                            // 自定义证书（可选，留空则用自动生成的自签证书）
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label { text: I18n.t("证书文件(可选)", I18n.lang); color: Theme.text }
+                                TextField {
+                                    id: certField
+                                    Layout.fillWidth: true
+                                    text: settingsController.webuiCertPath
+                                    color: Theme.text
+                                    placeholderText: I18n.t("留空=自动自签证书", I18n.lang)
+                                    placeholderTextColor: Theme.textMuted
+                                    selectByMouse: true
+                                    selectionColor: Theme.accent
+                                    background: Rectangle { color: Theme.panelAlt; radius: 6; border.color: Theme.border }
+                                    onEditingFinished: { settingsController.webuiCertPath = text; settingsController.apply() }
+                                }
+                                Button {
+                                    text: I18n.t("浏览", I18n.lang)
+                                    palette.buttonText: Theme.text; palette.windowText: Theme.text
+                                    onClicked: certDialog.open()
+                                    background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label { text: I18n.t("私钥文件(可选)", I18n.lang); color: Theme.text }
+                                TextField {
+                                    id: keyField
+                                    Layout.fillWidth: true
+                                    text: settingsController.webuiKeyPath
+                                    color: Theme.text
+                                    placeholderText: I18n.t("留空=自动自签证书", I18n.lang)
+                                    placeholderTextColor: Theme.textMuted
+                                    selectByMouse: true
+                                    selectionColor: Theme.accent
+                                    background: Rectangle { color: Theme.panelAlt; radius: 6; border.color: Theme.border }
+                                    onEditingFinished: { settingsController.webuiKeyPath = text; settingsController.apply() }
+                                }
+                                Button {
+                                    text: I18n.t("浏览", I18n.lang)
+                                    palette.buttonText: Theme.text; palette.windowText: Theme.text
+                                    onClicked: keyDialog.open()
+                                    background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
+                                }
+                            }
+
+                            Label { text: I18n.t("启用后 WebUI 会以 HTTPS 启动管理面板（自签证书，浏览器会提示“不安全”，点继续即可），所有接口需携带访问令牌。令牌可在手机/其他设备首次打开时输入或随链接自动带入。", I18n.lang); color: Theme.textMuted; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
+
+                        }
+                    }
+
+                    // QQ 机器人（NapCat + NoneBot，独立于 WebUI）
+                    Rectangle {
+                        Layout.fillWidth: true
+                        radius: Theme.radius
+                        color: Theme.panel
+                        implicitHeight: cardQ.height + 32
+                        ColumnLayout {
+                            id: cardQ
+                            x: 16; y: 16
+                            width: parent.width - 32
+                            spacing: 12
+                            Label { text: I18n.t("QQ 机器人", I18n.lang); color: Theme.text; font.bold: true; font.pixelSize: 15 }
+                            Label { text: I18n.t("NapCat 是 QQ 协议端（OneBot 客户端），NoneBot 是机器人框架（加载 msm_control 插件）。两者已绑定，一起开、一起关，与 WebUI 互不影响。", I18n.lang); color: Theme.textMuted; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label { text: I18n.t("联动启动", I18n.lang); Layout.fillWidth: true; color: Theme.text }
+                                Switch {
+                                    checked: settingsController.botLinkedStart
+                                    onToggled: { settingsController.botLinkedStart = checked; settingsController.apply() }
+                                }
+                            }
+                            Label { text: I18n.t("开启时由 MSM 一并拉起 NapCat 与 NoneBot；关闭则 MSM 只开放控制通道，由你自行启动机器人并连入（默认关闭）。", I18n.lang); color: Theme.textMuted; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label { text: I18n.t("启用 QQ 机器人", I18n.lang); Layout.fillWidth: true; color: Theme.text; font.bold: true }
                                 Switch {
                                     checked: settingsController.botEnabled
                                     onToggled: { settingsController.botEnabled = checked; settingsController.apply() }
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label { text: I18n.t("NapCat 路径", I18n.lang); color: Theme.text }
+                                ComboBoxEditable {
+                                    id: napcatCombo
+                                    model: botController.detectNapcatPaths()
+                                    onEditTextChanged: { if (editText !== settingsController.napcatPath) { settingsController.napcatPath = editText; settingsController.apply() } }
+                                }
+                                Button {
+                                    text: I18n.t("自动检测", I18n.lang)
+                                    palette.buttonText: Theme.text; palette.windowText: Theme.text
+                                    onClicked: {
+                                        var paths = botController.detectNapcatPaths()
+                                        var p = botController.detectNapcatPath()
+                                        napcatHint.text = ""
+                                        if (p) {
+                                            // 刷新候选列表，并直写编辑框文本（不依赖 currentIndex/绑定，保证一定填充）
+                                            if (paths.indexOf(p) < 0) paths.push(p)
+                                            napcatCombo.model = paths
+                                            napcatCombo.setText(p)
+                                            if (settingsController.napcatPath !== p) {
+                                                settingsController.napcatPath = p
+                                                settingsController.apply()
+                                            }
+                                        } else {
+                                            napcatHint.text = I18n.t("未检测到 NapCat，请手动输入路径或浏览选择", I18n.lang)
+                                        }
+                                    }
+                                    background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
+                                }
+                                Button {
+                                    text: I18n.t("浏览", I18n.lang)
+                                    palette.buttonText: Theme.text; palette.windowText: Theme.text
+                                    onClicked: napcatDialog.open()
+                                    background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
+                                }
+                                Component.onCompleted: {
+                                    napcatCombo.setText(settingsController.napcatPath)
+                                    nonebotCombo.setText(settingsController.nonebotDir)
+                                }
+                            }
+                            Label {
+                                id: napcatHint
+                                text: ""
+                                color: Theme.accent
+                                font.pixelSize: 12
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                                visible: text !== ""
+                            }
+                            Label { text: I18n.t("NapCat 需要扫码登录，启动后会弹出独立控制台窗口，扫码后 QQ 消息才能互通。", I18n.lang); color: Theme.textMuted; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+                                Label { text: I18n.t("运行状态", I18n.lang); color: Theme.textMuted }
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: {
+                                        if (!settingsController.botEnabled) return I18n.t("未启用", I18n.lang)
+                                        var s = botController.napcatState
+                                        if (s === "running") return I18n.t("运行中", I18n.lang)
+                                        if (s === "starting") return I18n.t("启动中", I18n.lang)
+                                        if (s === "external") return I18n.t("外部运行（由你自行启动）", I18n.lang)
+                                        if (s === "stopped") return I18n.t("已停止", I18n.lang)
+                                        return s
+                                    }
+                                    color: botController.napcatState === "running" ? Theme.accent : Theme.textMuted
+                                    elide: Text.ElideRight
+                                }
+                            }
+
+                            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.border }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label { text: I18n.t("NoneBot 目录", I18n.lang); color: Theme.text }
+                                ComboBoxEditable {
+                                    id: nonebotCombo
+                                    model: botController.detectNonebotDirs()
+                                    onEditTextChanged: { if (editText !== settingsController.nonebotDir) { settingsController.nonebotDir = editText; settingsController.apply() } }
+                                }
+                                Button {
+                                    text: I18n.t("自动检测", I18n.lang)
+                                    palette.buttonText: Theme.text; palette.windowText: Theme.text
+                                    onClicked: {
+                                        var dirs = botController.detectNonebotDirs()
+                                        var d = botController.detectNonebotDir()
+                                        nonebotHint.text = ""
+                                        if (d) {
+                                            // 刷新候选列表，并直写编辑框文本（不依赖 currentIndex/绑定，保证一定填充）
+                                            if (dirs.indexOf(d) < 0) dirs.push(d)
+                                            nonebotCombo.model = dirs
+                                            nonebotCombo.setText(d)
+                                            if (settingsController.nonebotDir !== d) {
+                                                settingsController.nonebotDir = d
+                                                settingsController.apply()
+                                            }
+                                        } else {
+                                            nonebotHint.text = I18n.t("未检测到 NoneBot，请手动输入目录或浏览选择", I18n.lang)
+                                        }
+                                    }
+                                    background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
+                                }
+                                Button {
+                                    text: I18n.t("浏览", I18n.lang)
+                                    palette.buttonText: Theme.text; palette.windowText: Theme.text
+                                    onClicked: nonebotDialog.open()
+                                    background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
+                                }
+                            }
+                            Label {
+                                id: nonebotHint
+                                text: ""
+                                color: Theme.accent
+                                font.pixelSize: 12
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                                visible: text !== ""
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label { text: I18n.t("msm 控制插件", I18n.lang); color: Theme.text }
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: {
+                                        var st = botController.msmPluginState
+                                        if (st === "ok") return I18n.t("已安装", I18n.lang)
+                                        if (st === "missing") return I18n.t("未安装（机器人将无法控制服务器）", I18n.lang)
+                                        if (st === "installing") return I18n.t("安装中…", I18n.lang)
+                                        if (st === "error") return I18n.t("安装失败", I18n.lang)
+                                        return I18n.t("未知", I18n.lang)
+                                    }
+                                    color: botController.msmPluginState === "ok" ? Theme.accent : (botController.msmPluginState === "error" ? "#e06c5a" : Theme.textMuted)
+                                    elide: Text.ElideRight
+                                }
+                                Button {
+                                    text: I18n.t("安装 / 重装", I18n.lang)
+                                    palette.buttonText: Theme.text; palette.windowText: Theme.text
+                                    onClicked: openMsmInstall()
+                                    background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
+                                }
+                            }
+                            Label { text: I18n.t("MSM 默认不主动推送：常态按间隔把设备占用(CPU/内存)更新到机器人 QQ 昵称，服务器异常退出时把日志私信管理员，其余只在执行指令后回传反馈。两者绑定运行，一起开/一起关。", I18n.lang); color: Theme.textMuted; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label { text: I18n.t("昵称状态更新间隔(秒)", I18n.lang); color: Theme.text }
+                                TextField {
+                                    text: settingsController.botUsageInterval
+                                    Layout.preferredWidth: 90
+                                    validator: IntValidator { bottom: 0; top: 86400 }
+                                    color: Theme.text
+                                    background: Rectangle { color: Theme.panelAlt; radius: 6; border.color: Theme.border }
+                                    onEditingFinished: { settingsController.botUsageInterval = Number(text); settingsController.apply() }
+                                }
+                                Label { text: I18n.t("0=关闭", I18n.lang); color: Theme.textMuted; font.pixelSize: 12 }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+                                Label { text: I18n.t("运行状态", I18n.lang); color: Theme.textMuted }
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: {
+                                        if (!settingsController.botEnabled) return I18n.t("未启用", I18n.lang)
+                                        var s = botController.nonebotState
+                                        if (s === "running") return I18n.t("运行中", I18n.lang)
+                                        if (s === "starting") return I18n.t("启动中", I18n.lang)
+                                        if (s === "waiting") return I18n.t("等待连接", I18n.lang)
+                                        if (s === "stopped") return I18n.t("已停止", I18n.lang)
+                                        return s
+                                    }
+                                    color: botController.nonebotState === "running" ? Theme.accent : Theme.textMuted
+                                    elide: Text.ElideRight
+                                }
+                                Button {
+                                    text: I18n.t("测试推送", I18n.lang)
+                                    enabled: botController.botEnabled
+                                    palette.buttonText: Theme.text; palette.windowText: Theme.text
+                                    onClicked: botController.notify(I18n.t("这是一条来自 MSM 的测试推送", I18n.lang))
+                                    background: Rectangle { color: parent.enabled ? (parent.hovered ? Theme.panelAlt : Theme.bg) : Theme.bg; radius: 6; border.color: Theme.border }
+                                }
+                            }
+
+                            // ===== 控制通道（机器人链路）保护：锁定本机 + 与 WebUI 共用令牌 =====
+                            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.border }
+                            Label { text: I18n.t("控制通道（机器人链路）", I18n.lang); color: Theme.text; font.bold: true; font.pixelSize: 13 }
+                            Label {
+                                text: I18n.t("已锁定本机 127.0.0.1:%1，仅本机可连、远程不可达；本机其他进程也须凭访问令牌，MSM 已自动注入 NapCat / NoneBot 插件配置。", I18n.lang).arg(botController.controlPort)
+                                color: Theme.textMuted; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+                                Label { text: I18n.t("控制通道状态", I18n.lang); color: Theme.textMuted }
+                                Label { Layout.fillWidth: true; text: I18n.t("已锁定本机 + 令牌校验（最安全）", I18n.lang); color: Theme.accent; elide: Text.ElideRight }
+                                Button {
+                                    text: I18n.t("复制令牌", I18n.lang)
+                                    palette.buttonText: Theme.text; palette.windowText: Theme.text
+                                    onClicked: { Clipboard.text = settingsController.webuiToken; toast(I18n.t("已复制访问令牌", I18n.lang)) }
+                                    background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
                                 }
                             }
                         }
@@ -385,5 +715,111 @@ ApplicationWindow {
         id: colorDialog
         title: I18n.t("选择主题色", I18n.lang)
         onAccepted: window.applyTheme(Theme.dark, colorDialog.selectedColor)
+    }
+
+    FileDialog {
+        id: certDialog
+        title: I18n.t("选择证书文件", I18n.lang)
+        nameFilters: ["PEM/CRT (*.pem *.crt *.cer)", "All files (*)"]
+        onAccepted: {
+            settingsController.webuiCertPath = certDialog.selectedFile.toString()
+            settingsController.apply()
+            certField.text = settingsController.webuiCertPath
+        }
+    }
+    FileDialog {
+        id: keyDialog
+        title: I18n.t("选择私钥文件", I18n.lang)
+        nameFilters: ["Key (*.pem *.key)", "All files (*)"]
+        onAccepted: {
+            settingsController.webuiKeyPath = keyDialog.selectedFile.toString()
+            settingsController.apply()
+            keyField.text = settingsController.webuiKeyPath
+        }
+    }
+    FileDialog {
+        id: napcatDialog
+        title: I18n.t("选择 NapCat 入口（napcat.bat）", I18n.lang)
+        nameFilters: ["NapCat (napcat.bat)", "*.bat", "*.exe", "All files (*)"]
+                                onAccepted: {
+                                    settingsController.napcatPath = napcatDialog.selectedFile.toString()
+                                    settingsController.apply()
+                                    napcatCombo.setText(settingsController.napcatPath)
+                                }
+    }
+    FolderDialog {
+        id: nonebotDialog
+        onAccepted: {
+            settingsController.nonebotDir = nonebotDialog.selectedFolder.toString()
+            settingsController.apply()
+            nonebotCombo.setText(settingsController.nonebotDir)
+        }
+    }
+
+    function openMsmInstall() { msmPluginDialog.open() }
+
+    Connections {
+        target: botController
+        function onPluginMissing() { msmPluginDialog.open() }
+    }
+
+    Dialog {
+        id: msmPluginDialog
+        title: I18n.t("msm 控制插件", I18n.lang)
+        modal: true
+        standardButtons: Dialog.NoButton
+        width: 540
+        contentItem: Rectangle {
+            color: Theme.bg
+            implicitWidth: 540
+            implicitHeight: dlgCol.implicitHeight + 28
+            ColumnLayout {
+                id: dlgCol
+                anchors.fill: parent
+                anchors.margins: 14
+                spacing: 10
+                Label {
+                    text: I18n.t("当前 NoneBot 目录未接入 msm_control 控制插件，机器人将无法通过 QQ 控制 Minecraft 服务器。", I18n.lang)
+                    color: Theme.text; wrapMode: Text.Wrap; Layout.fillWidth: true
+                }
+                Label {
+                    text: I18n.t("方式一（推荐）：自动安装 —— MSM 会把自带的 msm_control 插件复制到该目录并写入 pyproject 配置。", I18n.lang)
+                    color: Theme.textMuted; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true
+                }
+                Label {
+                    text: I18n.t("方式二：手动安装 —— 自行用 nb plugin install 安装 msm_control，或把 MSM 自带 qqbot/plugins/msm_control.py 放入该目录的 plugins/ 并配置 pyproject。", I18n.lang)
+                    color: Theme.textMuted; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.alignment: Qt.AlignRight
+                    spacing: 8
+                    Button {
+                        text: I18n.t("自动安装", I18n.lang)
+                        palette.buttonText: "white"; palette.windowText: "white"
+                        background: Rectangle { color: parent.hovered ? Theme.accentHover : Theme.accent; radius: 6 }
+                        onClicked: {
+                            if (botController.installMsmPlugin())
+                                msmPluginDialog.close()
+                            else
+                                msmResult.text = I18n.t("安装失败：请查看程序日志，或改用手动安装。", I18n.lang)
+                        }
+                    }
+                    Button {
+                        text: I18n.t("我已手动装好，重试", I18n.lang)
+                        palette.buttonText: Theme.text; palette.windowText: Theme.text
+                        background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
+                        onClicked: { msmPluginDialog.close(); botController.retryStartNonebot() }
+                    }
+                    Button {
+                        text: I18n.t("取消", I18n.lang)
+                        palette.buttonText: Theme.text; palette.windowText: Theme.text
+                        background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
+                        onClicked: msmPluginDialog.close()
+                    }
+                }
+                Label { id: msmResult; color: "#e06c5a"; wrapMode: Text.Wrap; Layout.fillWidth: true; text: "" }
+            }
+        }
     }
 }

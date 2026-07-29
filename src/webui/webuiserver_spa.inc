@@ -159,6 +159,16 @@ table td.t{color:var(--text-muted);width:42%}
 <div id="world"></div>
 <div id="players"></div>
 <div id="props"></div>
+<div id="tokModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;align-items:center;justify-content:center">
+  <div style="background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:22px;width:340px;max-width:90vw">
+    <h2 style="margin:0 0 6px;font-size:18px">🔒 需要访问令牌</h2>
+    <p id="tokMsg" style="color:var(--text-muted);font-size:13px;margin:0 0 14px">请输入应用设置中的“WebUI 访问令牌”以继续。</p>
+    <input id="tokInput" type="text" placeholder="访问令牌" style="width:100%" autocomplete="off"/>
+    <div class="row" style="margin-top:14px;justify-content:flex-end">
+      <button class="primary" id="tokSave">保存并继续</button>
+    </div>
+  </div>
+</div>
 <script>
 let theme = { dark:true, accent:'#4f8cff' };
 const CATEGORIES=[{key:'java',label:'Java'},{key:'server',label:'服务端'},{key:'mod',label:'模组'},{key:'modpack',label:'整合包'},{key:'resourcepack',label:'资源包'},{key:'plugin',label:'插件'}];
@@ -258,8 +268,12 @@ const STR={
  '版本':'Version','加载器':'Loader','下载选中加载器':'Download Selected Loaders','已选':'Selected',
  '创建服务器':'Create Server','类型':'Type','名称':'Name','自动生成':'Auto','目录':'Directory','我已阅读并同意 Minecraft EULA':'I have read and agree to the Minecraft EULA','创建并安装':'Create & Install',
  '导入整合包':'Import Modpack','整合包(.zip)':'Modpack (.zip)','目标目录':'Target directory','导入':'Import',
- '应用设置':'App Settings','外观':'Appearance','深色模式':'Dark Mode','主题色':'Theme Color','语言与自启':'Language & Autostart','语言':'Language','开机自启':'Start on Boot','启用机器人':'Enable Bot','保存设置':'Save Settings','默认服务器目录':'Default Server Directory','浏览':'Browse','提示：WebUI 自身的"启用/端口"设置不会在此显示，避免从面板内部把自己关掉。':'Note: WebUI\'s own "Enable/Port" settings are hidden here to avoid disabling itself from within the panel.',
- '已开始下载':'Download started','已开始下载选中加载器':'Started downloading selected loaders','已清理临时 Java':'Cleaned temp Java','已提交':'Submitted','安装完成':'Installation complete','导入完成':'Import complete','已保存':'Saved','属性已保存':'Properties saved','保存失败':'Save failed','失败:':'Failed: ','保存失败:':'Save failed:','加载失败':'Load failed','提示：':'Note: ','暂不支持':'Not supported'
+ '应用设置':'App Settings','外观':'Appearance','深色模式':'Dark Mode','主题色':'Theme Color','语言与自启':'Language & Autostart','语言':'Language','开机自启':'Start on Boot','保存设置':'Save Settings','默认服务器目录':'Default Server Directory','浏览':'Browse','提示：WebUI 自身的"启用/端口"设置不会在此显示，避免从面板内部把自己关掉。':'Note: WebUI\'s own "Enable/Port" settings are hidden here to avoid disabling itself from within the panel.',
+ '已开始下载':'Download started','已开始下载选中加载器':'Started downloading selected loaders','已清理临时 Java':'Cleaned temp Java','已提交':'Submitted','安装完成':'Installation complete','导入完成':'Import complete','已保存':'Saved','属性已保存':'Properties saved','保存失败':'Save failed','失败:':'Failed: ','保存失败:':'Save failed:','加载失败':'Load failed','提示：':'Note: ','暂不支持':'Not supported','QQ机器人':'QQ Bot','本地插件控制':'Local plugins','启用QQ机器人':'Enable QQ Bot','联动启动':'Linked start','运行中':'Running','已停止':'Stopped',
+'NapCat 路径':'NapCat Path','NoneBot 目录':'NoneBot Dir','运行状态':'Status','msm 控制插件':'msm control plugin','昵称状态更新间隔(秒)':'Nickname update interval (s)','0=关闭':'0 = off','留空则自动探测':'Auto-detect if empty',
+'未启用':'Disabled','启动中':'Starting','外部运行（由你自行启动）':'External (started by you)','等待连接':'Waiting for connection',
+'已安装':'Installed','未安装（机器人将无法控制服务器）':'Not installed (bot cannot control servers)','安装中…':'Installing…','安装失败':'Install failed','未知':'Unknown',
+'设置与本地端一致；"运行状态"指 NapCat / NoneBot 程序进程本身':'Same as the desktop app; "Status" refers to the NapCat / NoneBot processes themselves'
 };
 const NAVMAP={servers:'🖥 服务器',downloads:'⬇ 下载中心',create:'➕ 创建服务器',import:'📦 导入整合包',settings:'⚙ 应用设置'};
 function relocalizeNav(){document.querySelectorAll('.nav button').forEach(b=>{if(NAVMAP[b.dataset.tab])b.textContent=T(NAVMAP[b.dataset.tab]);});}
@@ -290,7 +304,44 @@ function applyTheme(){const r=document.documentElement.style;r.setProperty('--ac
   r.setProperty('--lg-white',theme.dark?'#cfe3ff':'#1c2230');}
 function esc(s){return (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1800);}
-async function api(path,opts){const r=await fetch(path,opts);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}
+// ---------------- 访问令牌 ----------------
+// 令牌来自：1) URL ?token=（桌面端“在浏览器打开”自动带上）；2) 上次输入后存入 localStorage。
+let API_TOKEN = (function(){ try { return localStorage.getItem('msm_token') || ''; } catch(e){ return ''; } })();
+(function(){
+  try{
+    const t = new URLSearchParams(location.search).get('token');
+    if(t){ API_TOKEN = t; localStorage.setItem('msm_token', t); }
+  }catch(e){}
+})();
+function showTokenModal(msg){
+  const m=document.getElementById('tokModal');
+  if(msg) document.getElementById('tokMsg').textContent=msg;
+  m.style.display='flex';
+  const inp=document.getElementById('tokInput'); inp.value=''; inp.focus();
+}
+document.getElementById('tokSave').onclick=function(){
+  const v=document.getElementById('tokInput').value.trim();
+  if(!v) return;
+  API_TOKEN=v; try{ localStorage.setItem('msm_token',v); }catch(e){}
+  document.getElementById('tokModal').style.display='none';
+  // 重新加载当前页数据
+  if(curTab==='servers'){ if(curServer) refreshServer(); else showGrid(); }
+  else if(curTab==='downloads') renderDownloads();
+  else if(curTab==='create') renderCreate();
+  else if(curTab==='import') renderImport();
+  else if(curTab==='settings') renderSettings();
+  tickMon();
+};
+async function api(path,opts){
+  opts=opts||{};
+  const h=opts.headers||{};
+  if(API_TOKEN) h['Authorization']='Bearer '+API_TOKEN;
+  opts.headers=h;
+  const r=await fetch(path,opts);
+  if(r.status===401){ showTokenModal('访问被拒绝：令牌错误或未提供，请重新输入。'); throw new Error('HTTP 401'); }
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  return r.json();
+}
 
 document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
 function switchTab(tab){
@@ -953,23 +1004,49 @@ async function renderSettings(){
       <h3>${T('语言与自启')}</h3>
       <div class="row"><span>${T('语言')}</span><select id="lang"><option value="简体中文">简体中文</option><option value="English">English</option></select></div>
       <label class="ck" style="margin-top:10px"><input type="checkbox" id="autostart"/> ${T('开机自启')}</label>
-      <label class="ck" style="margin-top:10px"><input type="checkbox" id="bot"/> ${T('启用机器人')}</label>
+
     </div>
     <div class="card">
       <h3>${T('目录')}</h3>
       <div class="row"><span>${T('默认服务器目录')}</span><input id="defdir" style="flex:1" placeholder="${T('留空使用程序默认')}"/></div>
+    </div>
+    <div class="card">
+      <h3>${T('QQ机器人')}</h3>
+      <div class="muted" style="margin-bottom:6px">${T('设置与本地端一致；"运行状态"指 NapCat / NoneBot 程序进程本身')}</div>
+      <label class="ck"><input type="checkbox" id="botLinkedStart"/> ${T('联动启动')}</label>
+      <label class="ck" style="margin-top:8px"><input type="checkbox" id="botEnabled"/> ${T('启用QQ机器人')}</label>
+      <div class="row" style="margin-top:10px"><span>${T('NapCat 路径')}</span><input id="botNapcatPath" style="flex:1" placeholder="${T('留空则自动探测')}"/></div>
+      <div class="row" style="margin-top:6px"><span>${T('运行状态')}</span><span id="napcatState" class="muted">—</span></div>
+      <div class="row" style="margin-top:10px"><span>${T('NoneBot 目录')}</span><input id="botNonebotDir" style="flex:1" placeholder="${T('留空则自动探测')}"/></div>
+      <div class="row" style="margin-top:6px"><span>${T('运行状态')}</span><span id="nonebotState" class="muted">—</span></div>
+      <div class="row" style="margin-top:10px"><span>${T('msm 控制插件')}</span><span id="msmPluginState" class="muted">—</span></div>
+      <div class="row" style="margin-top:10px"><span>${T('昵称状态更新间隔(秒)')}</span><input id="botUsageInterval" type="number" min="0" max="86400" style="width:110px"/><span class="muted">${T('0=关闭')}</span></div>
     </div>
     <div class="row" style="margin-top:10px"><button class="primary" onclick="saveSettings()">${T('保存设置')}</button></div>
     <div class="msg">${T('提示：WebUI 自身的"启用/端口"设置不会在此显示，避免从面板内部把自己关掉。')}</div>`;
   document.getElementById('lang').value=s.language||'简体中文';
   curLang=s.language==='English'?'en':'zh';
   document.getElementById('autostart').checked=!!s.autoStart;
-  document.getElementById('bot').checked=!!s.botEnabled;
+
   const dd=document.getElementById('defdir');if(dd)dd.value=s.defaultServerDir||'';
   const sw=document.getElementById('sw');
   ACCENTS.forEach(c=>{const d=document.createElement('div');d.className='swatch'+(c.toLowerCase()===theme.accent.toLowerCase()?' on':'');d.style.background=c;d.onclick=()=>setAccent(c);sw.appendChild(d);});
   document.getElementById('custom').oninput=e=>setAccent(e.target.value);
   document.getElementById('dark').onchange=e=>{theme.dark=e.target.checked;applyTheme();pushTheme();};
+
+  const botPost=async body=>{ try{ await api('/api/bot',{method:'POST',body:JSON.stringify(body)}); }catch(e){} loadBotState(); };
+  const be=document.getElementById('botEnabled');
+  if(be) be.onchange=()=>botPost({enabled:be.checked});
+  const bl=document.getElementById('botLinkedStart');
+  if(bl) bl.onchange=()=>botPost({linkedStart:bl.checked});
+  const bp=document.getElementById('botNapcatPath');
+  if(bp) bp.onchange=()=>botPost({napcatPath:bp.value});
+  const bd=document.getElementById('botNonebotDir');
+  if(bd) bd.onchange=()=>botPost({nonebotDir:bd.value});
+  const bi=document.getElementById('botUsageInterval');
+  if(bi) bi.onchange=()=>botPost({usageInterval:Math.max(0,Math.min(86400,Number(bi.value)||0))});
+  loadBotState();
+  if(!timers.bot) timers.bot=setInterval(()=>{ if(curTab==='settings') loadBotState(); },3000);
 }
 function setAccent(c){theme.accent=c;applyTheme();document.querySelectorAll('.swatch').forEach(s=>s.classList.toggle('on',s.style.background.includes(c)));pushTheme();}
 function pushTheme(){fetch('/api/theme',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(theme)}).catch(()=>{});}
@@ -977,13 +1054,42 @@ function saveSettings(){
   const langEl=document.getElementById('lang');
   const lang=langEl.value;
   curLang=(lang==='English'?'en':'zh');
-  const body={language:lang,autoStart:document.getElementById('autostart').checked,botEnabled:document.getElementById('bot').checked,defaultServerDir:document.getElementById('defdir').value};
+  const body={language:lang,autoStart:document.getElementById('autostart').checked,defaultServerDir:document.getElementById('defdir').value};
   fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(()=>{
     toast(T('已保存'));
     // 重新渲染当前页与导航，使全局语言立即生效
     applyLangUI();
     if(document.getElementById('props-form')) showProps();
   }).catch(e=>toast(T('失败:')+e.message));
+}
+// 运行状态映射：与本地端一致（指 NapCat/NoneBot 程序进程本身）
+function botStateText(s,enabled){
+  if(!enabled) return T('未启用');
+  const m={running:'运行中',starting:'启动中',external:'外部运行（由你自行启动）',waiting:'等待连接',stopped:'已停止'};
+  return T(m[s]||s||'已停止');
+}
+function setBotStateEl(id,s,enabled){
+  const el=document.getElementById(id); if(!el)return;
+  el.textContent=botStateText(s,enabled);
+  el.style.color=(enabled&&s==='running')?'#69db7c':'var(--text-muted)';
+}
+async function loadBotState(){
+  try{
+    const b=await api('/api/bot');
+    const be=document.getElementById('botEnabled'); if(be)be.checked=!!b.botEnabled;
+    const bl=document.getElementById('botLinkedStart'); if(bl)bl.checked=!!b.botLinkedStart;
+    const bp=document.getElementById('botNapcatPath'); if(bp&&document.activeElement!==bp)bp.value=b.napcatPath||'';
+    const bd=document.getElementById('botNonebotDir'); if(bd&&document.activeElement!==bd)bd.value=b.nonebotDir||'';
+    const bi=document.getElementById('botUsageInterval'); if(bi&&document.activeElement!==bi)bi.value=(b.usageInterval??300);
+    setBotStateEl('napcatState',b.napcatState,!!b.botEnabled);
+    setBotStateEl('nonebotState',b.nonebotState,!!b.botEnabled);
+    const mp=document.getElementById('msmPluginState');
+    if(mp){
+      const pm={ok:'已安装',missing:'未安装（机器人将无法控制服务器）',installing:'安装中…',error:'安装失败'};
+      mp.textContent=T(pm[b.msmPluginState]||'未知');
+      mp.style.color=b.msmPluginState==='ok'?'#69db7c':(b.msmPluginState==='error'?'#e06c5a':'var(--text-muted)');
+    }
+  }catch(e){}
 }
 
 // 初始化

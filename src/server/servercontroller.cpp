@@ -87,6 +87,8 @@ void ServerController::start(const QString &name, const QString &path,
     }
 
     m_procs.insert(name, p);
+    m_startTime.insert(name, QDateTime::currentMSecsSinceEpoch());
+    m_intentionalKill.remove(name);
     emit consoleAppended(name, QStringLiteral("[MSM] 正在启动服务器…"));
     emit stateChanged(name, true);
     emit runningCountChanged();
@@ -128,18 +130,25 @@ void ServerController::handleOutput(const QString &name)
     }
 }
 
-void ServerController::onFinished(const QString &name, int, QProcess::ExitStatus)
+void ServerController::onFinished(const QString &name, int exitCode, QProcess::ExitStatus status)
 {
     auto it = m_procs.find(name);
     if (it == m_procs.end())
         return;
+    const QString tail = it->console.right(3000);
+    const bool intentional = m_intentionalKill.remove(name);
     it->proc->deleteLater();
     m_consoleCache.insert(name, it->console);
     m_procs.erase(it);
+    m_startTime.remove(name);
+    m_usageSamples.remove(name);
     emit consoleAppended(name, QStringLiteral("[MSM] 服务器已停止"));
     emit stateChanged(name, false);
     emit playersChanged(name, {});
     emit runningCountChanged();
+    // 非主动强关却异常退出（崩溃 / 非 0 退出码）→ 上报错误日志
+    if (!intentional && (status == QProcess::CrashExit || exitCode != 0))
+        emit serverError(name, tail);
 }
 
 void ServerController::stop(const QString &name)
@@ -155,6 +164,7 @@ void ServerController::forceStop(const QString &name)
     auto it = m_procs.find(name);
     if (it == m_procs.end())
         return;
+    m_intentionalKill.insert(name);
     it->proc->kill();
 }
 
@@ -191,6 +201,59 @@ QStringList ServerController::listMods(const QString &path) const
     for (const QFileInfo &fi : dir.entryInfoList(QDir::Files))
         names << fi.fileName();
     return names;
+}
+
+QVariantList ServerController::runningServerUsages() const
+{
+    QVariantList out;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    for (auto it = m_procs.constBegin(); it != m_procs.constEnd(); ++it) {
+        const QString name = it.key();
+        const QProcess *proc = it->proc;
+        QVariantMap m;
+        m[QStringLiteral("name")] = name;
+        m[QStringLiteral("players")] = it->playerList.size();
+        const qint64 start = m_startTime.value(name, now);
+        m[QStringLiteral("uptimeSec")] = start ? (now - start) / 1000 : 0;
+        double cpu = 0;
+        qint64 memBytes = 0;
+        const int pid = proc->processId();
+        if (pid > 0) {
+#ifdef Q_OS_WIN
+            HANDLE h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, (DWORD)pid);
+            if (h) {
+                PROCESS_MEMORY_COUNTERS pmc;
+                if (GetProcessMemoryInfo(h, &pmc, sizeof(pmc)))
+                    memBytes = pmc.WorkingSetSize;
+                FILETIME c, e, k, u;
+                if (GetProcessTimes(h, &c, &e, &k, &u)) {
+                    auto toQ = [](FILETIME f) -> qint64 {
+                        ULARGE_INTEGER i;
+                        i.LowPart = f.dwLowDateTime;
+                        i.HighPart = f.dwHighDateTime;
+                        return qint64(i.QuadPart);
+                    };
+                    const qint64 cpuTime = toQ(k) + toQ(u);
+                    const qint64 wall = QDateTime::currentMSecsSinceEpoch();
+                    QPair<qint64, qint64> &s = m_usageSamples[name];
+                    if (s.second > 0) {
+                        const qint64 dCpu = cpuTime - s.first;
+                        const qint64 dWall = wall - s.second;
+                        if (dWall > 0)
+                            cpu = double(dCpu) / double(dWall) * 100.0;
+                    }
+                    s.first = cpuTime;
+                    s.second = wall;
+                }
+                CloseHandle(h);
+            }
+#endif
+        }
+        m[QStringLiteral("memMB")] = memBytes / (1024.0 * 1024.0);
+        m[QStringLiteral("cpu")] = cpu;
+        out << m;
+    }
+    return out;
 }
 
 namespace {

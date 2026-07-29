@@ -39,7 +39,7 @@ add_library(msm_server STATIC
     server/servercontroller.h
     server/servercontroller.cpp
 )
-target_link_libraries(msm_server PUBLIC Qt6::Core Qt6::Qml)
+target_link_libraries(msm_server PUBLIC Qt6::Core Qt6::Qml Psapi)
 target_include_directories(msm_server PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/server)
 
 # ---- 服务器创建 / 模组包导入（依赖 download + server + java）----
@@ -60,6 +60,14 @@ add_library(msm_settings STATIC
 target_link_libraries(msm_settings PUBLIC Qt6::Core)
 target_include_directories(msm_settings PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/settings)
 
+# ---- QQ 机器人控制（独立管理 NapCat / NoneBot 外部进程，与 WebUI 解耦）----
+add_library(msm_bot STATIC
+    bot/botcontroller.h
+    bot/botcontroller.cpp
+)
+target_link_libraries(msm_bot PUBLIC Qt6::Core Qt6::Network Qt6::HttpServer msm_server msm_settings msm_download)
+target_include_directories(msm_bot PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/bot)
+
 # ---- Web 管理界面（汇总所有模块）----
 add_library(msm_webui STATIC
     webui/webuiserver.h
@@ -68,6 +76,8 @@ add_library(msm_webui STATIC
 # webuiserver_spa.inc 是被 webuiserver.cpp 包含的片段，不作为独立编译单元
 set_source_files_properties(webui/webuiserver_spa.inc PROPERTIES HEADER_FILE_ONLY TRUE)
 target_sources(msm_webui PRIVATE webui/webuiserver_spa.inc)
-target_link_libraries(msm_webui PUBLIC Qt6::Core Qt6::Network Qt6::Gui
-    msm_core msm_download msm_server msm_serverctl msm_java msm_settings)
+target_link_libraries(msm_webui PUBLIC Qt6::Core Qt6::Network Qt6::Gui crypt32 advapi32
+    msm_core msm_download msm_server msm_serverctl msm_java msm_settings msm_bot)
 target_include_directories(msm_webui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/webui)
+
+
