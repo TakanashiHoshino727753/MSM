@@ -17,33 +17,38 @@ ApplicationWindow {
 
     function applyTheme(dark, accent) { appController.setTheme(dark, accent) }
 
-    // 设置分类导航：当前选中分类 + 点击滚动对齐 + 手动滚动时同步高亮
+    // 设置分类导航：锚点机制。每个分类对应卡片在 flick 内容坐标中的真实 y（锚点）。
+    // 当前分类 = 最后一个其锚点已越过视口顶（contentY）的分类；有锚点进出视口顶时更新。
     property string currentSection: "appearance"
     property bool _navLock: false   // 程序滚动动画期间锁定，避免高亮乱跳
     property real _navTarget: 0     // 程序滚动的目标位置，到达后解锁
     function navList() { return [cardA, cardB, cardD, cardC, cardQ, cardBack, cardO] }
     function navKeys() { return ["appearance", "language", "dir", "webui", "bot", "backup", "ops"] }
+    // 分类卡片在 flick.contentItem 坐标系中的真实 y（锚点），与 flick.contentY 同一坐标系
+    function anchorY(item) { return item.mapToItem(flick.contentItem, 0, 0).y }
     function sectionOf(item) {
         var list = navList(), keys = navKeys()
         for (var i = 0; i < list.length; ++i)
             if (list[i] === item) return keys[i]
         return ""
     }
+    // 点击：立即锁定高亮，并滚动到该分类锚点（顶部对齐视口顶）。动画期间不重算防跳。
     function scrollTo(item) {
         if (!item) return
-        currentSection = sectionOf(item)   // 点击即锁定高亮，动画期间不重算
+        currentSection = sectionOf(item)
         _navLock = true
-        _navTarget = Math.max(0, Math.min(flick.contentHeight - flick.height, item.y))  // 顶部对齐到视口顶
+        _navTarget = Math.max(0, Math.min(flick.contentHeight - flick.height, anchorY(item)))
         flick.contentY = _navTarget
     }
+    // 手动滚动 / 动画结束：根据锚点穿过视口顶判定当前分类
     function updateCurrent() {
         if (_navLock) return                // 程序滚动动画期间不重算，防乱跳
-        // 当前分类 = 视口内最上面的卡片（第一个底部仍在视口顶之下的卡片）
         var list = navList(), keys = navKeys()
         var y = flick.contentY
         var cur = keys[0]
+        // 最后一个其锚点已越过视口顶（anchorY <= contentY + 1px 容差）的分类
         for (var i = 0; i < list.length; ++i) {
-            if (list[i].y + list[i].height > y) { cur = keys[i]; break }
+            if (anchorY(list[i]) <= y + 1) cur = keys[i]
         }
         currentSection = cur
     }
@@ -51,6 +56,7 @@ ApplicationWindow {
     Component.onCompleted: {
         for (let i = 0; i < langBox.model.length; ++i)
             if (langBox.model[i] === settingsController.language) { langBox.currentIndex = i; break }
+        updateCurrent()   // 进入页面时按视口顶锚点初始化当前分类高亮
     }
 
     // 背景：纯色 + 轻微主色染色，避免依赖外部图片资源
@@ -216,6 +222,8 @@ ApplicationWindow {
                     y: 16
                     width: parent.width - 32
                     spacing: 14
+                    // 内容高度变化（语言切换换行等）后重算当前分类，避免锚点错位
+                    onHeightChanged: if (!_navLock) updateCurrent()
 
                     // 外观
                     Rectangle {
