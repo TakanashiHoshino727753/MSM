@@ -273,5 +273,6 @@
     "端口 %1 已被服务器“%2”占用，无法同时启动。": "Port %1 is already used by server \"%2\"; they cannot run at the same time.",
     "端口 %1 已被其他程序占用，无法启动。": "Port %1 is already used by another program; cannot start.",
     "可自动分配一个空闲端口并立即启动。": "A free port can be assigned automatically and the server started right away.",
-    "自动分配端口并启动": "Auto-assign port & start"
+    "自动分配端口并启动": "Auto-assign port & start",
+    "启动时显示窗口": "Show window on startup"
 }

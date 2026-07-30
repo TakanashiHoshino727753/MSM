@@ -43,6 +43,7 @@ SettingsController::SettingsController(QObject *parent) : QObject(parent)
     m_webuiExposeLan = s.value(QStringLiteral("app/webuiExposeLan"), false).toBool();
     m_webuiCertPath = s.value(QStringLiteral("app/webuiCertPath")).toString();
     m_webuiKeyPath = s.value(QStringLiteral("app/webuiKeyPath")).toString();
+    m_showOnStartup = s.value(QStringLiteral("app/showOnStartup"), false).toBool();
     m_napcat = s.value(QStringLiteral("app/napcat"), false).toBool();
     m_napcatPath = s.value(QStringLiteral("app/napcatPath")).toString();
     m_nonebot = s.value(QStringLiteral("app/nonebot"), false).toBool();
@@ -166,6 +167,11 @@ void SettingsController::setWebuiKeyPath(const QString &v)
     const QString p = stripFileUrl(v);
     if (m_webuiKeyPath != p) { m_webuiKeyPath = p; emit webuiKeyPathChanged(); }
 }
+
+void SettingsController::setShowOnStartup(bool v)
+{
+    if (m_showOnStartup != v) { m_showOnStartup = v; emit showOnStartupChanged(); }
+}
 void SettingsController::setWebhookUrl(const QString &v)
 {
     if (m_webhookUrl != v) { m_webhookUrl = v; emit webhookUrlChanged(); }
@@ -247,6 +253,7 @@ void SettingsController::apply()
     s.setValue(QStringLiteral("app/webuiExposeLan"), m_webuiExposeLan);
     s.setValue(QStringLiteral("app/webuiCertPath"), m_webuiCertPath);
     s.setValue(QStringLiteral("app/webuiKeyPath"), m_webuiKeyPath);
+    s.setValue(QStringLiteral("app/showOnStartup"), m_showOnStartup);
     s.setValue(QStringLiteral("app/napcat"), m_napcat);
     s.setValue(QStringLiteral("app/napcatPath"), m_napcatPath);
     s.setValue(QStringLiteral("app/nonebot"), m_nonebot);

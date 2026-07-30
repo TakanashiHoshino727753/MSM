@@ -21,6 +21,8 @@ class SettingsController : public QObject
     // 自定义证书（PEM）路径；留空则使用自动生成的自签证书（存入 Windows 证书存储）。
     Q_PROPERTY(QString webuiCertPath READ webuiCertPath WRITE setWebuiCertPath NOTIFY webuiCertPathChanged)
     Q_PROPERTY(QString webuiKeyPath READ webuiKeyPath WRITE setWebuiKeyPath NOTIFY webuiKeyPathChanged)
+    // 启动时是否显示主窗口。默认 false=启动仅驻留托盘、不弹窗（点托盘“显示主窗口”可打开）
+    Q_PROPERTY(bool showOnStartup READ showOnStartup WRITE setShowOnStartup NOTIFY showOnStartupChanged)
 
     // Webhook 通知（崩溃 / 启停 / 玩家进服推送）：URL、类型(discord|wecom|generic)、总开关与三类事件开关
     Q_PROPERTY(QString webhookUrl READ webhookUrl WRITE setWebhookUrl NOTIFY webhookUrlChanged)
@@ -62,6 +64,9 @@ public:
     void setWebuiCertPath(const QString &v);
     QString webuiKeyPath() const { return m_webuiKeyPath; }
     void setWebuiKeyPath(const QString &v);
+
+    bool showOnStartup() const { return m_showOnStartup; }
+    void setShowOnStartup(bool v);
 
     QString webhookUrl() const { return m_webhookUrl; }
     void setWebhookUrl(const QString &v);
@@ -123,6 +128,7 @@ signals:
     void webuiExposeLanChanged();
     void webuiCertPathChanged();
     void webuiKeyPathChanged();
+    void showOnStartupChanged();
 
     void webhookUrlChanged();
     void webhookTypeChanged();
@@ -153,6 +159,7 @@ private:
     bool m_webuiExposeLan = false;
     QString m_webuiCertPath;
     QString m_webuiKeyPath;
+    bool m_showOnStartup = false;
 
     QString m_webhookUrl;
     QString m_webhookType = QStringLiteral("discord");

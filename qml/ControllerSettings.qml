@@ -322,6 +322,14 @@ ApplicationWindow {
                                     onToggled: { settingsController.autoStart = checked; settingsController.apply() }
                                 }
                             }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label { text: I18n.t("启动时显示窗口", I18n.lang); Layout.fillWidth: true; color: Theme.text }
+                                Switch {
+                                    checked: settingsController.showOnStartup
+                                    onToggled: { settingsController.showOnStartup = checked; settingsController.apply() }
+                                }
+                            }
                         }
                     }
 

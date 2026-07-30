@@ -905,7 +905,9 @@ int main(int argc, char *argv[])
     engine.addImportPath(QLibraryInfo::path(QLibraryInfo::Qml2ImportsPath));
 
     // 启动即显示主操作页面：此前主窗口只在点击托盘时才创建，故启动后看不到任何界面。
-    appController->showMainWindow();
+    // 由“启动时显示窗口”设置决定：开启则创建并显示主窗口，否则仅驻留系统托盘（点托盘“显示主窗口”可打开）。
+    if (settingsController.showOnStartup())
+        appController->showMainWindow();
 
     return app.exec();
 }
