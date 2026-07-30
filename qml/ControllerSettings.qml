@@ -17,6 +17,23 @@ ApplicationWindow {
 
     function applyTheme(dark, accent) { appController.setTheme(dark, accent) }
 
+    // 设置分类导航：当前选中分类 + 点击滚动定位 + 手动滚动时同步高亮
+    property string currentSection: "appearance"
+    function scrollTo(item) {
+        if (!item) return
+        var target = item.y + 8
+        flick.contentY = Math.max(0, Math.min(flick.contentHeight - flick.height, target))
+    }
+    function updateCurrent() {
+        var y = flick.contentY
+        var list = [cardA, cardB, cardD, cardC, cardQ, cardBack, cardO]
+        var keys = ["appearance", "language", "dir", "webui", "bot", "backup", "ops"]
+        var cur = keys[0]
+        for (var i = 0; i < list.length; ++i)
+            if (list[i].y + 16 <= y + 40) cur = keys[i]
+        currentSection = cur
+    }
+
     Component.onCompleted: {
         for (let i = 0; i < langBox.model.length; ++i)
             if (langBox.model[i] === settingsController.language) { langBox.currentIndex = i; break }
@@ -62,28 +79,114 @@ ApplicationWindow {
                 color: Theme.panel
                 // 左下角跟随窗口圆角（frame 的 clip 不会裁剪子项的圆角，需在此单独设置）
                 bottomLeftRadius: window.visibility === Window.Maximized ? 0 : Theme.radius
-                ColumnLayout {
-                    anchors.fill: parent
-                    anchors.margins: 16
-                    spacing: 6
-                    Label { text: I18n.t("外观", I18n.lang); color: Theme.textMuted; font.bold: true }
-                    Label { text: I18n.t("语言与自启", I18n.lang); color: Theme.textMuted; font.bold: true }
-                    Label { text: I18n.t("WebUI", I18n.lang); color: Theme.textMuted; font.bold: true }
-                    Label { text: I18n.t("QQ 机器人", I18n.lang); color: Theme.textMuted; font.bold: true }
-                    Item { Layout.fillHeight: true }
-                    Label { text: "Minecraft Server Manager"; color: Theme.textMuted; font.pixelSize: 11 }
-                }
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 12
+                        spacing: 4
+                        Label { text: I18n.t("设置分类", I18n.lang); color: Theme.textMuted; font.bold: true; font.pixelSize: 11 }
+
+                        Button {
+                            Layout.fillWidth: true; height: 32
+                            leftPadding: 12; rightPadding: 12
+                            text: I18n.t("外观", I18n.lang)
+                            onClicked: scrollTo(cardA)
+                            background: Rectangle {
+                                radius: 6
+                                color: currentSection === "appearance" ? Theme.accentSoft : (parent.hovered ? Theme.panelAlt : "transparent")
+                                Behavior on color { ColorAnimation { duration: 100 } }
+                            }
+                            contentItem: Label { text: parent.text; color: currentSection === "appearance" ? Theme.accent : Theme.text; horizontalAlignment: Text.AlignLeft; verticalAlignment: Text.AlignVCenter }
+                        }
+                        Button {
+                            Layout.fillWidth: true; height: 32
+                            leftPadding: 12; rightPadding: 12
+                            text: I18n.t("语言与自启", I18n.lang)
+                            onClicked: scrollTo(cardB)
+                            background: Rectangle {
+                                radius: 6
+                                color: currentSection === "language" ? Theme.accentSoft : (parent.hovered ? Theme.panelAlt : "transparent")
+                                Behavior on color { ColorAnimation { duration: 100 } }
+                            }
+                            contentItem: Label { text: parent.text; color: currentSection === "language" ? Theme.accent : Theme.text; horizontalAlignment: Text.AlignLeft; verticalAlignment: Text.AlignVCenter }
+                        }
+                        Button {
+                            Layout.fillWidth: true; height: 32
+                            leftPadding: 12; rightPadding: 12
+                            text: I18n.t("默认服务器目录", I18n.lang)
+                            onClicked: scrollTo(cardD)
+                            background: Rectangle {
+                                radius: 6
+                                color: currentSection === "dir" ? Theme.accentSoft : (parent.hovered ? Theme.panelAlt : "transparent")
+                                Behavior on color { ColorAnimation { duration: 100 } }
+                            }
+                            contentItem: Label { text: parent.text; color: currentSection === "dir" ? Theme.accent : Theme.text; horizontalAlignment: Text.AlignLeft; verticalAlignment: Text.AlignVCenter }
+                        }
+                        Button {
+                            Layout.fillWidth: true; height: 32
+                            leftPadding: 12; rightPadding: 12
+                            text: I18n.t("WebUI", I18n.lang)
+                            onClicked: scrollTo(cardC)
+                            background: Rectangle {
+                                radius: 6
+                                color: currentSection === "webui" ? Theme.accentSoft : (parent.hovered ? Theme.panelAlt : "transparent")
+                                Behavior on color { ColorAnimation { duration: 100 } }
+                            }
+                            contentItem: Label { text: parent.text; color: currentSection === "webui" ? Theme.accent : Theme.text; horizontalAlignment: Text.AlignLeft; verticalAlignment: Text.AlignVCenter }
+                        }
+                        Button {
+                            Layout.fillWidth: true; height: 32
+                            leftPadding: 12; rightPadding: 12
+                            text: I18n.t("QQ 机器人", I18n.lang)
+                            onClicked: scrollTo(cardQ)
+                            background: Rectangle {
+                                radius: 6
+                                color: currentSection === "bot" ? Theme.accentSoft : (parent.hovered ? Theme.panelAlt : "transparent")
+                                Behavior on color { ColorAnimation { duration: 100 } }
+                            }
+                            contentItem: Label { text: parent.text; color: currentSection === "bot" ? Theme.accent : Theme.text; horizontalAlignment: Text.AlignLeft; verticalAlignment: Text.AlignVCenter }
+                        }
+                        Button {
+                            Layout.fillWidth: true; height: 32
+                            leftPadding: 12; rightPadding: 12
+                            text: I18n.t("备份与定时", I18n.lang)
+                            onClicked: scrollTo(cardBack)
+                            background: Rectangle {
+                                radius: 6
+                                color: currentSection === "backup" ? Theme.accentSoft : (parent.hovered ? Theme.panelAlt : "transparent")
+                                Behavior on color { ColorAnimation { duration: 100 } }
+                            }
+                            contentItem: Label { text: parent.text; color: currentSection === "backup" ? Theme.accent : Theme.text; horizontalAlignment: Text.AlignLeft; verticalAlignment: Text.AlignVCenter }
+                        }
+                        Button {
+                            Layout.fillWidth: true; height: 32
+                            leftPadding: 12; rightPadding: 12
+                            text: I18n.t("运维与通知", I18n.lang)
+                            onClicked: scrollTo(cardO)
+                            background: Rectangle {
+                                radius: 6
+                                color: currentSection === "ops" ? Theme.accentSoft : (parent.hovered ? Theme.panelAlt : "transparent")
+                                Behavior on color { ColorAnimation { duration: 100 } }
+                            }
+                            contentItem: Label { text: parent.text; color: currentSection === "ops" ? Theme.accent : Theme.text; horizontalAlignment: Text.AlignLeft; verticalAlignment: Text.AlignVCenter }
+                        }
+
+                        Item { Layout.fillHeight: true }
+                        Label { text: "Minecraft Server Manager"; color: Theme.textMuted; font.pixelSize: 11 }
+                    }
             }
 
             Rectangle { Layout.preferredWidth: 1; Layout.fillHeight: true; color: Theme.border }
 
             Flickable {
+                id: flick
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 contentWidth: width
                 contentHeight: col.height + 32
                 clip: true
                 ScrollBar.vertical: ScrollBar {}
+                onContentYChanged: updateCurrent()
+                Behavior on contentY { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
                 ColumnLayout {
                     id: col
                     x: 16
@@ -684,6 +787,47 @@ ApplicationWindow {
                                     background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
                                 }
                             }
+                        }
+                    }
+
+                    // 备份与定时
+                    Rectangle {
+                        Layout.fillWidth: true
+                        radius: Theme.radius
+                        color: Theme.panel
+                        implicitHeight: cardBack.height + 32
+                        ColumnLayout {
+                            id: cardBack
+                            x: 16; y: 16
+                            width: parent.width - 32
+                            spacing: 12
+                            Label { text: I18n.t("备份与定时", I18n.lang); color: Theme.text; font.bold: true; font.pixelSize: 15 }
+                            Label { text: I18n.t("定时把服务端目录打包备份，按保留份数滚动删除最旧备份（备份文件位于 AppData 下的 MSM/backups）。", I18n.lang); color: Theme.textMuted; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label { text: I18n.t("启用定时备份", I18n.lang); Layout.fillWidth: true; color: Theme.text }
+                                Switch { checked: backupController.enabled; onToggled: backupController.enabled = checked }
+                            }
+                            RowLayout { spacing: 6
+                                Label { text: I18n.t("备份间隔(小时)", I18n.lang); color: Theme.text }
+                                SpinBox { from: 1; to: 168; value: backupController.intervalHours; onValueChanged: if (value !== backupController.intervalHours) backupController.intervalHours = value }
+                                Label { text: I18n.t("保留份数", I18n.lang); color: Theme.text }
+                                SpinBox { from: 1; to: 50; value: backupController.retain; onValueChanged: if (value !== backupController.retain) backupController.retain = value }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label { text: I18n.t("启动时也备份一次", I18n.lang); Layout.fillWidth: true; color: Theme.text }
+                                Switch { checked: backupController.onStart; onToggled: backupController.onStart = checked }
+                            }
+                            Label {
+                                text: backupController.lastBackup > 0
+                                      ? I18n.t("上次备份：%1", I18n.lang).arg(new Date(backupController.lastBackup).toLocaleString(Qt.locale(), Locale.ShortFormat))
+                                      : I18n.t("尚无备份记录", I18n.lang)
+                                color: Theme.textMuted; font.pixelSize: 12
+                            }
+                            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.border }
+                            Label { text: I18n.t("定时启停 / 定时备份：在每台服务器的详情页点「定时任务」里按 启动/停止/备份 + 时间 配置（全局统一调度）。", I18n.lang); color: Theme.textMuted; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
                         }
                     }
 

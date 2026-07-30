@@ -4,6 +4,7 @@
 #include <QStringList>
 #include <QVariantMap>
 #include <QHash>
+#include <QMap>
 #include <QProcess>
 #include <QSet>
 #include <QPair>
@@ -132,4 +133,8 @@ private:
     bool m_autoRestart = true;
     int m_maxRetries = 5;
     int m_backoffSec = 5;
+    // 每个服务器的估算 TPS（A2）：解析 “Can't keep up! ... Running Nms behind” 得出；
+    // 若过去 60s 内没有过载日志，则回退为满速 20。
+    QMap<QString, double> m_tps;
+    QMap<QString, qint64> m_lastOverload;
 };

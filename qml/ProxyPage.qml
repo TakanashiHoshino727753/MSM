@@ -1,7 +1,8 @@
-// ProxyPage.qml —— Velocity 反向代理聚合页
+// ProxyPage.qml —— Velocity 反向代理聚合页（P2 多实例 + A3 UPnP 公网暴露）
 // 多台同时运行的服务器通过一个统一入口端口对外服务：
 // 玩家连接代理端口后，游戏内用 /server <名称> 在各后端之间切换。
-// 由 C++ proxyController 驱动（安装 / 同步配置 / 启动 / 停止 / 控制台）。
+// 顶部实例页签切换多个代理实例（各自独立端口/后端筛选，共享 velocity.jar）；
+// 页面底部提供 UPnP 端口映射（实验性）把代理端口暴露到公网。
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -10,11 +11,19 @@ import MinecraftServerManager
 Item {
     id: page
 
-    // 页签切到本页时刷新后端映射表
+    // 当前选中的代理实例（索引 0 恒为默认实例）
+    property int currentIndex: 0
+    property var proxy: proxyManager.proxyAt(currentIndex)
+
+    // 页签切到本页/切换实例时刷新后端映射表
     property var backends: []
-    function refreshBackends() { backends = proxyController.backendSummary() }
+    function refreshBackends() { backends = page.proxy ? page.proxy.backendSummary() : [] }
     Component.onCompleted: refreshBackends()
     onVisibleChanged: if (visible) refreshBackends()
+    onProxyChanged: {
+        refreshBackends()
+        consoleArea.text = page.proxy ? page.proxy.getConsole() : ""
+    }
 
     ScrollView {
         anchors.fill: parent
@@ -36,21 +45,78 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     radius: 9; height: 20
                     width: statusText.implicitWidth + 16
-                    color: proxyController.running ? "#2e7d32" : Theme.panel
+                    color: page.proxy && page.proxy.running ? "#2e7d32" : Theme.panel
                     border.color: Theme.border
                     Label {
                         id: statusText
                         anchors.centerIn: parent
                         font.pixelSize: 11
-                        color: proxyController.running ? "white" : Theme.textMuted
-                        text: proxyController.status
+                        color: page.proxy && page.proxy.running ? "white" : Theme.textMuted
+                        text: page.proxy ? page.proxy.status : ""
                     }
+                }
+                Label {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: page.proxy && page.proxy.running
+                    color: Theme.textMuted; font.pixelSize: 12
+                    text: I18n.t("在线人数", I18n.lang) + ": " + (page.proxy ? page.proxy.playerCount : 0)
                 }
             }
             Label {
                 width: parent.width; wrapMode: Text.Wrap
                 color: Theme.textMuted; font.pixelSize: 12
                 text: I18n.t("将多台同时运行的服务器聚合到一个入口端口：玩家统一连接代理端口，游戏内用 /server 名称 切换服务器。启动代理前会自动生成配置并修补各后端（online-mode=false）。", I18n.lang)
+            }
+
+            // ---- P2 实例页签 ----
+            Flow {
+                width: parent.width; spacing: 8
+                Repeater {
+                    model: proxyManager.proxies
+                    Rectangle {
+                        radius: 6; height: 30
+                        width: tabRow.implicitWidth + 20
+                        color: index === page.currentIndex ? Theme.accent : Theme.panel
+                        border.color: index === page.currentIndex ? Theme.accent : Theme.border
+                        Row {
+                            id: tabRow
+                            anchors.centerIn: parent; spacing: 6
+                            Rectangle {
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 8; height: 8; radius: 4
+                                color: modelData.running ? "#43d17a" : Theme.border
+                            }
+                            Label {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: modelData.name + " :" + modelData.port
+                                      + (modelData.running ? " · " + modelData.players : "")
+                                font.pixelSize: 12
+                                color: index === page.currentIndex ? "white" : Theme.text
+                            }
+                        }
+                        MouseArea { anchors.fill: parent; onClicked: page.currentIndex = index }
+                    }
+                }
+                Button {
+                    height: 30
+                    text: "+ " + I18n.t("新建代理", I18n.lang)
+                    palette.windowText: Theme.text; palette.buttonText: Theme.text
+                    background: Rectangle { color: parent.hovered ? Theme.panel : Theme.bg; radius: 6; border.color: Theme.border }
+                    onClicked: page.currentIndex = proxyManager.addProxy("")
+                }
+                Button {
+                    height: 30
+                    visible: page.currentIndex > 0
+                    enabled: page.proxy && !page.proxy.running
+                    text: I18n.t("删除实例", I18n.lang)
+                    palette.windowText: "#e05f5f"; palette.buttonText: "#e05f5f"
+                    background: Rectangle { color: parent.hovered ? Theme.panel : Theme.bg; radius: 6; border.color: Theme.border }
+                    onClicked: {
+                        var idx = page.currentIndex
+                        page.currentIndex = 0
+                        proxyManager.removeProxy(idx)
+                    }
+                }
             }
 
             // ---- 安装 / 参数 ----
@@ -65,28 +131,40 @@ Item {
                     Row {
                         spacing: 10
                         Button {
-                            text: proxyController.installed ? I18n.t("更新 Velocity", I18n.lang)
-                                                            : I18n.t("安装 Velocity", I18n.lang)
-                            enabled: !proxyController.busy && !proxyController.running
+                            text: page.proxy && page.proxy.installed ? I18n.t("更新 Velocity", I18n.lang)
+                                                                     : I18n.t("安装 Velocity", I18n.lang)
+                            enabled: page.proxy && !page.proxy.busy && !page.proxy.running
                             palette.windowText: "white"; palette.buttonText: "white"
                             background: Rectangle { color: parent.enabled ? (parent.hovered ? Theme.accentHover : Theme.accent) : Theme.panelAlt; radius: 6 }
-                            onClicked: proxyController.install()
+                            onClicked: page.proxy.install()
                         }
                         ProgressBar {
                             anchors.verticalCenter: parent.verticalCenter
                             width: 160
                             from: 0; to: 100
-                            value: proxyController.installProgress
-                            visible: proxyController.busy
+                            value: page.proxy ? page.proxy.installProgress : 0
+                            visible: page.proxy && page.proxy.busy
                         }
                         Label {
                             anchors.verticalCenter: parent.verticalCenter
                             color: Theme.textMuted; font.pixelSize: 12
-                            text: proxyController.installed ? I18n.t("已安装", I18n.lang) : I18n.t("未安装", I18n.lang)
+                            text: page.proxy && page.proxy.installed ? I18n.t("已安装", I18n.lang) : I18n.t("未安装", I18n.lang)
                         }
                     }
                     Row {
                         spacing: 10
+                        Label {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: I18n.t("实例名称", I18n.lang); color: Theme.text
+                        }
+                        TextField {
+                            id: nameField
+                            width: 140
+                            text: page.proxy ? page.proxy.name : ""
+                            color: Theme.text
+                            background: Rectangle { color: Theme.bg; radius: 6; border.color: nameField.activeFocus ? Theme.accent : Theme.border }
+                            onEditingFinished: if (page.proxy) page.proxy.name = text
+                        }
                         Label {
                             anchors.verticalCenter: parent.verticalCenter
                             text: I18n.t("入口端口", I18n.lang); color: Theme.text
@@ -94,12 +172,12 @@ Item {
                         TextField {
                             id: portField
                             width: 90
-                            enabled: !proxyController.running
-                            text: String(proxyController.proxyPort)
+                            enabled: page.proxy && !page.proxy.running
+                            text: page.proxy ? String(page.proxy.proxyPort) : ""
                             validator: IntValidator { bottom: 1; top: 65535 }
                             color: Theme.text
                             background: Rectangle { color: Theme.bg; radius: 6; border.color: portField.activeFocus ? Theme.accent : Theme.border }
-                            onEditingFinished: proxyController.proxyPort = parseInt(text)
+                            onEditingFinished: if (page.proxy) page.proxy.proxyPort = parseInt(text)
                         }
                         Label {
                             anchors.verticalCenter: parent.verticalCenter
@@ -107,12 +185,12 @@ Item {
                         }
                         TextField {
                             id: motdField
-                            width: 260
-                            enabled: !proxyController.running
-                            text: proxyController.motd
+                            width: 220
+                            enabled: page.proxy && !page.proxy.running
+                            text: page.proxy ? page.proxy.motd : ""
                             color: Theme.text
                             background: Rectangle { color: Theme.bg; radius: 6; border.color: motdField.activeFocus ? Theme.accent : Theme.border }
-                            onEditingFinished: proxyController.motd = text
+                            onEditingFinished: if (page.proxy) page.proxy.motd = text
                         }
                     }
 
@@ -121,9 +199,9 @@ Item {
                         spacing: 10
                         Switch {
                             id: offlineSwitch
-                            checked: proxyController.offlineMode
-                            enabled: !proxyController.running
-                            onCheckedChanged: if (checked !== proxyController.offlineMode) proxyController.offlineMode = checked
+                            checked: page.proxy ? page.proxy.offlineMode : true
+                            enabled: page.proxy && !page.proxy.running
+                            onCheckedChanged: if (page.proxy && checked !== page.proxy.offlineMode) page.proxy.offlineMode = checked
                         }
                         Label {
                             anchors.verticalCenter: parent.verticalCenter
@@ -142,8 +220,8 @@ Item {
                         spacing: 10
                         Switch {
                             id: stopBackendsSwitch
-                            checked: proxyController.stopBackendsWithProxy
-                            onCheckedChanged: if (checked !== proxyController.stopBackendsWithProxy) proxyController.stopBackendsWithProxy = checked
+                            checked: page.proxy ? page.proxy.stopBackendsWithProxy : true
+                            onCheckedChanged: if (page.proxy && checked !== page.proxy.stopBackendsWithProxy) page.proxy.stopBackendsWithProxy = checked
                         }
                         Label {
                             anchors.verticalCenter: parent.verticalCenter
@@ -162,8 +240,8 @@ Item {
                         spacing: 10
                         Switch {
                             id: autoRestartSwitch
-                            checked: proxyController.autoRestart
-                            onCheckedChanged: if (checked !== proxyController.autoRestart) proxyController.autoRestart = checked
+                            checked: page.proxy ? page.proxy.autoRestart : true
+                            onCheckedChanged: if (page.proxy && checked !== page.proxy.autoRestart) page.proxy.autoRestart = checked
                         }
                         Label {
                             anchors.verticalCenter: parent.verticalCenter
@@ -179,7 +257,7 @@ Item {
                 }
             }
 
-            // ---- 后端映射表 ----
+            // ---- 后端映射表（P2：勾选纳入本实例的后端）----
             Label {
                 text: I18n.t("后端服务器", I18n.lang)
                 font.pixelSize: 15; font.bold: true; color: Theme.text
@@ -201,7 +279,8 @@ Item {
                     spacing: 2
                     Row {
                         spacing: 0; height: 26
-                        Label { width: 220; text: I18n.t("名称", I18n.lang); color: Theme.textMuted; font.pixelSize: 12; font.bold: true }
+                        Label { width: 60;  text: I18n.t("聚合", I18n.lang); color: Theme.textMuted; font.pixelSize: 12; font.bold: true }
+                        Label { width: 200; text: I18n.t("名称", I18n.lang); color: Theme.textMuted; font.pixelSize: 12; font.bold: true }
                         Label { width: 160; text: I18n.t("地址", I18n.lang); color: Theme.textMuted; font.pixelSize: 12; font.bold: true }
                         Label { width: 100; text: I18n.t("类型", I18n.lang); color: Theme.textMuted; font.pixelSize: 12; font.bold: true }
                         Label { width: 120; text: I18n.t("转发模式", I18n.lang); color: Theme.textMuted; font.pixelSize: 12; font.bold: true }
@@ -209,8 +288,18 @@ Item {
                     Repeater {
                         model: page.backends
                         Row {
-                            spacing: 0; height: 26
-                            Label { width: 220; elide: Text.ElideRight; text: modelData.name; color: Theme.text; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+                            spacing: 0; height: 28
+                            CheckBox {
+                                width: 60; height: 26
+                                anchors.verticalCenter: parent.verticalCenter
+                                checked: modelData.enabled
+                                enabled: page.proxy && !page.proxy.running
+                                onToggled: {
+                                    page.proxy.setServerEnabled(modelData.name, checked)
+                                    page.refreshBackends()
+                                }
+                            }
+                            Label { width: 200; elide: Text.ElideRight; text: modelData.name; color: Theme.text; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
                             Label { width: 160; text: modelData.host + ":" + modelData.port; color: Theme.text; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
                             Label { width: 100; text: modelData.type; color: Theme.text; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
                             Label { width: 120; text: modelData.forwarding; color: Theme.textMuted; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
@@ -224,30 +313,131 @@ Item {
                 spacing: 10
                 Button {
                     text: I18n.t("同步配置", I18n.lang)
-                    enabled: !proxyController.running
+                    enabled: page.proxy && !page.proxy.running
                     palette.windowText: Theme.text; palette.buttonText: Theme.text
                     background: Rectangle { color: parent.hovered ? Theme.panel : Theme.bg; radius: 6; border.color: Theme.border }
-                    onClicked: { proxyController.syncConfig(); page.refreshBackends() }
+                    onClicked: { page.proxy.syncConfig(); page.refreshBackends() }
                 }
                 Button {
                     text: I18n.t("启动代理", I18n.lang)
-                    enabled: proxyController.installed && !proxyController.running && !proxyController.busy
+                    enabled: page.proxy && page.proxy.installed && !page.proxy.running && !page.proxy.busy
                     palette.windowText: "white"; palette.buttonText: "white"
                     background: Rectangle { color: parent.enabled ? (parent.hovered ? Theme.accentHover : Theme.accent) : Theme.panelAlt; radius: 6 }
-                    onClicked: { proxyController.start(); page.refreshBackends() }
+                    onClicked: { page.proxy.start(); page.refreshBackends() }
                 }
                 Button {
                     text: I18n.t("停止代理", I18n.lang)
-                    enabled: proxyController.running
+                    enabled: page.proxy && page.proxy.running
                     palette.windowText: Theme.text; palette.buttonText: Theme.text
                     background: Rectangle { color: parent.hovered ? Theme.panel : Theme.bg; radius: 6; border.color: Theme.border }
-                    onClicked: proxyController.stop()
+                    onClicked: page.proxy.stop()
                 }
                 Button {
                     text: I18n.t("打开代理目录", I18n.lang)
                     palette.windowText: Theme.text; palette.buttonText: Theme.text
                     background: Rectangle { color: parent.hovered ? Theme.panel : Theme.bg; radius: 6; border.color: Theme.border }
-                    onClicked: Qt.openUrlExternally("file:///" + proxyController.proxyDir)
+                    onClicked: Qt.openUrlExternally("file:///" + (page.proxy ? page.proxy.proxyDir : ""))
+                }
+            }
+
+            // ---- A3 公网暴露（UPnP，实验性）----
+            Label {
+                text: I18n.t("公网暴露（UPnP · 实验性）", I18n.lang)
+                font.pixelSize: 15; font.bold: true; color: Theme.text
+            }
+            Rectangle {
+                width: parent.width
+                color: Theme.panel; radius: Theme.radius; border.color: Theme.border
+                height: upnpCol.implicitHeight + 28
+                Column {
+                    id: upnpCol
+                    anchors { left: parent.left; right: parent.right; top: parent.top; margins: 14 }
+                    spacing: 10
+                    Label {
+                        width: parent.width; wrapMode: Text.Wrap
+                        color: Theme.textMuted; font.pixelSize: 11
+                        text: I18n.t("通过路由器 UPnP 把代理端口映射到公网（需路由器开启 UPnP）。若运营商为你分配的是私网地址（CG-NAT），映射成功也可能无法从公网直连，此时建议使用内网穿透工具（frp/ngrok 等）。", I18n.lang)
+                    }
+                    Row {
+                        spacing: 10
+                        Button {
+                            text: I18n.t("发现网关", I18n.lang)
+                            enabled: !portMapper.busy
+                            palette.windowText: "white"; palette.buttonText: "white"
+                            background: Rectangle { color: parent.enabled ? (parent.hovered ? Theme.accentHover : Theme.accent) : Theme.panelAlt; radius: 6 }
+                            onClicked: portMapper.discover()
+                        }
+                        Button {
+                            text: I18n.t("映射代理端口", I18n.lang)
+                            enabled: portMapper.available && !portMapper.busy && page.proxy
+                            palette.windowText: Theme.text; palette.buttonText: Theme.text
+                            background: Rectangle { color: parent.hovered ? Theme.panel : Theme.bg; radius: 6; border.color: Theme.border }
+                            onClicked: portMapper.addMapping(page.proxy.proxyPort, page.proxy.proxyPort, "TCP",
+                                                             "MSM-" + page.proxy.name)
+                        }
+                        BusyIndicator {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 22; height: 22
+                            running: portMapper.busy
+                            visible: portMapper.busy
+                        }
+                    }
+                    Label {
+                        width: parent.width; wrapMode: Text.Wrap
+                        color: Theme.textMuted; font.pixelSize: 12
+                        text: portMapper.status
+                    }
+                    Row {
+                        spacing: 20
+                        visible: portMapper.available
+                        Label {
+                            color: Theme.text; font.pixelSize: 12
+                            text: I18n.t("网关", I18n.lang) + ": " + portMapper.gatewayName
+                        }
+                        Label {
+                            color: Theme.text; font.pixelSize: 12
+                            text: I18n.t("本机 IP", I18n.lang) + ": " + portMapper.lanIp
+                        }
+                        Label {
+                            color: Theme.text; font.pixelSize: 12
+                            visible: portMapper.externalIp.length > 0
+                            text: I18n.t("外部 IP", I18n.lang) + ": " + portMapper.externalIp
+                        }
+                    }
+                    // 已添加的映射
+                    Repeater {
+                        model: portMapper.mappings
+                        Row {
+                            spacing: 10; height: 28
+                            Label {
+                                anchors.verticalCenter: parent.verticalCenter
+                                color: Theme.text; font.pixelSize: 12
+                                text: (portMapper.externalIp.length > 0 ? portMapper.externalIp : I18n.t("公网", I18n.lang))
+                                      + ":" + modelData.externalPort + " → " + portMapper.lanIp + ":" + modelData.internalPort
+                                      + " (" + modelData.protocol + ")"
+                            }
+                            Button {
+                                height: 26
+                                text: I18n.t("删除映射", I18n.lang)
+                                palette.windowText: "#e05f5f"; palette.buttonText: "#e05f5f"
+                                background: Rectangle { color: parent.hovered ? Theme.panel : Theme.bg; radius: 6; border.color: Theme.border }
+                                onClicked: portMapper.removeMapping(modelData.externalPort, modelData.protocol)
+                            }
+                        }
+                    }
+                    Label {
+                        id: upnpResult
+                        width: parent.width; wrapMode: Text.Wrap
+                        visible: text.length > 0
+                        font.pixelSize: 12
+                        Connections {
+                            target: portMapper
+                            function onMappingResult(ok, message) {
+                                upnpResult.color = ok ? "#43d17a" : "#e05f5f"
+                                upnpResult.text = message
+                            }
+                        }
+                    }
                 }
             }
 
@@ -269,11 +459,11 @@ Item {
                         color: Theme.text
                         font.family: "Consolas"; font.pixelSize: 12
                         background: null
-                        text: proxyController.getConsole()
+                        Component.onCompleted: text = page.proxy ? page.proxy.getConsole() : ""
                     }
                 }
                 Connections {
-                    target: proxyController
+                    target: page.proxy
                     function onConsoleAppended(line) {
                         consoleArea.append(line)
                         // 滚动到底部

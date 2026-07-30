@@ -151,6 +151,8 @@ void ServerController::start(const QString &name, const QString &path,
     m_startTime.insert(name, QDateTime::currentMSecsSinceEpoch());
     m_ports.insert(name, port);
     m_intentionalKill.remove(name);
+    m_tps[name] = 20.0;
+    m_lastOverload.remove(name);
     emit consoleAppended(name, QStringLiteral("[MSM] 正在启动服务器…"));
     emit stateChanged(name, true);
     emit runningCountChanged();
@@ -190,6 +192,20 @@ void ServerController::handleOutput(const QString &name)
             if (it->playerList.removeAll(who) > 0)
                 emit playersChanged(name, it->playerList);
         }
+
+        // A2：资源监控 - 估算 TPS。服务端在高负载时输出
+        // “Can't keep up! (...) Running Nms behind”，据此推算 TPS。
+        static const QRegularExpression reTps(QStringLiteral(
+            "Can't keep up.*?Running\\s+(\\d+)ms\\s+behind"),
+            QRegularExpression::CaseInsensitiveOption);
+        QRegularExpressionMatch tm = reTps.match(line);
+        if (tm.hasMatch()) {
+            const double behind = tm.captured(1).toDouble();
+            // 满速 20 TPS 对应 20000ms/窗口；落后越多 TPS 越低（单调、上限 20）。
+            const double tps = qBound(0.0, 20000.0 / (20000.0 + behind), 20.0);
+            m_tps[name] = tps;
+            m_lastOverload[name] = QDateTime::currentMSecsSinceEpoch();
+        }
     }
 }
 
@@ -206,6 +222,8 @@ void ServerController::onFinished(const QString &name, int exitCode, QProcess::E
     m_startTime.remove(name);
     m_ports.remove(name);
     m_usageSamples.remove(name);
+    m_tps.remove(name);
+    m_lastOverload.remove(name);
     emit consoleAppended(name, QStringLiteral("[MSM] 服务器已停止"));
     emit stateChanged(name, false);
     emit playersChanged(name, {});
@@ -296,6 +314,12 @@ QVariantList ServerController::runningServerUsages() const
         m[QStringLiteral("players")] = it->playerList.size();
         const qint64 start = m_startTime.value(name, now);
         m[QStringLiteral("uptimeSec")] = start ? (now - start) / 1000 : 0;
+        // A2：若过去 60s 内没有过载日志，视为满速 20 TPS
+        double tps = 20.0;
+        const qint64 lastOver = m_lastOverload.value(name, 0);
+        if (lastOver > 0 && (now - lastOver) < 60000)
+            tps = m_tps.value(name, 20.0);
+        m[QStringLiteral("tps")] = tps;
         double cpu = 0;
         qint64 memBytes = 0;
         const int pid = proc->processId();

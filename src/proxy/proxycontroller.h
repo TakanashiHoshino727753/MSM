@@ -24,6 +24,10 @@ class JavaManager;
 //
 // 转发模式策略：所有后端都是 Paper → modern（可拿到玩家真实 IP/UUID）；
 // 混有 vanilla/forge/fabric → none（兼容一切后端，但后端看到的是代理 IP）。
+// P2 多实例：每个 ProxyController 是一个独立代理实例（instanceId 区分）。
+// 默认实例 instanceId 为空（目录/设置键与旧版完全兼容）；其余实例
+// 目录在 MSM/Velocity/instances/<id>，设置键前缀 proxy/<id>/。
+// velocity.jar 在主目录共享（所有实例复用同一 jar，各自独立 toml/secret/进程）。
 class ProxyController : public QObject
 {
     Q_OBJECT
@@ -38,9 +42,15 @@ class ProxyController : public QObject
     Q_PROPERTY(bool offlineMode READ offlineMode WRITE setOfflineMode NOTIFY offlineModeChanged)
     Q_PROPERTY(bool stopBackendsWithProxy READ stopBackendsWithProxy WRITE setStopBackendsWithProxy NOTIFY stopBackendsWithProxyChanged)
     Q_PROPERTY(bool autoRestart READ autoRestart WRITE setAutoRestart NOTIFY autoRestartChanged)
+    Q_PROPERTY(QString instanceId READ instanceId CONSTANT)
+    Q_PROPERTY(QString name READ name WRITE setName NOTIFY nameChanged)
+    Q_PROPERTY(QStringList serverFilter READ serverFilter WRITE setServerFilter NOTIFY serverFilterChanged)
+    Q_PROPERTY(int playerCount READ playerCount NOTIFY playerCountChanged)
 public:
     explicit ProxyController(ServerManager *sm, ServerController *sc,
-                             JavaManager *java = nullptr, QObject *parent = nullptr);
+                             JavaManager *java = nullptr,
+                             const QString &instanceId = QString(),
+                             QObject *parent = nullptr);
     // 注入统一 JavaManager：代理将使用“独立”的 JDK（托管目录或代理自身目录），
     // 不再借用某台后端服务器的 JDK。
     void setJavaManager(JavaManager *java) { m_java = java; }
@@ -50,6 +60,14 @@ public:
     void setStopBackendsWithProxy(bool v);
     bool autoRestart() const { return m_autoRestart; }
     void setAutoRestart(bool v);
+    QString instanceId() const { return m_instanceId; }
+    QString name() const { return m_name; }
+    void setName(const QString &n);
+    QStringList serverFilter() const { return m_serverFilter; }
+    void setServerFilter(const QStringList &f);
+    // QML 便捷开关：把某台后端加入/移出本实例的聚合范围
+    Q_INVOKABLE void setServerEnabled(const QString &serverName, bool on);
+    int playerCount() const { return m_playerCount; }
 
     bool running() const { return m_proc && m_proc->state() != QProcess::NotRunning; }
     bool installed() const;
@@ -86,6 +104,9 @@ signals:
     void offlineModeChanged();
     void stopBackendsWithProxyChanged();
     void autoRestartChanged();
+    void nameChanged();
+    void serverFilterChanged();
+    void playerCountChanged();
     void crashed();          // 代理异常退出（非用户主动停止），用于通知/自动重拉起
     void portConflict(int port);  // 启动前入口端口被占用
     void consoleAppended(const QString &line);
@@ -94,6 +115,11 @@ private:
     void setStatus(const QString &s);
     void setBusy(bool b);
     void appendConsole(const QString &line);
+    void setPlayerCount(int n);
+    QString baseDir() const;                 // 主目录（velocity.jar 共享于此）
+    QString jarPath() const;                 // 共享 velocity.jar 完整路径
+    QString key(const QString &k) const;     // 实例化设置键（proxy/ 或 proxy/<id>/）
+    QVariantList filteredServers() const;    // 经 serverFilter 过滤后的后端列表
     QString forwardingMode() const;          // "modern" / "none"
     QString ensureSecret();                  // 读取/生成 forwarding.secret，返回密钥
     void patchBackends(const QString &secret, const QString &mode);
@@ -130,4 +156,8 @@ private:
     int m_retryCount = 0;        // 当前连续重拉起次数
     bool m_expectedExit = false; // true 表示本次退出为用户主动停止，不触发自动重拉起
     QStringList m_autoStarted;   // 本次启动代理时自动拉起的后端名称
+    QString m_instanceId;        // 实例 id（空 = 默认实例，兼容旧版单代理）
+    QString m_name;              // 实例显示名
+    QStringList m_serverFilter;  // 聚合的后端名单（空 = 全部）
+    int m_playerCount = 0;       // 从代理日志估算的在线人数
 };

@@ -46,7 +46,12 @@
 #include "webuiserver.h"
 #include "botcontroller.h"
 #include "proxycontroller.h"
+#include "proxymanager.h"
 #include "notifier.h"
+#include "backupcontroller.h"
+#include "schedulercontroller.h"
+#include "updatecontroller.h"
+#include "portmapper.h"
 
 #ifdef Q_OS_WIN
 #define WIN32_LEAN_AND_MEAN
@@ -739,8 +744,33 @@ int main(int argc, char *argv[])
                          botController.pushError(name, tail);
                      });
 
-    // Velocity 反向代理聚合：多台同时运行的服务器共用一个入口端口
-    ProxyController proxyController(&serverManager, &serverController, &javaManager);
+    // Velocity 反向代理聚合（P2 多实例）：索引 0 为默认实例（兼容旧版单代理），
+    // 其余实例各自独立端口/后端筛选，共享同一个 velocity.jar。
+    ProxyManager proxyManager(&serverManager, &serverController, &javaManager);
+    ProxyController &proxyController = *proxyManager.defaultProxy();
+
+    // A3 公网暴露：UPnP IGD 端口映射（实验性，需路由器开启 UPnP）
+    PortMapper portMapper;
+
+    // 运维自动化（B3 定时备份 / B4 定时启停 / B2 一键更新 jar）
+    BackupController backupController;
+    SchedulerController schedulerController(&serverManager, &serverController, &backupController);
+    UpdateController updateController;
+
+    // 同步受管服务器列表给备份控制器，供自动备份遍历
+    auto syncBackupServers = [&]() {
+        backupController.setServerList(serverManager.serverSummary());
+    };
+    syncBackupServers();
+    QObject::connect(&serverManager, &ServerManager::serversChanged, &backupController, syncBackupServers);
+    // 启动即备份（用户开启时）：遍历所有受管服务器各打一份初始备份
+    if (backupController.onStart()) {
+        for (const QVariant &v : serverManager.serverSummary()) {
+            const QVariantMap m = v.toMap();
+            backupController.backupNow(m.value(QStringLiteral("name")).toString(),
+                                       m.value(QStringLiteral("path")).toString());
+        }
+    }
 
     // Webhook 通知器：崩溃 / 启停 / 玩家进服推送
     Notifier notifier;
@@ -787,6 +817,26 @@ int main(int argc, char *argv[])
             notifier.send(proxyController.running() ? QStringLiteral("代理已启动") : QStringLiteral("代理已停止"),
                           QStringLiteral("Velocity 代理"));
     });
+    // 一键更新 jar → Webhook
+    QObject::connect(&updateController, &UpdateController::updateFinished, &notifier,
+                     [&](const QString &name, bool ok, const QString &msg, const QString &) {
+                         if (notifier.enabled())
+                             notifier.send(ok ? QStringLiteral("服务端更新完成") : QStringLiteral("服务端更新失败"),
+                                           name + QStringLiteral("：") + msg);
+                     });
+    // 状态推送（Q2）：服务器启停 / 代理启停 同步到 QQ 机器人群消息（崩溃日志推送已在上方单独接线）
+    QObject::connect(&serverController, &ServerController::stateChanged, &botController,
+                     [&](const QString &name, bool running) {
+                         botController.notify(QStringLiteral("[MSM] 服务器 %1 %2")
+                                               .arg(name, running ? QStringLiteral("已启动") : QStringLiteral("已停止")),
+                                               QStringLiteral("group"));
+                     });
+    QObject::connect(&proxyController, &ProxyController::runningChanged, &botController,
+                     [&]() {
+                         botController.notify(QStringLiteral("[MSM] 代理 %1")
+                                               .arg(proxyController.running() ? QStringLiteral("已启动") : QStringLiteral("已停止")),
+                                               QStringLiteral("group"));
+                     });
     // QML 引擎放在所有后端控制器之后创建：退出时引擎最先析构，先销毁 QML 对象树；
     // 此时所有上下文属性对象（控制器）尚未析构，绑定求值访问到的仍是有效对象，
     // 避免退出时大量 "Cannot read property 'xxx' of null" 报错。
@@ -813,6 +863,11 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(QStringLiteral("webuiServer"), &webuiServer);
     engine.rootContext()->setContextProperty(QStringLiteral("botController"), &botController);
     engine.rootContext()->setContextProperty(QStringLiteral("proxyController"), &proxyController);
+    engine.rootContext()->setContextProperty(QStringLiteral("proxyManager"), &proxyManager);
+    engine.rootContext()->setContextProperty(QStringLiteral("portMapper"), &portMapper);
+    engine.rootContext()->setContextProperty(QStringLiteral("backupController"), &backupController);
+    engine.rootContext()->setContextProperty(QStringLiteral("schedulerController"), &schedulerController);
+    engine.rootContext()->setContextProperty(QStringLiteral("updateController"), &updateController);
 
     QObject::connect(&installCoordinator, &InstallCoordinator::status,
                      &downloadCatalog, &DownloadCatalog::setStatus);

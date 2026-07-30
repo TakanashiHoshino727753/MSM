@@ -68,10 +68,27 @@ add_library(msm_notify STATIC
 target_link_libraries(msm_notify PUBLIC Qt6::Core Qt6::Network)
 target_include_directories(msm_notify PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/notify)
 
+# ---- 运维自动化（定时备份 / 定时启停 / 一键更新 jar，依赖 server 解析服务器路径）----
+add_library(msm_ops STATIC
+    ops/backupcontroller.h
+    ops/backupcontroller.cpp
+    ops/schedulercontroller.h
+    ops/schedulercontroller.cpp
+    ops/updatecontroller.h
+    ops/updatecontroller.cpp
+    ops/portmapper.h
+    ops/portmapper.cpp
+)
+target_link_libraries(msm_ops PUBLIC Qt6::Core Qt6::Network msm_server)
+target_include_directories(msm_ops PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/ops
+                                   ${CMAKE_CURRENT_SOURCE_DIR}/server)
+
 # ---- Velocity 反向代理聚合（多服务器统一入口端口，依赖 server 读取端口/服务器列表）----
 add_library(msm_proxy STATIC
     proxy/proxycontroller.h
     proxy/proxycontroller.cpp
+    proxy/proxymanager.h
+    proxy/proxymanager.cpp
 )
 target_link_libraries(msm_proxy PUBLIC Qt6::Core Qt6::Network msm_server)
 target_include_directories(msm_proxy PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/proxy)

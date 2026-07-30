@@ -20,6 +20,23 @@ Item {
     property string statusText: running ? I18n.t("运行中", I18n.lang) : I18n.t("已停止", I18n.lang)
     property date runningSince: new Date(0)
     property string uptimeText: "—"
+    property real cpuVal: 0
+    property string cpuText: "—"
+    property string memText: "—"
+    property string tpsText: "—"
+
+    // 运维操作提示条（备份 / 更新结果等）
+    property string toastText: ""
+    property bool toastOk: true
+    function showToast(msg, ok) {
+        toastText = msg
+        toastOk = ok
+        toast.visible = true
+        toastTimer.restart()
+    }
+    // 一键更新弹窗数据
+    property string updateLatest: ""
+    property string updateUrl: ""
 
     ListModel { id: consoleModel }
     ListModel { id: modsModel }
@@ -113,6 +130,22 @@ Item {
         const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60
         uptimeText = (h > 0 ? h + "h " : "") + (m > 0 || h > 0 ? m + "m " : "") + sec + "s"
     }
+    // 资源占用：从 ServerController::runningServerUsages() 取本服 CPU% / 内存
+    function updateUsage() {
+        if (!root.running) { cpuText = "—"; memText = "—"; return }
+        const list = serverController.runningServerUsages()
+        for (let i = 0; i < list.length; ++i) {
+            const u = list[i]
+            if (u.name === root.serverName) {
+                cpuVal = u.cpu
+                cpuText = u.cpu.toFixed(0) + "%"
+                memText = (u.memMB >= 1024 ? (u.memMB / 1024).toFixed(1) + " GB" : u.memMB + " MB")
+                tpsText = (typeof u.tps === "number") ? u.tps.toFixed(1) : "—"
+                return
+            }
+        }
+                cpuText = "—"; memText = "—"; tpsText = "—"
+            }
     // 主动校正：不依赖 onStateChanged 信号。窗口在服务器已启动后才打开（信号早于连接发出）、
     // 或隐藏期间状态变化、或信号因线程时序遗漏时，仍按 ServerController 当前真实运行态修正本页，
     // 避免状态显示卡在“已停止”。
@@ -233,8 +266,8 @@ Item {
         function onStateChanged(name, running) {
             if (name !== root.serverName) return
             root.running = running
-            if (running) { root.runningSince = new Date(); root.uptimeText = "0s" }
-            else { root.uptimeText = "—" }
+            if (running) { root.runningSince = new Date(); root.uptimeText = "0s"; updateUsage() }
+            else { root.uptimeText = "—"; cpuText = "—"; memText = "—"; tpsText = "—" }
             reloadConsole(); reloadMods(); reloadPlayers()
             if (running) queryWorld()
         }
@@ -249,8 +282,33 @@ Item {
             PropsNames.setLanguage(settingsController.language)
         }
     }
+    Connections {
+        target: backupController
+        function onBackupFinished(name, ok, message, dest) {
+            if (name !== root.serverName) return
+            showToast((ok ? I18n.t("备份成功", I18n.lang) + "：" : I18n.t("备份失败", I18n.lang) + "：") + message, ok)
+        }
+    }
+    Connections {
+        target: updateController
+        function onUpdateAvailable(name, current, latest, url) {
+            if (name !== root.serverName) return
+            if (url.indexOf("http") === 0) {
+                updateLatest = latest
+                updateUrl = url
+                updatePopup.open()
+            } else {
+                showToast(latest, false)   // 非 http 时 latest 为错误信息
+            }
+        }
+        function onUpdateFinished(name, ok, message, newVersion) {
+            if (name !== root.serverName) return
+            showToast(message, ok)
+        }
+    }
 
     Timer { id: uptimeTimer; interval: 1000; running: root.running; repeat: true; onTriggered: updateUptime() }
+    Timer { id: usageTimer; interval: 2000; running: root.running; repeat: true; onTriggered: updateUsage() }
     Timer { id: worldQueryTimer; interval: 2500; onTriggered: worldQueryActive = false }
     Timer { id: worldRetryTimer; interval: 700; onTriggered: queryWorld() }
     // 周期兜底校正运行态（每 2 秒）：与 syncState 同理，确保任何生命周期下状态显示都不会
@@ -315,6 +373,9 @@ Item {
                 Label { text: I18n.t("类型: ", I18n.lang) + (root.serverType ? root.serverType : "—"); color: Theme.textMuted }
                 Label { text: I18n.t("版本: ", I18n.lang) + root.serverVersion; color: Theme.textMuted }
                 Label { text: I18n.t("运行时间: ", I18n.lang) + uptimeText; color: Theme.textMuted }
+                Label { text: I18n.t("CPU: ", I18n.lang) + cpuText; color: Theme.textMuted }
+                Label { text: I18n.t("内存: ", I18n.lang) + memText; color: Theme.textMuted }
+                Label { text: I18n.t("TPS: ", I18n.lang) + tpsText; color: Theme.textMuted }
                 Item { Layout.fillWidth: true }
             }
         }
@@ -335,6 +396,21 @@ Item {
             AccentButton {
                 text: I18n.t("模组", I18n.lang)
                 onClicked: { reloadMods(); modsPopup.open() }
+            }
+            AccentButton {
+                text: I18n.t("备份", I18n.lang)
+                onClicked: { showToast(I18n.t("正在备份…", I18n.lang), true); backupController.backupNow(root.serverName, root.serverPath) }
+            }
+            AccentButton {
+                text: I18n.t("更新核心", I18n.lang)
+                onClicked: {
+                    showToast(I18n.t("正在检测更新…", I18n.lang), true)
+                    updateController.checkUpdate(root.serverName, root.serverType, root.serverVersion)
+                }
+            }
+            AccentButton {
+                text: I18n.t("定时任务", I18n.lang)
+                onClicked: { schedPopup.open() }
             }
         }
 
@@ -788,6 +864,138 @@ Item {
                     background: Rectangle { color: parent.hovered ? Theme.panel : Theme.bg; radius: 6; border.color: Theme.border }
                     onClicked: cmdSetPopup.close()
                 }
+            }
+        }
+    }
+
+    // ================= 提示条（备份 / 更新结果） =================
+    Rectangle {
+        id: toast
+        visible: false
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 28
+        width: toastLabel.implicitWidth + 28
+        height: toastLabel.implicitHeight + 14
+        radius: 8
+        color: toastOk ? Theme.success : Theme.danger
+        opacity: 0.96
+        Text { id: toastLabel; anchors.centerIn: parent; text: toastText; color: "#ffffff"; font.pixelSize: 13 }
+        MouseArea { anchors.fill: parent; onClicked: toast.visible = false }
+    }
+    Timer { id: toastTimer; interval: 2800; onTriggered: toast.visible = false }
+
+    // ================= 弹窗：一键更新 =================
+    ModalPopup {
+        id: updatePopup
+        popupWidth: 460; popupHeight: 260
+        contentItem: ColumnLayout { spacing: 0
+            Label { text: I18n.t("一键更新核心", I18n.lang); font.pixelSize: 15; font.bold: true; color: Theme.text; padding: 14 }
+            Rectangle { height: 1; color: Theme.border }
+            ColumnLayout { spacing: 8; Layout.fillWidth: true
+                Layout.leftMargin: 14; Layout.rightMargin: 14; Layout.topMargin: 14; Layout.bottomMargin: 14
+                Label { text: I18n.t("当前版本: ", I18n.lang) + root.serverVersion; color: Theme.text }
+                Label { text: I18n.t("最新版本: ", I18n.lang) + updateLatest; color: Theme.accent; font.bold: true }
+                Label { text: I18n.t("更新会备份旧 server.jar 为 server.jar.bak，建议先停止服务器再更新。", I18n.lang); color: Theme.textMuted; wrapMode: Text.Wrap }
+            }
+            Rectangle { height: 1; color: Theme.border }
+            RowLayout { spacing: 8; Layout.leftMargin: 14; Layout.rightMargin: 14; Layout.bottomMargin: 14; Layout.topMargin: 10; Layout.alignment: Qt.AlignRight
+                SubtleButton { text: I18n.t("取消", I18n.lang); onClicked: updatePopup.close() }
+                AccentButton {
+                    text: I18n.t("立即更新", I18n.lang)
+                    onClicked: {
+                        updatePopup.close()
+                        showToast(I18n.t("正在下载更新…", I18n.lang), true)
+                        updateController.updateJar(root.serverName, root.serverPath, root.serverType, root.serverVersion)
+                    }
+                }
+            }
+        }
+    }
+
+    // ================= 弹窗：定时任务（B4） =================
+    ModalPopup {
+        id: schedPopup
+        popupWidth: 600; popupHeight: 520
+        contentItem: ColumnLayout { spacing: 0
+            Label { text: I18n.t("定时任务", I18n.lang); font.pixelSize: 15; font.bold: true; color: Theme.text; padding: 14 }
+            Rectangle { height: 1; color: Theme.border }
+            ScrollView {
+                Layout.fillWidth: true; Layout.fillHeight: true
+                contentWidth: width
+                ColumnLayout { width: parent.width; spacing: 6; Layout.leftMargin: 14; Layout.rightMargin: 14; Layout.topMargin: 10
+                    Repeater {
+                        model: schedulerController.tasks
+                        RowLayout { spacing: 8
+                            Label { text: modelData.server; color: Theme.text; Layout.preferredWidth: 110; elide: Text.ElideRight }
+                            Label {
+                                text: (modelData.action === "start" ? I18n.t("启动", I18n.lang)
+                                       : modelData.action === "stop" ? I18n.t("停止", I18n.lang)
+                                       : I18n.t("备份", I18n.lang))
+                                color: Theme.textMuted; Layout.preferredWidth: 50
+                            }
+                            Label { text: modelData.time; color: Theme.text; font.family: "Consolas, monospace"; Layout.preferredWidth: 60 }
+                            Switch {
+                                checked: modelData.enabled !== false
+                                onToggled: {
+                                    const t = schedulerController.tasks[index]
+                                    t.enabled = checked
+                                    schedulerController.updateTask(index, t)
+                                }
+                            }
+                            Button { text: I18n.t("执行", I18n.lang); flat: true; implicitHeight: 24; implicitWidth: 46; background: Rectangle { color: parent.hovered ? Theme.accentSoft : Theme.panelAlt; radius: 5; border.color: Theme.border } onClicked: schedulerController.runTask(index) }
+                            Button { text: I18n.t("删除", I18n.lang); flat: true; implicitHeight: 24; implicitWidth: 46; background: Rectangle { color: parent.hovered ? Theme.accentSoft : Theme.panelAlt; radius: 5; border.color: Theme.border } onClicked: schedulerController.removeTask(index) }
+                        }
+                    }
+                    Label { text: I18n.t("（暂无定时任务，在下方添加）", I18n.lang); color: Theme.textMuted; visible: schedulerController.tasks.length === 0 }
+
+                    Rectangle { Layout.fillWidth: true; height: 1; color: Theme.border; Layout.topMargin: 8; Layout.bottomMargin: 8 }
+
+                    Label { text: I18n.t("新增任务", I18n.lang); color: Theme.accent; font.bold: true; font.pixelSize: 12 }
+                    RowLayout { spacing: 8; Layout.fillWidth: true
+                        ComboBox {
+                            id: schedServerCombo
+                            Layout.fillWidth: true
+                            model: serverManager.serverSummary()
+                            textRole: "name"
+                            displayText: currentText
+                        }
+                        ComboBox {
+                            id: schedActionCombo
+                            Layout.preferredWidth: 110
+                            model: [
+                                { k: "start", l: I18n.t("启动", I18n.lang) },
+                                { k: "stop", l: I18n.t("停止", I18n.lang) },
+                                { k: "backup", l: I18n.t("备份", I18n.lang) }
+                            ]
+                            textRole: "l"
+                            valueRole: "k"
+                        }
+                        TextField {
+                            id: schedTimeField
+                            Layout.preferredWidth: 90
+                            placeholderText: "HH:MM"
+                            text: "08:00"
+                            color: Theme.text
+                            background: Rectangle { color: Theme.panelAlt; radius: 6; border.color: Theme.border }
+                        }
+                        AccentButton {
+                            text: I18n.t("添加", I18n.lang)
+                            onClicked: {
+                                if (!schedServerCombo.currentText) return
+                                schedulerController.addTask({
+                                    server: schedServerCombo.currentText,
+                                    action: schedActionCombo.currentValue,
+                                    time: schedTimeField.text
+                                })
+                            }
+                        }
+                    }
+                }
+            }
+            RowLayout { spacing: 8; Layout.leftMargin: 14; Layout.rightMargin: 14; Layout.bottomMargin: 14; Layout.topMargin: 8
+                Item { Layout.fillWidth: true }
+                Button { text: I18n.t("关闭", I18n.lang); background: Rectangle { color: parent.hovered ? Theme.panel : Theme.bg; radius: 6; border.color: Theme.border } onClicked: schedPopup.close() }
             }
         }
     }

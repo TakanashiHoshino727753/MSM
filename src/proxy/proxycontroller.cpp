@@ -28,31 +28,56 @@
 #include <QVersionNumber>
 
 ProxyController::ProxyController(ServerManager *sm, ServerController *sc,
-                                 JavaManager *java, QObject *parent)
-    : QObject(parent), m_sm(sm), m_sc(sc), m_java(java)
+                                 JavaManager *java, const QString &instanceId,
+                                 QObject *parent)
+    : QObject(parent), m_sm(sm), m_sc(sc), m_java(java), m_instanceId(instanceId)
 {
     m_nam.setRedirectPolicy(QNetworkRequest::NoLessSafeRedirectPolicy);
     QSettings s;
-    m_proxyPort = s.value(QStringLiteral("proxy/port"), 25577).toInt();
-    m_motd = s.value(QStringLiteral("proxy/motd"),
+    m_proxyPort = s.value(key(QStringLiteral("port")), 25577).toInt();
+    m_motd = s.value(key(QStringLiteral("motd")),
                      QStringLiteral("&3MSM 聚合服务器")).toString();
-    m_offlineMode = s.value(QStringLiteral("proxy/offlineMode"), true).toBool();
-    m_stopBackendsWithProxy = s.value(QStringLiteral("proxy/stopBackendsWithProxy"), true).toBool();
-    m_autoRestart = s.value(QStringLiteral("proxy/autoRestart"), true).toBool();
-    m_maxRetries = s.value(QStringLiteral("proxy/maxRetries"), 5).toInt();
-    m_backoffSec = s.value(QStringLiteral("proxy/backoffSec"), 5).toInt();
+    m_offlineMode = s.value(key(QStringLiteral("offlineMode")), true).toBool();
+    m_stopBackendsWithProxy = s.value(key(QStringLiteral("stopBackendsWithProxy")), true).toBool();
+    m_autoRestart = s.value(key(QStringLiteral("autoRestart")), true).toBool();
+    m_maxRetries = s.value(key(QStringLiteral("maxRetries")), 5).toInt();
+    m_backoffSec = s.value(key(QStringLiteral("backoffSec")), 5).toInt();
+    m_name = s.value(key(QStringLiteral("name")),
+                     m_instanceId.isEmpty() ? QStringLiteral("默认代理") : m_instanceId).toString();
+    m_serverFilter = s.value(key(QStringLiteral("servers"))).toStringList();
     m_status = installed() ? QStringLiteral("已安装，未运行") : QStringLiteral("未安装");
 }
 
-QString ProxyController::proxyDir() const
+// 实例化设置键：默认实例保持旧版 proxy/xxx，其余实例 proxy/<id>/xxx
+QString ProxyController::key(const QString &k) const
+{
+    return m_instanceId.isEmpty()
+               ? QStringLiteral("proxy/") + k
+               : QStringLiteral("proxy/") + m_instanceId + QLatin1Char('/') + k;
+}
+
+// 主目录：velocity.jar 在此共享（所有实例复用同一 jar）
+QString ProxyController::baseDir() const
 {
     return QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
            + QStringLiteral("/MSM/Velocity");
 }
 
+QString ProxyController::jarPath() const
+{
+    return baseDir() + QStringLiteral("/velocity.jar");
+}
+
+QString ProxyController::proxyDir() const
+{
+    return m_instanceId.isEmpty()
+               ? baseDir()
+               : baseDir() + QStringLiteral("/instances/") + m_instanceId;
+}
+
 bool ProxyController::installed() const
 {
-    return QFile::exists(proxyDir() + QStringLiteral("/velocity.jar"));
+    return QFile::exists(jarPath());
 }
 
 void ProxyController::setProxyPort(int p)
@@ -60,7 +85,7 @@ void ProxyController::setProxyPort(int p)
     if (p <= 0 || p >= 65536 || p == m_proxyPort)
         return;
     m_proxyPort = p;
-    QSettings().setValue(QStringLiteral("proxy/port"), p);
+    QSettings().setValue(key(QStringLiteral("port")), p);
     emit proxyPortChanged();
 }
 
@@ -69,7 +94,7 @@ void ProxyController::setMotd(const QString &m)
     if (m == m_motd)
         return;
     m_motd = m;
-    QSettings().setValue(QStringLiteral("proxy/motd"), m);
+    QSettings().setValue(key(QStringLiteral("motd")), m);
     emit motdChanged();
 }
 
@@ -78,7 +103,7 @@ void ProxyController::setOfflineMode(bool v)
     if (v == m_offlineMode)
         return;
     m_offlineMode = v;
-    QSettings().setValue(QStringLiteral("proxy/offlineMode"), v);
+    QSettings().setValue(key(QStringLiteral("offlineMode")), v);
     emit offlineModeChanged();
 }
 
@@ -87,7 +112,7 @@ void ProxyController::setStopBackendsWithProxy(bool v)
     if (v == m_stopBackendsWithProxy)
         return;
     m_stopBackendsWithProxy = v;
-    QSettings().setValue(QStringLiteral("proxy/stopBackendsWithProxy"), v);
+    QSettings().setValue(key(QStringLiteral("stopBackendsWithProxy")), v);
     emit stopBackendsWithProxyChanged();
 }
 
@@ -96,8 +121,74 @@ void ProxyController::setAutoRestart(bool v)
     if (v == m_autoRestart)
         return;
     m_autoRestart = v;
-    QSettings().setValue(QStringLiteral("proxy/autoRestart"), v);
+    QSettings().setValue(key(QStringLiteral("autoRestart")), v);
     emit autoRestartChanged();
+}
+
+void ProxyController::setName(const QString &n)
+{
+    const QString t = n.trimmed();
+    if (t.isEmpty() || t == m_name)
+        return;
+    m_name = t;
+    QSettings().setValue(key(QStringLiteral("name")), t);
+    emit nameChanged();
+}
+
+void ProxyController::setServerFilter(const QStringList &f)
+{
+    if (f == m_serverFilter)
+        return;
+    m_serverFilter = f;
+    QSettings().setValue(key(QStringLiteral("servers")), f);
+    emit serverFilterChanged();
+}
+
+// QML 便捷开关：把某台后端加入/移出本实例聚合范围。
+// 语义：filter 为空 = 聚合全部；勾掉一台时把"当前全部"落成显式名单再移除；
+// 勾满全部后回落为空（跟随新增服务器）。
+void ProxyController::setServerEnabled(const QString &serverName, bool on)
+{
+    if (!m_sm)
+        return;
+    QStringList all;
+    for (const QVariant &v : m_sm->serverSummary())
+        all << v.toMap().value(QStringLiteral("name")).toString();
+    QStringList cur = m_serverFilter.isEmpty() ? all : m_serverFilter;
+    if (on) {
+        if (!cur.contains(serverName))
+            cur << serverName;
+    } else {
+        cur.removeAll(serverName);
+    }
+    // 全选 → 存空（跟随全部）；否则存显式名单
+    bool coversAll = true;
+    for (const QString &n : all)
+        if (!cur.contains(n)) { coversAll = false; break; }
+    setServerFilter(coversAll ? QStringList() : cur);
+}
+
+void ProxyController::setPlayerCount(int n)
+{
+    n = qMax(0, n);
+    if (n == m_playerCount)
+        return;
+    m_playerCount = n;
+    emit playerCountChanged();
+}
+
+// 经 serverFilter 过滤后的后端列表（filter 为空 = 全部）
+QVariantList ProxyController::filteredServers() const
+{
+    QVariantList out;
+    if (!m_sm)
+        return out;
+    for (const QVariant &v : m_sm->serverSummary()) {
+        const QString name = v.toMap().value(QStringLiteral("name")).toString();
+        if (m_serverFilter.isEmpty() || m_serverFilter.contains(name))
+            out << v;
+    }
+    return out;
 }
 
 void ProxyController::setStatus(const QString &s)
@@ -204,7 +295,7 @@ void ProxyController::install()
 
 void ProxyController::downloadJar(const QString &url)
 {
-    QDir().mkpath(proxyDir());
+    QDir().mkpath(baseDir());
     QNetworkRequest req{QUrl(url)};
     req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("MSM/1.0"));
     QNetworkReply *rep = m_nam.get(req);
@@ -221,8 +312,8 @@ void ProxyController::downloadJar(const QString &url)
             setBusy(false);
             return;
         }
-        // 先写临时文件再替换，避免中断留下半截 jar
-        const QString target = proxyDir() + QStringLiteral("/velocity.jar");
+        // 先写临时文件再替换，避免中断留下半截 jar（jar 为全部实例共享）
+        const QString target = jarPath();
         QFile f(target + QStringLiteral(".part"));
         if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             setStatus(QStringLiteral("无法写入 velocity.jar"));
@@ -245,7 +336,7 @@ void ProxyController::downloadJar(const QString &url)
 
 QString ProxyController::forwardingMode() const
 {
-    const QVariantList servers = m_sm ? m_sm->serverSummary() : QVariantList();
+    const QVariantList servers = filteredServers();
     if (servers.isEmpty())
         return QStringLiteral("none");
     for (const QVariant &v : servers) {
@@ -285,9 +376,12 @@ QVariantList ProxyController::backendSummary() const
     const QString mode = forwardingMode();
     for (const QVariant &v : m_sm->serverSummary()) {
         QVariantMap m = v.toMap();
+        const QString name = m.value(QStringLiteral("name")).toString();
         m[QStringLiteral("port")] = m_sc->serverPort(m.value(QStringLiteral("path")).toString());
         m[QStringLiteral("host")] = QStringLiteral("127.0.0.1");
         m[QStringLiteral("forwarding")] = mode;
+        // P2 多代理：标记该后端是否纳入本实例的聚合范围（供 UI 勾选）
+        m[QStringLiteral("enabled")] = m_serverFilter.isEmpty() || m_serverFilter.contains(name);
         out << m;
     }
     return out;
@@ -299,9 +393,9 @@ bool ProxyController::syncConfig()
         setStatus(QStringLiteral("服务器管理器未初始化"));
         return false;
     }
-    const QVariantList servers = m_sm->serverSummary();
+    const QVariantList servers = filteredServers();
     if (servers.isEmpty()) {
-        setStatus(QStringLiteral("没有可聚合的服务器，请先创建服务器"));
+        setStatus(QStringLiteral("没有可聚合的服务器，请先创建服务器或勾选后端"));
         return false;
     }
     QDir().mkpath(proxyDir());
@@ -362,7 +456,7 @@ bool ProxyController::syncConfig()
 
 void ProxyController::patchBackends(const QString &secret, const QString &mode)
 {
-    for (const QVariant &v : m_sm->serverSummary()) {
+    for (const QVariant &v : filteredServers()) {
         const QVariantMap m = v.toMap();
         const QString path = m.value(QStringLiteral("path")).toString();
         const QString name = m.value(QStringLiteral("name")).toString();
@@ -547,7 +641,7 @@ void ProxyController::start(const QString &javaPath)
     // 同步配置（改写后端 online-mode）后，自动拉起所有未运行的后端；否则 Velocity 无后端可连。
     m_autoStarted.clear();
     if (m_sm && m_sc) {
-        for (const QVariant &v : m_sm->serverSummary()) {
+        for (const QVariant &v : filteredServers()) {
             const QVariantMap m = v.toMap();
             const QString name = m.value(QStringLiteral("name")).toString();
             const QString path = m.value(QStringLiteral("path")).toString();
@@ -608,12 +702,20 @@ void ProxyController::launchProcess(const QString &java)
             appendConsole(l);
             if (l.contains(QStringLiteral("Done (")))
                 setStatus(QStringLiteral("运行中 · 入口端口 %1").arg(m_proxyPort));
+            // 在线人数估算：解析 Velocity 的玩家连接/断开日志
+            if (l.contains(QStringLiteral("[connected player]"))) {
+                if (l.contains(QStringLiteral("has connected")))
+                    setPlayerCount(m_playerCount + 1);
+                else if (l.contains(QStringLiteral("has disconnected")))
+                    setPlayerCount(m_playerCount - 1);
+            }
         }
     });
     connect(m_proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, [this](int code, QProcess::ExitStatus) {
                 m_proc->deleteLater();
                 m_proc = nullptr;
+                setPlayerCount(0);
                 if (m_expectedExit) {
                     // 用户主动停止：不触发崩溃通知/自动重拉起
                     m_expectedExit = false;
@@ -641,9 +743,10 @@ void ProxyController::launchProcess(const QString &java)
                 }
             });
 
+    setPlayerCount(0);
     QStringList args;
     args << QStringLiteral("-Xms512M") << QStringLiteral("-Xmx512M")
-         << QStringLiteral("-jar") << QStringLiteral("velocity.jar");
+         << QStringLiteral("-jar") << QDir::toNativeSeparators(jarPath());
     appendConsole(QStringLiteral("[MSM] 正在启动 Velocity（%1）…").arg(java));
     m_proc->start(java, args);
     if (!m_proc->waitForStarted(5000)) {

@@ -1759,7 +1759,19 @@ void BotController::pushUsage()
     const bool hasMem = deviceMemoryGB(memUsedG, memTotalG);
     const int running = m_sc->runningServerUsages().size();
 
-    // QQ 昵称上限约 36 字符，保持精简，如：MSM丨CPU23%丨内存6.2/16G丨1服
+    // 取在线服务端的 TPS 估算（A2），取均值用于昵称展示
+    double tpsSum = 0.0;
+    int tpsCount = 0;
+    for (const QVariant &v : m_sc->runningServerUsages()) {
+        const QVariantMap u = v.toMap();
+        if (u.contains(QStringLiteral("tps"))) {
+            tpsSum += u.value(QStringLiteral("tps")).toDouble();
+            ++tpsCount;
+        }
+    }
+    const double avgTps = tpsCount ? tpsSum / tpsCount : 20.0;
+
+    // QQ 昵称上限约 36 字符，保持精简，如：MSM丨CPU23%丨内存6.2/16G丨T19.5丨1服
     QStringList parts;
     parts << QStringLiteral("MSM");
     if (cpuPct >= 0.0)
@@ -1768,6 +1780,8 @@ void BotController::pushUsage()
         parts << QStringLiteral("内存%1/%2G")
                      .arg(memUsedG, 0, 'f', 1)
                      .arg(memTotalG, 0, 'f', 0);
+    if (running > 0)
+        parts << QStringLiteral("T%1").arg(avgTps, 0, 'f', 1);
     parts << QStringLiteral("%1服").arg(running);
 
     QJsonObject body;

@@ -152,12 +152,16 @@ HELP = (
     "强关/forcestop [名称] 强制结束进程\n"
     "删除/delete <名称> 删除服务器（仅管理员）\n"
     "下载/downloads 当前下载任务\n"
+    "重启/restart [名称] 重启服务器\n"
+    "广播/broadcast <消息> 全服广播\n"
+    "白名单/whitelist add|remove|list|on|off <玩家> 管理白名单\n"
     "webui/napcat/nonebot on|off 互控三远端开关\n"
     "注：WebUI 关闭时本插件仍可用，三者独立。"
 )
 
 PRIVILEGED = {"命令", "启动", "停止", "强关", "删除", "webui", "napcat", "nonebot",
-              "cmd", "start", "stop", "forcestop", "delete"}
+              "cmd", "start", "stop", "forcestop", "delete",
+              "重启", "restart", "广播", "broadcast", "白名单", "whitelist"}
 
 
 async def _send(bot: Bot, event: MessageEvent, text: str):
@@ -285,6 +289,49 @@ async def h_forcestop(bot, event, rest):
     await _send(bot, event, res.get("message") or ("已强制结束 " + res.get("name", name)))
 
 
+async def h_restart(bot, event, rest):
+    name, _ = _pick_name(rest)
+    r1 = _api("POST", "/api/stop", json={"name": name})
+    await asyncio.sleep(2)   # 等待进程退出后再启动
+    r2 = _api("POST", "/api/start", json={"name": name})
+    if not r2.get("success"):
+        await _send(bot, event, r2.get("message") or "重启（启动阶段）失败")
+        return
+    msg = "已请求重启 " + (r2.get("name") or name)
+    if not r1.get("success"):
+        msg += "（停止阶段：" + (r1.get("message") or "失败") + "）"
+    await _send(bot, event, msg)
+
+
+async def h_broadcast(bot, event, rest):
+    if not rest.strip():
+        await _send(bot, event, "用法：广播 <消息>")
+        return
+    res = _api("POST", "/api/command", json={"name": "", "command": "say " + rest})
+    if not res.get("success"):
+        await _send(bot, event, res.get("message") or "广播失败")
+        return
+    await _send(bot, event, "已广播：" + rest)
+
+
+async def h_whitelist(bot, event, rest):
+    parts = rest.split()
+    if not parts:
+        await _send(bot, event, "用法：白名单 add|remove|list|on|off <玩家>")
+        return
+    sub = parts[0].lower()
+    if sub not in ("add", "remove", "list", "on", "off"):
+        await _send(bot, event, "仅支持 add / remove / list / on / off")
+        return
+    player = " ".join(parts[1:]).strip() if sub != "list" else ""
+    cmd = "whitelist " + sub + ((" " + player) if player else "")
+    res = _api("POST", "/api/command", json={"name": "", "command": cmd})
+    if not res.get("success"):
+        await _send(bot, event, res.get("message") or "白名单操作失败")
+        return
+    await _send(bot, event, "已执行白名单 " + sub + (("：" + player) if player else ""))
+
+
 async def h_delete(bot, event, rest):
     name = rest.strip()
     if not name:
@@ -359,6 +406,9 @@ ALIAS = {
     "启动": h_start, "start": h_start,
     "停止": h_stop, "stop": h_stop,
     "强关": h_forcestop, "forcestop": h_forcestop,
+    "重启": h_restart, "restart": h_restart,
+    "广播": h_broadcast, "broadcast": h_broadcast,
+    "白名单": h_whitelist, "whitelist": h_whitelist,
     "删除": h_delete, "delete": h_delete,
     "下载": h_downloads, "downloads": h_downloads,
     "webui": h_control, "napcat": h_control, "nonebot": h_control,
