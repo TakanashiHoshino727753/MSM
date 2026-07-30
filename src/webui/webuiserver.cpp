@@ -411,6 +411,33 @@ static bool generateSelfSignedCertFilesSafe(const QString &certPath, const QStri
 }
 #endif // Q_OS_WIN
 
+// 非 Windows 平台：用系统 openssl 命令生成自签证书 + 私钥（PEM），10 年有效，主题 CN=localhost。
+#ifndef Q_OS_WIN
+#include <QProcess>
+static bool generateSelfSignedCertFiles(const QString &certPath, const QString &keyPath)
+{
+    QProcess openssl;
+    openssl.setProgram(QStringLiteral("openssl"));
+    openssl.setArguments({
+        QStringLiteral("req"), QStringLiteral("-x509"),
+        QStringLiteral("-newkey"), QStringLiteral("rsa:2048"),
+        QStringLiteral("-nodes"),
+        QStringLiteral("-keyout"), keyPath,
+        QStringLiteral("-out"), certPath,
+        QStringLiteral("-days"), QStringLiteral("3650"),
+        QStringLiteral("-subj"), QStringLiteral("/CN=localhost"),
+    });
+    openssl.start();
+    if (!openssl.waitForStarted() || !openssl.waitForFinished(30000))
+        return false;
+    if (openssl.exitStatus() != QProcess::NormalExit || openssl.exitCode() != 0) {
+        qWarning() << "[WebUI] openssl 生成自签证书失败:" << openssl.readAllStandardError();
+        return false;
+    }
+    return QFile::exists(certPath) && QFile::exists(keyPath);
+}
+#endif // !Q_OS_WIN
+
 // 配置 SSL：用户自定义 PEM 证书优先；否则使用运行时自动生成的自签证书。
 bool WebUIServer::setupTls()
 {
