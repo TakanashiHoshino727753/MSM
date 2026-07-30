@@ -102,7 +102,11 @@ static void msmMessageOutput(QtMsgType type, const QMessageLogContext &ctx, cons
         g_logFile.write(line);
         g_logFile.flush();
     }
+    // 控制台回显：仅 Debug 构建输出到 cmd；Release 构建不污染控制台，日志只进 msm.log。
+    // 使用 Qt 自带的 QT_DEBUG 宏（Release/MinSizeRel 下未定义 QT_DEBUG）做编译期限制。
+#ifdef QT_DEBUG
     qt_message_output(type, ctx, msg);
+#endif
 }
 
 // 全局语言切换：本地端 QML 已全面使用 qsTr()，此处用一个读取 JSON 词典的自定义
