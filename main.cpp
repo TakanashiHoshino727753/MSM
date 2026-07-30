@@ -622,8 +622,9 @@ private:
     bool m_busy = false;
 };
 
-// 诊断模式：在 cmd/控制台打印 qrc 资源路径、QML 导入路径等信息后退出（不启动 GUI）。
-// 用法：MinecraftServerManager.exe --console   （简写 -c / -diag）
+// 诊断模式（Debug 专属）：在 cmd/控制台打印 qrc 资源路径、QML 导入路径等信息后退出（不启动 GUI）。
+// 用法：MinecraftServerManager.exe --console   （简写 -c / -diag）。仅 Debug 构建编译/可用。
+#ifdef QT_DEBUG
 static void msmConsoleMsgHandler(QtMsgType, const QMessageLogContext &, const QString &msg)
 {
     fprintf(stderr, "%s\n", msg.toLocal8Bit().constData());
@@ -673,6 +674,7 @@ static int runConsoleDiagnostics(int argc, char *argv[])
     getchar();
     return 0;
 }
+#endif // QT_DEBUG
 
 int main(int argc, char *argv[])
 {
@@ -685,13 +687,16 @@ int main(int argc, char *argv[])
     // "Could NOT find WrapVulkanHeaders"、运行时无需 Vulkan），改用系统 OpenGL。
     qputenv("QSG_RHI_BACKEND", "opengl");
 
-    // 诊断模式：传入 --console / -c / -diag 时，打开 cmd 窗口打印 qrc 资源路径等信息后退出（不启动 GUI）
+    // 诊断模式（Debug 专属）：传入 --console / -c / -diag 时打印 qrc 资源路径等信息后退出。
+    // 仅 Debug 构建可用；Release 构建忽略这些参数，正常启动 GUI。
+#ifdef QT_DEBUG
     for (int i = 1; i < argc; ++i) {
         const QString a = QString::fromLocal8Bit(argv[i]);
         if (a == QStringLiteral("--console") || a == QStringLiteral("-c") || a == QStringLiteral("-diag")) {
             return runConsoleDiagnostics(argc, argv);
         }
     }
+#endif
 
     QApplication app(argc, argv);
     app.setQuitOnLastWindowClosed(false);
