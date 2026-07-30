@@ -17,8 +17,9 @@ ApplicationWindow {
 
     function applyTheme(dark, accent) { appController.setTheme(dark, accent) }
 
-    // 设置分类导航：当前选中分类 + 点击滚动定位 + 手动滚动时同步高亮
+    // 设置分类导航：当前选中分类 + 点击滚动对齐 + 手动滚动时同步高亮
     property string currentSection: "appearance"
+    property bool _navLock: false   // 程序滚动动画期间锁定，避免高亮乱跳
     function navList() { return [cardA, cardB, cardD, cardC, cardQ, cardBack, cardO] }
     function navKeys() { return ["appearance", "language", "dir", "webui", "bot", "backup", "ops"] }
     function sectionOf(item) {
@@ -29,21 +30,20 @@ ApplicationWindow {
     }
     function scrollTo(item) {
         if (!item) return
-        currentSection = sectionOf(item)   // 点击时立即锁定高亮，避免依赖滚动位置推算
-        var target = item.y + 8
-        flick.contentY = Math.max(0, Math.min(flick.contentHeight - flick.height, target))
+        currentSection = sectionOf(item)   // 点击即锁定高亮，动画期间不重算
+        _navLock = true
+        var target = Math.max(0, Math.min(flick.contentHeight - flick.height, item.y))  // 顶部对齐到视口顶
+        flick.contentY = target
     }
     function updateCurrent() {
-        // 以视口中线所在卡片作为当前分类，可稳定识别中间分类
+        if (_navLock) return                // 程序滚动动画期间不重算，防乱跳
+        // 当前分类 = 视口内最上面的卡片（第一个底部仍在视口顶之下的卡片）
         var list = navList(), keys = navKeys()
-        var midY = flick.contentY + flick.height / 2
+        var y = flick.contentY
         var cur = keys[0]
         for (var i = 0; i < list.length; ++i) {
-            var c = list[i]
-            if (c.y <= midY && midY < c.y + c.height) { cur = keys[i]; break }
+            if (list[i].y + list[i].height > y) { cur = keys[i]; break }
         }
-        // 滚到最底部时中线落在最后卡片之后，归到最后一项
-        if (flick.contentY >= flick.contentHeight - flick.height - 2) cur = keys[keys.length - 1]
         currentSection = cur
     }
 
@@ -199,6 +199,7 @@ ApplicationWindow {
                 clip: true
                 ScrollBar.vertical: ScrollBar {}
                 onContentYChanged: updateCurrent()
+                onMovingChanged: if (flick.moving) _navLock = false   // 用户手动滚动时解锁，由 updateCurrent 接管
                 Behavior on contentY { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
                 ColumnLayout {
                     id: col
