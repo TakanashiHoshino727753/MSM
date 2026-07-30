@@ -52,6 +52,14 @@ qt_add_executable(MinecraftServerManager
     app.rc
 )
 
+# Linux 上可执行文件不带 .exe 后缀，会与 qt_add_qml_module 在 build 根生成的同名
+# QML 模块目录(MinecraftServerManager/)冲突，导致链接器"cannot open output file ... Is a directory"。
+# 将 exe 输出到 bin/ 子目录规避；Windows 因 .exe 后缀不冲突，保持原样。
+if(NOT WIN32)
+    set_target_properties(MinecraftServerManager PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+endif()
+
 # QML 模块：UI 层单独抽离到 qml/，C++ 通过上下文属性注入，不在模块内注册类型
 qt_add_qml_module(MinecraftServerManager
     URI MinecraftServerManager
