@@ -46,9 +46,10 @@ ApplicationWindow {
         var list = navList(), keys = navKeys()
         var y = flick.contentY
         var cur = keys[0]
-        // 最后一个其锚点已越过视口顶（anchorY <= contentY + 1px 容差）的分类
+        // 视口内最上面的卡片（第一个底部仍在视口顶之下的卡片）即当前分类：
+        // 某卡片顶部一进入主区域（出现）就高亮它，而非等其顶穿透视口顶才切
         for (var i = 0; i < list.length; ++i) {
-            if (anchorY(list[i]) <= y + 1) cur = keys[i]
+            if (anchorY(list[i]) + list[i].height > y + 1) { cur = keys[i]; break }
         }
         currentSection = cur
     }
