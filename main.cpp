@@ -172,10 +172,15 @@ public:
 private:
     void setupTray()
     {
-        if (!QSystemTrayIcon::isSystemTrayAvailable()) {
-            qWarning("系统不支持系统托盘");
+        m_hasTray = QSystemTrayIcon::isSystemTrayAvailable();
+        if (!m_hasTray) {
+            // 无系统托盘（如多数 Linux 桌面）：关闭窗口即真正退出（见 eventFilter），
+            // 启动直接显示主窗口，不允许 hide 到托盘（否则窗口隐藏后无托盘可恢复、程序空跑）。
+            qWarning("系统不支持系统托盘：关闭窗口直接退出，启动时显示主窗口");
+            QApplication::setQuitOnLastWindowClosed(true);
             return;
         }
+        QApplication::setQuitOnLastWindowClosed(false);
 
         m_tray = new QSystemTrayIcon(this);
         m_tray->setIcon(QIcon(QStringLiteral(":/icon/ApplicationIcon")));
@@ -261,7 +266,9 @@ private:
             auto *win = qobject_cast<QQuickWindow *>(watched);
             if (win) {
                 const QString mode = win->property("closeMode").toString();
-                if (mode != QStringLiteral("close")) {
+                // 有托盘时：非 close 模式的窗口收起托盘；无托盘（如 Linux）一律真正关闭，
+                // 避免窗口被隐藏后无托盘可恢复、程序空跑。
+                if (m_hasTray && mode != QStringLiteral("close")) {
                     event->ignore();
                     win->hide();
                     return true;
@@ -305,7 +312,8 @@ public slots:
         for (QQuickWindow *win : list) {
             if (!win)
                 continue;
-            if (win->property("closeMode").toString() == QStringLiteral("close"))
+            // 无托盘时（如 Linux）隐藏无意义，直接关闭；有托盘时非 close 模式才收起托盘。
+            if (win->property("closeMode").toString() == QStringLiteral("close") || !m_hasTray)
                 win->close();
             else
                 win->hide();
@@ -323,6 +331,7 @@ private:
     QQmlApplicationEngine *m_engine = nullptr;
     QSystemTrayIcon *m_tray = nullptr;
     QMenu *m_trayMenu = nullptr;
+    bool m_hasTray = false;           // 系统是否支持托盘（Linux 多数桌面无托盘）
     QHash<QString, QQuickWindow *> m_unique;
     QList<QQuickWindow *> m_windows;
     QHash<QString, QString> m_dict;
@@ -935,7 +944,8 @@ int main(int argc, char *argv[])
 
     // 启动即显示主操作页面：此前主窗口只在点击托盘时才创建，故启动后看不到任何界面。
     // 由“启动时显示窗口”设置决定：开启则创建并显示主窗口，否则仅驻留系统托盘（点托盘“显示主窗口”可打开）。
-    if (settingsController.showOnStartup())
+    // 无系统托盘（如多数 Linux 桌面）时强制显示主窗口，否则启动后既无窗口也无托盘可恢复。
+    if (settingsController.showOnStartup() || !QSystemTrayIcon::isSystemTrayAvailable())
         appController->showMainWindow();
 
     return app.exec();
