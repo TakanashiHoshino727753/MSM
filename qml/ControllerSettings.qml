@@ -20,6 +20,7 @@ ApplicationWindow {
     // 设置分类导航：当前选中分类 + 点击滚动对齐 + 手动滚动时同步高亮
     property string currentSection: "appearance"
     property bool _navLock: false   // 程序滚动动画期间锁定，避免高亮乱跳
+    property real _navTarget: 0     // 程序滚动的目标位置，到达后解锁
     function navList() { return [cardA, cardB, cardD, cardC, cardQ, cardBack, cardO] }
     function navKeys() { return ["appearance", "language", "dir", "webui", "bot", "backup", "ops"] }
     function sectionOf(item) {
@@ -32,8 +33,8 @@ ApplicationWindow {
         if (!item) return
         currentSection = sectionOf(item)   // 点击即锁定高亮，动画期间不重算
         _navLock = true
-        var target = Math.max(0, Math.min(flick.contentHeight - flick.height, item.y))  // 顶部对齐到视口顶
-        flick.contentY = target
+        _navTarget = Math.max(0, Math.min(flick.contentHeight - flick.height, item.y))  // 顶部对齐到视口顶
+        flick.contentY = _navTarget
     }
     function updateCurrent() {
         if (_navLock) return                // 程序滚动动画期间不重算，防乱跳
@@ -198,8 +199,16 @@ ApplicationWindow {
                 contentHeight: col.height + 32
                 clip: true
                 ScrollBar.vertical: ScrollBar {}
-                onContentYChanged: updateCurrent()
-                onMovingChanged: if (flick.moving) _navLock = false   // 用户手动滚动时解锁，由 updateCurrent 接管
+                onContentYChanged: {
+                    if (_navLock) {
+                        // 程序滚动动画期间保持锁定；到达目标位置（误差<2px）后才解锁
+                        if (Math.abs(flick.contentY - _navTarget) < 2) _navLock = false
+                        return
+                    }
+                    updateCurrent()
+                }
+                // 仅用户真实拖拽才解锁（Behavior 动画驱动的 moving 不触发 dragging）
+                onDraggingChanged: if (flick.dragging) _navLock = false
                 Behavior on contentY { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
                 ColumnLayout {
                     id: col
