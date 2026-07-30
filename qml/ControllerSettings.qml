@@ -19,18 +19,31 @@ ApplicationWindow {
 
     // 设置分类导航：当前选中分类 + 点击滚动定位 + 手动滚动时同步高亮
     property string currentSection: "appearance"
+    function navList() { return [cardA, cardB, cardD, cardC, cardQ, cardBack, cardO] }
+    function navKeys() { return ["appearance", "language", "dir", "webui", "bot", "backup", "ops"] }
+    function sectionOf(item) {
+        var list = navList(), keys = navKeys()
+        for (var i = 0; i < list.length; ++i)
+            if (list[i] === item) return keys[i]
+        return ""
+    }
     function scrollTo(item) {
         if (!item) return
+        currentSection = sectionOf(item)   // 点击时立即锁定高亮，避免依赖滚动位置推算
         var target = item.y + 8
         flick.contentY = Math.max(0, Math.min(flick.contentHeight - flick.height, target))
     }
     function updateCurrent() {
-        var y = flick.contentY
-        var list = [cardA, cardB, cardD, cardC, cardQ, cardBack, cardO]
-        var keys = ["appearance", "language", "dir", "webui", "bot", "backup", "ops"]
+        // 以视口中线所在卡片作为当前分类，可稳定识别中间分类
+        var list = navList(), keys = navKeys()
+        var midY = flick.contentY + flick.height / 2
         var cur = keys[0]
-        for (var i = 0; i < list.length; ++i)
-            if (list[i].y + 16 <= y + 40) cur = keys[i]
+        for (var i = 0; i < list.length; ++i) {
+            var c = list[i]
+            if (c.y <= midY && midY < c.y + c.height) { cur = keys[i]; break }
+        }
+        // 滚到最底部时中线落在最后卡片之后，归到最后一项
+        if (flick.contentY >= flick.contentHeight - flick.height - 2) cur = keys[keys.length - 1]
         currentSection = cur
     }
 
