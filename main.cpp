@@ -59,49 +59,59 @@
 #endif
 
 #include <cstdio>
+#include <cstdarg>
 #include <QDirIterator>
 #include <QDebug>
 #include <QFile>
 #include <QDateTime>
 #include <QMessageLogContext>
 
-// 文件日志：当 exe 同目录存在 msm.log.enabled 标记文件时，把所有 Qt/QML 日志
-// 同时追加写入 msm.log。用于无控制台（schtasks/session 0）场景下的排错。
-static int  g_logState = 0; // 0=未判定 1=启用 2=禁用
-static QFile g_logFile;
-static void msmMessageOutput(QtMsgType type, const QMessageLogContext &ctx, const QString &msg)
+// 文件日志：日志常态化开启，固定写入程序同目录下的 logs/msm.log
+// （首次写入时自动创建 logs 子目录）。用于无控制台（schtasks/session 0）及日常排错。
+// Debug 构建额外把日志回显到控制台；Release/MinSizeRel 构建仅写文件、不污染 cmd（见下方 QT_DEBUG 门控）。
+static QString msmLogDir()
 {
-    if (g_logState == 0) {
-        QString dir = QCoreApplication::instance()
-                          ? QCoreApplication::applicationDirPath()
-                          : QDir::currentPath();
-        if (QFile::exists(dir + QStringLiteral("/msm.log.enabled")))
-            g_logState = 1;
-        else
-            g_logState = 2;
-    }
-    if (g_logState == 1) {
-        if (!g_logFile.isOpen()) {
-            g_logFile.setFileName(QCoreApplication::applicationDirPath()
-                                  + QStringLiteral("/msm.log"));
-            (void)g_logFile.open(QIODevice::Append | QIODevice::Text);
-        }
-        const char *level = "?";
-        switch (type) {
-            case QtDebugMsg: level = "DBG"; break;
-            case QtInfoMsg:  level = "INF"; break;
-            case QtWarningMsg: level = "WRN"; break;
-            case QtCriticalMsg: level = "CRT"; break;
-            case QtFatalMsg: level = "FTL"; break;
-        }
-        QByteArray line = QDateTime::currentDateTime()
-                              .toString(QStringLiteral("yyyy-MM-dd hh:mm:ss.zzz")).toLocal8Bit();
-        line += ' '; line += level; line += ' ';
-        if (ctx.category && ctx.category[0]) { line += ctx.category; line += ' '; }
-        line += msg.toLocal8Bit(); line += '\n';
+    QString dir = QCoreApplication::instance()
+                      ? QCoreApplication::applicationDirPath()
+                      : QDir::currentPath();
+    return dir + QStringLiteral("/logs");
+}
+static QFile g_logFile;
+// 确保日志文件已打开（首次调用时创建 logs 子目录并打开 msm.log）
+static void msmEnsureLogFile()
+{
+    if (g_logFile.isOpen())
+        return;
+    QDir().mkpath(msmLogDir());
+    g_logFile.setFileName(msmLogDir() + QStringLiteral("/msm.log"));
+    (void)g_logFile.open(QIODevice::Append | QIODevice::Text);
+}
+// 把一行（不含换行）追加到日志文件
+static void msmAppendLog(const QByteArray &line)
+{
+    msmEnsureLogFile();
+    if (g_logFile.isOpen()) {
         g_logFile.write(line);
+        g_logFile.write("\n");
         g_logFile.flush();
     }
+}
+static void msmMessageOutput(QtMsgType type, const QMessageLogContext &ctx, const QString &msg)
+{
+    const char *level = "?";
+    switch (type) {
+        case QtDebugMsg: level = "DBG"; break;
+        case QtInfoMsg:  level = "INF"; break;
+        case QtWarningMsg: level = "WRN"; break;
+        case QtCriticalMsg: level = "CRT"; break;
+        case QtFatalMsg: level = "FTL"; break;
+    }
+    QByteArray line = QDateTime::currentDateTime()
+                          .toString(QStringLiteral("yyyy-MM-dd hh:mm:ss.zzz")).toLocal8Bit();
+    line += ' '; line += level; line += ' ';
+    if (ctx.category && ctx.category[0]) { line += ctx.category; line += ' '; }
+    line += msg.toLocal8Bit();
+    msmAppendLog(line);
     // 控制台回显：仅 Debug 构建输出到 cmd；Release 构建不污染控制台，日志只进 msm.log。
     // 使用 Qt 自带的 QT_DEBUG 宏（Release/MinSizeRel 下未定义 QT_DEBUG）做编译期限制。
 #ifdef QT_DEBUG
@@ -618,6 +628,17 @@ static void msmConsoleMsgHandler(QtMsgType, const QMessageLogContext &, const QS
 {
     fprintf(stderr, "%s\n", msg.toLocal8Bit().constData());
     fflush(stderr);
+    msmAppendLog(msg.toLocal8Bit());   // 诊断模式的 qDebug/qWarning 同样进 msm.log
+}
+// 诊断模式专用：同时打印到控制台(stdout)并写入 logs/msm.log
+static void msmDiagPrint(const char *fmt, ...)
+{
+    va_list ap; va_start(ap, fmt);
+    const QString s = QString::vasprintf(fmt, ap);
+    va_end(ap);
+    fprintf(stdout, "%s", qPrintable(s));
+    fflush(stdout);
+    msmAppendLog(s.toLocal8Bit());
 }
 
 static int runConsoleDiagnostics(int argc, char *argv[])
@@ -632,24 +653,23 @@ static int runConsoleDiagnostics(int argc, char *argv[])
     qInstallMessageHandler(msmConsoleMsgHandler);
     QCoreApplication app(argc, argv);
 
-    fprintf(stdout, "=== Minecraft Server Manager 诊断模式 ===\n");
-    fprintf(stdout, "Qt 版本 : %s\n", qVersion());
-    fprintf(stdout, "程序目录 : %s\n", qPrintable(QCoreApplication::applicationDirPath()));
-    fprintf(stdout, "\n--- QML 导入路径 ---\n");
-    fprintf(stdout, "%s\n", qPrintable(QLibraryInfo::path(QLibraryInfo::Qml2ImportsPath)));
-    fprintf(stdout, "D:/Developer/Qt/6.11.1/mingw_64/qml\n");
+    msmDiagPrint("=== Minecraft Server Manager 诊断模式 ===\n");
+    msmDiagPrint("Qt 版本 : %s\n", qVersion());
+    msmDiagPrint("程序目录 : %s\n", qPrintable(QCoreApplication::applicationDirPath()));
+    msmDiagPrint("\n--- QML 导入路径 ---\n");
+    msmDiagPrint("%s\n", qPrintable(QLibraryInfo::path(QLibraryInfo::Qml2ImportsPath)));
+    msmDiagPrint("D:/Developer/Qt/6.11.1/mingw_64/qml\n");
 
-    fprintf(stdout, "\n--- 已注册 qrc 资源路径 ---\n");
+    msmDiagPrint("\n--- 已注册 qrc 资源路径 ---\n");
     QStringList paths;
     QDirIterator it(QStringLiteral(":/"), QDir::AllEntries | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
     while (it.hasNext()) { it.next(); paths.append(it.filePath()); }
     paths.sort();
     for (const QString &p : paths)
-        fprintf(stdout, "%s\n", qPrintable(p));
-    fprintf(stdout, "\n共 %d 个 qrc 资源。\n", paths.size());
+        msmDiagPrint("%s\n", qPrintable(p));
+    msmDiagPrint("\n共 %d 个 qrc 资源。\n", (int)paths.size());
 
-    fprintf(stdout, "\n按 Enter 退出...");
-    fflush(stdout);
+    msmDiagPrint("\n按 Enter 退出...");
     getchar();
     return 0;
 }
