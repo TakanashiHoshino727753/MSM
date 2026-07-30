@@ -14,6 +14,9 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <psapi.h>
+// 进程/模块信息查询依赖 psapi；通过编译器 pragma 在 Windows 编译期自动链入，
+// Linux 不编译此段，避免链接器去找不存在的 -lPsapi。
+#pragma comment(lib, "psapi.lib")
 #endif
 
 // 服务器管理逻辑层（C++）：负责单个 Minecraft 服务端进程的

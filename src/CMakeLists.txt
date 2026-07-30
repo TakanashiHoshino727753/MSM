@@ -39,12 +39,10 @@ add_library(msm_server STATIC
     server/servercontroller.h
     server/servercontroller.cpp
 )
-# Psapi 是 Windows 专属库（进程/模块信息查询），仅 Windows 链接。
-if(WIN32)
-    target_link_libraries(msm_server PUBLIC Qt6::Core Qt6::Qml Qt6::Network Psapi)
-else()
-    target_link_libraries(msm_server PUBLIC Qt6::Core Qt6::Qml Qt6::Network)
-endif()
+# Psapi 是 Windows 专属库（进程/模块信息查询），不再在此无条件链接；
+# 改由 src/server/servercontroller.h 中的 #pragma comment(lib, "psapi.lib")
+# 在 Windows 编译期自动链入，Linux 不编译该段，避免链接器找不到 -lPsapi。
+target_link_libraries(msm_server PUBLIC Qt6::Core Qt6::Qml Qt6::Network)
 target_include_directories(msm_server PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/server)
 
 # ---- 服务器创建 / 模组包导入（依赖 download + server + java）----
@@ -114,14 +112,11 @@ add_library(msm_webui STATIC
 # webuiserver_spa.inc 是被 webuiserver.cpp 包含的片段，不作为独立编译单元
 set_source_files_properties(webui/webuiserver_spa.inc PROPERTIES HEADER_FILE_ONLY TRUE)
 target_sources(msm_webui PRIVATE webui/webuiserver_spa.inc)
-# crypt32 / advapi32 是 Windows CryptoAPI 专属库（自签证书），仅 Windows 链接。
-if(WIN32)
-    target_link_libraries(msm_webui PUBLIC Qt6::Core Qt6::Network Qt6::Gui crypt32 advapi32
-        msm_core msm_download msm_server msm_serverctl msm_java msm_settings msm_bot)
-else()
-    target_link_libraries(msm_webui PUBLIC Qt6::Core Qt6::Network Qt6::Gui
-        msm_core msm_download msm_server msm_serverctl msm_java msm_settings msm_bot)
-endif()
+# crypt32 / advapi32 是 Windows CryptoAPI 专属库（自签证书），不再在此无条件链接；
+# 改由 src/webui/webuiserver.cpp 中的 #pragma comment(lib, "crypt32.lib"/"advapi32.lib")
+# 在 Windows 编译期自动链入，Linux 不编译该段，避免链接器找不到 -lcrypt32/-ladvapi32。
+target_link_libraries(msm_webui PUBLIC Qt6::Core Qt6::Network Qt6::Gui
+    msm_core msm_download msm_server msm_serverctl msm_java msm_settings msm_bot)
 target_include_directories(msm_webui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/webui)
 
 
