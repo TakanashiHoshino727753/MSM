@@ -1176,19 +1176,27 @@ void CreateServerController::finalizeModCreate()
         setStatus(QStringLiteral("安装完成但未找到任何加载器生成的服务端核心，请检查目录：") + m_modsTemp);
         return;
     }
-    const QString dst = m_modsTemp + QStringLiteral("/server.jar");
-    QFile::remove(dst);
-    if (!QFile::copy(m_modsTemp + QStringLiteral("/") + serverJar, dst)) {
-        QDir(m_modsTemp).removeRecursively();
-        setBusy(false);
-        setStatus(QStringLiteral("无法复制生成的服务端核心到 server.jar：") + m_modsTemp);
-        return;
+    // NeoForge / Forge 1.17+ 安装器生成 unix_args.txt/win_args.txt/user_jvm_args.txt，启动必须用
+    // `java @user_jvm_args.txt @unix_args.txt`（含 -jar 与 libraries 路径），且依赖 libraries/ 内
+    // 原样的 <loader>-server.jar —— 因此不能复制成 server.jar，也不能删除原 jar 或这些参数文件，
+    // 否则 java -jar server.jar 找不到主类/libraries 而无法启动。仅 Fabric / Forge 1.16- 生成可
+    // 独立运行的胖 jar，复制成 server.jar 更简洁。
+    const bool useArgs = QFile::exists(m_modsTemp + QStringLiteral("/unix_args.txt"))
+                      || QFile::exists(m_modsTemp + QStringLiteral("/win_args.txt"));
+    if (!useArgs) {
+        const QString dst = m_modsTemp + QStringLiteral("/server.jar");
+        QFile::remove(dst);
+        if (!QFile::copy(m_modsTemp + QStringLiteral("/") + serverJar, dst)) {
+            QDir(m_modsTemp).removeRecursively();
+            setBusy(false);
+            setStatus(QStringLiteral("无法复制生成的服务端核心到 server.jar：") + m_modsTemp);
+            return;
+        }
+        // 原加载器胖 jar（fabric-server-launch.jar / forge-*.jar）已复制为 server.jar，删除冗余原件。
+        // 注意：libraries/ 与 minecraft_server-*.jar 必须保留（运行期依赖）。
+        QFile::remove(m_modsTemp + QStringLiteral("/") + serverJar);
     }
-    // 原始的加载器核心（如 forge-…jar / neoforge-…jar / fabric-…jar）已复制为 server.jar，
-    // 删除冗余原件；并清理安装器生成的启动脚本/元数据，使目录呈现为单个 server.jar。
-    // 注意：libraries/ 与 minecraft_server-*.jar 必须保留——Forge/NeoForge 通用 jar 运行期依赖它们。
-    QFile::remove(m_modsTemp + QStringLiteral("/") + serverJar);
-    cleanupInstallerLeftovers();
+    cleanupInstallerLeftovers();   // 仅删手动启动脚本与安装器残留，保留 args 文件/libraries/version.json
     // 记录本服务器使用的 Java：与普通服务器一致，m_resolvedJava 已是 saveDir/jvm-{feature}/bin/java
     m_dm->writeTextFile(m_modsTemp + QStringLiteral("/eula.txt"),
                         QStringLiteral("eula=true\n# 由 MSM 创建服务器时自动生成（已同意 Minecraft EULA）\n"));
@@ -1222,18 +1230,24 @@ void CreateServerController::finalizeModCreate()
 
 void CreateServerController::cleanupInstallerLeftovers()
 {
-    // 安装器额外生成的“启动脚本 / 元数据”文件，仅手动双击脚本时用到；
-    // MSM 以 `java -jar server.jar` 直接从目录启动，这些文件无用，移除以保持目录整洁。
-    // 仅按白名单删除，绝不触碰 .jar 与 libraries/，避免影响启动。
+    // 仅删除安装器生成的“手动启动脚本”（MSM 由程序启动，不需要这些脚本）。
+    // 注意：NeoForge / Forge 1.17+ 生成的 unix_args.txt / win_args.txt / user_jvm_args.txt
+    // 是启动服务器必需的参数文件（含 -jar 与 libraries 路径），绝不能删除；libraries/、
+    // version.json 同样必需。各 runModInstaller 成功分支已删除安装器 jar，这里再做兜底清理。
     static const QStringList clutter = {
-        QStringLiteral("run.bat"), QStringLiteral("run.sh"), QStringLiteral("run.nogui.bat"),
-        QStringLiteral("version.json"), QStringLiteral("user_jvm_args.txt"),
-        QStringLiteral("win_args.txt"), QStringLiteral("unix_args.txt")
+        QStringLiteral("run.bat"), QStringLiteral("run.sh"), QStringLiteral("run.nogui.bat")
     };
     for (const QString &f : clutter) {
         const QString p = m_modsTemp + QStringLiteral("/") + f;
         if (QFile::exists(p))
             QFile::remove(p);
+    }
+    // 兜底删除任何遗留的安装器 jar / 其日志（如 neoforge-*-installer.jar、installer.jar.log）
+    QDir d(m_modsTemp);
+    for (const QString &j : d.entryList(QStringList() << QStringLiteral("*-installer*.jar")
+                                                      << QStringLiteral("installer*.jar.log"),
+                                         QDir::Files)) {
+        QFile::remove(d.absoluteFilePath(j));
     }
 }
 

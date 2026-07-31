@@ -145,10 +145,41 @@ void ServerController::start(const QString &name, const QString &path,
             this, [this, name](int code, QProcess::ExitStatus s) { onFinished(name, code, s); });
 
     QStringList args;
-    args << QStringLiteral("-Xms%1M").arg(minMem)
-         << QStringLiteral("-Xmx%1M").arg(maxMem)
-         << QStringLiteral("-jar") << QDir(path).absoluteFilePath(QStringLiteral("server.jar"))
-         << QStringLiteral("nogui");
+    // NeoForge / Forge 1.17+ 用安装器生成的参数文件启动（unix_args.txt/win_args.txt 内已含
+    // -jar 与 libraries 路径，不可裸 java -jar server.jar——那样找不到主类/libraries）。先把 UI 的
+    // 内存设置写入 user_jvm_args.txt（替换已有 -Xms/-Xmx 行）让设置生效，再 @引用参数文件
+    // （nogui 已在参数文件内，无需追加）。
+    const bool useArgs = QFile::exists(path + QStringLiteral("/unix_args.txt"))
+                      || QFile::exists(path + QStringLiteral("/win_args.txt"));
+    if (useArgs) {
+        const QString ujvm = path + QStringLiteral("/user_jvm_args.txt");
+        QFile uf(ujvm);
+        QStringList ulines;
+        if (uf.open(QIODevice::ReadOnly)) {
+            const QStringList old = QString::fromUtf8(uf.readAll())
+                    .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+            for (const QString &l : old)
+                if (!l.contains(QLatin1String("-Xms")) && !l.contains(QLatin1String("-Xmx")))
+                    ulines << l;
+            uf.close();
+        }
+        ulines << QStringLiteral("-Xms%1M").arg(minMem) << QStringLiteral("-Xmx%1M").arg(maxMem);
+        if (uf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            uf.write(ulines.join(QLatin1Char('\n')).toUtf8());
+            uf.close();
+        }
+        args << QStringLiteral("@user_jvm_args.txt");
+#ifdef Q_OS_WIN
+        args << QStringLiteral("@win_args.txt");
+#else
+        args << QStringLiteral("@unix_args.txt");
+#endif
+    } else {
+        args << QStringLiteral("-Xms%1M").arg(minMem)
+             << QStringLiteral("-Xmx%1M").arg(maxMem)
+             << QStringLiteral("-jar") << QDir(path).absoluteFilePath(QStringLiteral("server.jar"))
+             << QStringLiteral("nogui");
+    }
     p.proc->start(effectiveJava, args);
     if (!p.proc->waitForStarted(5000)) {
         emit consoleAppended(name, QStringLiteral("[MSM] 启动失败：无法执行 ") + effectiveJava +
