@@ -626,9 +626,9 @@ public:
         setStageProgress(0);
         setStageText(QString());
 
-        // "下载中心 - 模组服"只为打包到下载文件夹，不加入服务器列表：
-        // 在下载目录/<名称> 下构建，压缩包生成到下载目录/<名称>-<版本>.zip，
-        // 完成后删除构建目录，仅保留 .zip（由 CreateServerController 的 packageOnly 模式处理）。
+        // "下载中心 - 模组服"复用与创建服务器完全相同的安装逻辑（同样的临时目录构建 +
+        // 与普通服务器一致的 Java 安装策略），只准备服务端目录、不加入服务器列表、
+        // 不打包：产物直接落在下载目录/<名称> 下（含 jvm-{feature}/ 的 Java）。
         const QString name = label + QStringLiteral(" ") + version;
         const QString safe = name.toLower().replace(QLatin1Char(' '), QStringLiteral("_"));
         const QString dir = QDir::cleanPath(QDir::fromNativeSeparators(m_dm->defaultDownloadDir())
@@ -663,7 +663,7 @@ public:
                 setStageProgress(100);
                 setStageText(QString());
                 setBusy(false);
-                emit status(name + QStringLiteral(" 打包完成（未加入服务器列表）"));
+                emit status(name + QStringLiteral(" 安装完成（未加入服务器列表，已生成到下载文件夹）"));
                 ctrl->deleteLater();
             }
         });
@@ -673,7 +673,7 @@ public:
         ctrl->setName(name);
         ctrl->setSaveDir(dir);
         ctrl->setEulaAccepted(true);
-        ctrl->setPackageOnly(true);   // 仅打包到下载文件夹，不导入服务器列表
+        ctrl->setSkipAddList(true);   // 仅准备服务端目录到下载文件夹，不加入服务器列表、不打包
         ctrl->setSelectedLoaders(QStringList() << loader);
         ctrl->create();
     }

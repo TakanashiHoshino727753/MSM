@@ -357,7 +357,7 @@ ApplicationWindow {
                     // 次操作：打包到下载文件夹（描边次级按钮）
                     Button {
                         id: packLoaderBtn
-                        text: I18n.t("打包到下载文件夹", I18n.lang)
+                        text: I18n.t("生成服务端到下载文件夹", I18n.lang)
                         onClicked: installCoordinator.install(downloadCatalog.modLoaderType, downloadCatalog.modVersion, downloadCatalog.loaderLabel(downloadCatalog.modLoaderType))
                         implicitHeight: 36
                         leftPadding: 18; rightPadding: 18
@@ -374,14 +374,13 @@ ApplicationWindow {
                     }
                 }
                 Label {
-                    text: I18n.t("仅打包到下载文件夹，不会加入服务器列表。每个加载器会生成独立压缩包（<名称>-<版本>.zip）到下载目录；之后可在“创建服务器”中导入该压缩包。", I18n.lang)
+                    text: I18n.t("仅生成服务端目录到下载文件夹，不会加入服务器列表。每个加载器会在下载目录/<名称> 下生成一份完整服务端（含同目录的 Java），可直接用作服务器目录。", I18n.lang)
                     wrapMode: Text.Wrap
                     color: Theme.textMuted
                     font.pointSize: 10
                     Layout.fillWidth: true
                 }
-                // 打包进度：总进度 + 当前阶段。进度按“准备 Java / 各加载器 / 打包”分阶段推进，
-                // 不再直接跳到 100%。
+                // 进度：总进度 + 当前阶段。进度按“准备 Java / 各加载器”分阶段推进。
                 ColumnLayout {
                     visible: installCoordinator.busy || installCoordinator.progress > 0
                     Layout.fillWidth: true
@@ -389,7 +388,7 @@ ApplicationWindow {
                     Label {
                         text: installCoordinator.stageText !== ""
                               ? installCoordinator.stageText
-                              : (installCoordinator.busy ? I18n.t("打包中…", I18n.lang) : I18n.t("已完成", I18n.lang))
+                              : (installCoordinator.busy ? I18n.t("生成中…", I18n.lang) : I18n.t("已完成", I18n.lang))
                         color: Theme.text
                         font.pointSize: 10
                         wrapMode: Text.Wrap

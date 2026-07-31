@@ -17,7 +17,8 @@ class JavaManager;
 
 // 创建服务器向导的逻辑层（C++）。负责：服务端版本真实拉取（Paper/Vanilla/模组服）、
 // 名称->目录推导、下载触发、完成后写 eula.txt 并入服务器列表。QML 只画表单并绑定属性。
-// 模组服可勾选安装 forge/fabric/neoforge 多个加载器，安装期间使用临时 Java 环境，完成后删除。
+// 模组服可勾选安装 forge/fabric/neoforge 多个加载器；Java 按普通服务器策略装到服务器目录
+// 下的 jvm-{feature}/（与下载中心模组服一样只准备服务端产物，不做压缩包打包）。
 class CreateServerController : public QObject
 {
     Q_OBJECT
@@ -63,14 +64,13 @@ public:
     Q_INVOKABLE void create();
     Q_INVOKABLE void reset();
 
-    // 仅打包模式：构建完成后只生成压缩包（到保存目录父级），不写入服务器列表。
-    // 供“下载中心 - 模组服”使用：仅打包到下载文件夹。
-    Q_INVOKABLE void setPackageOnly(bool b);
-    bool packageOnly() const { return m_packageOnly; }
-
     // 从已下载/已打包的服务器压缩包导入：解压到保存目录并加入服务器列表。
     // 版本/类型自动探测；要求 EULA 已同意（调用方负责）。
     Q_INVOKABLE void importZip(const QString &zipPath);
+
+    // 下载中心“仅准备服务端目录、不加入服务器列表”时使用：跳过 addServer。
+    // 安装/Java 策略与普通创建服务器完全一致（Java 装到 saveDir/jvm-{feature}/）。
+    void setSkipAddList(bool b) { m_listServer = b; }
 
     // 判断保存目录是否已存在且非空（含任意文件/子目录），用于创建前校验，
     // 避免覆盖已有内容/已存在的服务器目录。
@@ -142,29 +142,21 @@ private:
     void finalizeCreate();
     void resolveJava(std::function<void(const QString &)> cb);
 
-    // 模组服流程：临时 Java + 逐个加载器安装 + 完成后清理临时环境
+    // 模组服流程：按普通服务器策略安装 Java + 逐个加载器安装 + 完成后整理目录
     void startModCreate();
-    void prepareTempJava(std::function<void(bool, QString)> cb);
     void processNextLoader();
     // 启动某个加载器 installer 的下载（主源失败时由 onDownloadError 用镜像兜底重试）
     void startLoaderDownload(const QString &loader, const QString &url);
     void runModInstaller(const QString &loader, bool useMirror = false);
     void onModInstallerFinished(const QString &loader, int exitCode, QProcess::ExitStatus status);
     void finalizeModCreate();
-    void cleanupTempJava();
     // 安装完成后删除 Forge/NeoForge/Fabric 安装器额外生成的启动脚本/元数据（仅手动双击脚本时用到），
     // MSM 以 `java -jar server.jar` 从目录启动，这些文件无用，移除以让目录呈现为单个 server.jar。
     void cleanupInstallerLeftovers();
-    // 模组服安装完成后，将整个服务端目录打包为 .zip，命名：游戏版本+加载器类型+加载器版本。
-    QString computeServerZipName() const;
-    QString loaderVersion(const QString &loader) const;
     // 默认服务器命名：类型 + 版本 +（模组服）加载器类型
     QString defaultName() const;
     void refreshSaveDir();
     void regenerateNameIfAuto();
-    void beginServerZip(const QString &zipPath);
-    void launchZipAttempt();
-    void zipDone(bool ok);
     QString findLoaderJar(const QString &dir, const QString &loader) const;
 
     void startInstallerProcess(const QString &java, const QString &loader, bool useMirror = false);
@@ -215,7 +207,6 @@ private:
     bool m_eulaAccepted = false;
     bool m_busy = false;
     bool m_done = false;
-    bool m_packageOnly = false;
     QString m_status;
     qreal m_progress = 0;
     QString m_taskId;
@@ -238,16 +229,11 @@ private:
     QString m_loaderFallbackUrl;          // 当前加载器下载失败时的镜像兜底地址
     QString m_serverFallbackUrl;          // Vanilla/Paper 主源下载失败时的镜像兜底地址
     QHash<QString, QString> m_loaderByTask; // 下载任务 id -> 加载器
-    QString m_tempJava;                   // 临时 Java 路径（安装结束后删除）
-    QString m_modsTemp;                   // 模组服安装工作目录（程序同目录 Temp/<标识>，纯 ASCII）
+    QString m_modsTemp;                   // 模组服安装工作目录（系统临时目录 Temp/MSM/<标识>，纯 ASCII）
     int m_loaderTotal = 0;                // 总加载器数（用于进度）
     int m_loaderDone = 0;                 // 已完成数
 
-    // 打包压缩包相关
-    QProcess *m_zipProc = nullptr;        // 异步打包进程
-    QString m_zipPath;                    // 临时构建目录内生成的中间 .zip 路径
-    QString m_zipFinalPath;               // 最终落到“下载目录”的 .zip 路径（中间 zip 复制到此）
-
     QString m_installerLog;               // 安装器 stdout/stderr 累积（失败时取末尾展示）
     int m_installAttempt = 0;              // 当前加载器安装重试次数（0=首次不使用镜像，>=1=已切 BMCLAPI 镜像重试）
+    bool m_listServer = true;              // 完成时是否加入服务器列表（下载中心“仅准备目录”时为 false）
 };
