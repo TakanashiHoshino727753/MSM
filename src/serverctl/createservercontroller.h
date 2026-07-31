@@ -148,7 +148,7 @@ private:
     void processNextLoader();
     // 启动某个加载器 installer 的下载（主源失败时由 onDownloadError 用镜像兜底重试）
     void startLoaderDownload(const QString &loader, const QString &url);
-    void runModInstaller(const QString &loader);
+    void runModInstaller(const QString &loader, bool useMirror = false);
     void onModInstallerFinished(const QString &loader, int exitCode, QProcess::ExitStatus status);
     void finalizeModCreate();
     void cleanupTempJava();
@@ -167,14 +167,22 @@ private:
     void zipDone(bool ok);
     QString findLoaderJar(const QString &dir, const QString &loader) const;
 
-    void startInstallerProcess(const QString &java, const QString &loader);
+    void startInstallerProcess(const QString &java, const QString &loader, bool useMirror = false);
     void onInstallerFinished(int exitCode, QProcess::ExitStatus status);
     QString findJava() const;
+
+    // 模组服安装工作目录：位于 MSM 程序同目录下的 Temp/<标识>（纯 ASCII，避免含中文的
+    // saveDir 在 C locale 的 java 子进程下路径解码成 '?' 而失败）。安装器在此目录运行并
+    // 生成核心，所有加载器装完后整体复制到 saveDir。
+    QString modsTempDir() const;
+    static bool copyDirRecursive(const QString &src, const QString &dst);
 
     // 把系统代理转成 JVM 参数，供独立的 java 安装器进程使用。
     // 主程序通过 Qt 使用系统代理（setUseSystemConfiguration），但派生的 java 进程不会继承，
     // 导致安装器下载 Mojang / NeoForge 源时被墙/超时而退出码 1。
     QStringList systemProxyJvmArgs() const;
+    // 判断安装器日志是否表现为“网络下载失败”（超时 / 库下载失败），用于触发 BMCLAPI 镜像重试。
+    bool installerFailedByNetwork() const;
     // 截取安装器输出末尾，便于在失败时展示真实原因（而非笼统的“请检查网络后重试”）
     QString installerErrorTail() const;
 
@@ -231,13 +239,15 @@ private:
     QString m_serverFallbackUrl;          // Vanilla/Paper 主源下载失败时的镜像兜底地址
     QHash<QString, QString> m_loaderByTask; // 下载任务 id -> 加载器
     QString m_tempJava;                   // 临时 Java 路径（安装结束后删除）
+    QString m_modsTemp;                   // 模组服安装工作目录（程序同目录 Temp/<标识>，纯 ASCII）
     int m_loaderTotal = 0;                // 总加载器数（用于进度）
     int m_loaderDone = 0;                 // 已完成数
 
     // 打包压缩包相关
     QProcess *m_zipProc = nullptr;        // 异步打包进程
-    QString m_zipPath;                    // 目标 .zip 路径
-    int m_zipAttempt = 0;                 // 0=PowerShell，1=tar 兜底
+    QString m_zipPath;                    // 临时构建目录内生成的中间 .zip 路径
+    QString m_zipFinalPath;               // 最终落到“下载目录”的 .zip 路径（中间 zip 复制到此）
 
     QString m_installerLog;               // 安装器 stdout/stderr 累积（失败时取末尾展示）
+    int m_installAttempt = 0;              // 当前加载器安装重试次数（0=首次不使用镜像，>=1=已切 BMCLAPI 镜像重试）
 };

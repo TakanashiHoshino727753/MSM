@@ -45,6 +45,30 @@
 #  pragma comment(lib, "shell32.lib")
 #endif
 
+// 返回 Adoptium / Oracle 使用的架构字符串（而非硬编码 x64），避免在非 x86_64 机器
+// （如 aarch64/arm64 的云 VM、树莓派、Apple Silicon 虚拟机）上下载到跑不起来的 JDK，
+// 否则启动 java 时会报 sun.nio.fs.UnixNativeDispatcher.init() 的 UnsatisfiedLinkError。
+QString JavaManager::hostArchitecture()
+{
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS) || defined(Q_OS_MAC)
+    // Windows / macOS 的 Adoptium 架构字段同样用 x64 / aarch64
+    const QString a = QSysInfo::currentCpuArchitecture();
+    if (a.contains(QStringLiteral("arm"), Qt::CaseInsensitive)) return QStringLiteral("aarch64");
+    if (a.contains(QStringLiteral("64"), Qt::CaseInsensitive))    return QStringLiteral("x64");
+    return QStringLiteral("x86");
+#else
+    const QString a = QSysInfo::currentCpuArchitecture();
+    if (a == QStringLiteral("aarch64") || a == QStringLiteral("arm64")) return QStringLiteral("aarch64");
+    if (a.startsWith(QStringLiteral("arm"), Qt::CaseInsensitive))        return QStringLiteral("arm");
+    if (a == QStringLiteral("x86_64"))                                   return QStringLiteral("x64");
+    if (a == QStringLiteral("i386") || a == QStringLiteral("i686"))      return QStringLiteral("x86");
+    if (a == QStringLiteral("ppc64le"))                                  return QStringLiteral("ppc64le");
+    if (a == QStringLiteral("s390x"))                                    return QStringLiteral("s390x");
+    if (a == QStringLiteral("riscv64"))                                  return QStringLiteral("riscv64");
+    return QStringLiteral("x64"); // 兜底，绝大多数 x86_64 机器走这里
+#endif
+}
+
 // 判断当前进程是否已提权（管理员令牌）。非 Windows 平台恒为 true。
 static bool isCurrentProcessElevated()
 {
@@ -188,6 +212,22 @@ void JavaManager::setInstallBase(const QString &path)
 
 QString JavaManager::installedJava(int feature) const
 {
+    // 架构一致性校验：避免在非 x86_64 机器上复用错架构（如 x64）的已登记 JDK，
+    // 否则启动 java 时会报 sun.nio.fs.UnixNativeDispatcher.init() 的 UnsatisfiedLinkError。
+    // 规则：登记时记录了架构键则必须与当前主机架构一致；未记录键时——
+    //   非 Windows 上旧托管 JDK 不可信（可能下到了错架构），强制重新解析/下载；
+    //   Windows 的 MSI 安装与手动目录本就不记录架构，保持兼容不失效。
+    {
+        QSettings s;
+        const QString regArch = s.value(QStringLiteral("java/installedArch/%1").arg(feature)).toString();
+        if (!regArch.isEmpty()) {
+            if (regArch != hostArchitecture()) return QString();
+        } else {
+#ifndef Q_OS_WIN
+            return QString();
+#endif
+        }
+    }
     // 当显式调用 setInstallBase 设置了覆盖路径时，installBase() 返回的已是完整目标目录
     // （如 {path}/jvm-21/），不再追加 /{feature} 层。
     // 未设置覆盖时回退到默认 managedDir + /{feature}（Downloads/jvm/{feature}）。
@@ -230,6 +270,15 @@ void JavaManager::setManualJavaHome(const QString &dir)
         s.setValue(QStringLiteral("java/manualHome"), QDir::fromNativeSeparators(dir.trimmed()));
 }
 
+    namespace {
+    // 平台相关的 Java 可执行文件名：Windows 为 java.exe，其它平台为 java（无扩展名）
+#ifdef Q_OS_WIN
+    const char *javaBinName() { return "java.exe"; }
+#else
+    const char *javaBinName() { return "java"; }
+#endif
+    }
+
 void JavaManager::detectJava(int feature, std::function<void(const QString &)> cb)
 {
     // 按优先级依次尝试：手动目录 -> PATH -> JAVA_HOME -> 常见安装目录/MC 运行时
@@ -239,7 +288,7 @@ void JavaManager::detectJava(int feature, std::function<void(const QString &)> c
         if (manual.isEmpty()) { next(QString()); return; }
         const QFileInfo mi(manual);
         const QString direct = mi.isDir()
-            ? mi.absoluteFilePath() + QStringLiteral("/bin/java.exe")
+            ? mi.absoluteFilePath() + QStringLiteral("/bin/") + QString::fromLatin1(javaBinName())
             : mi.absoluteFilePath();
         if (!QFile::exists(direct)) { next(QString()); return; }
         probeJava(direct, feature, next);
@@ -252,7 +301,7 @@ void JavaManager::detectJava(int feature, std::function<void(const QString &)> c
     steps->append([this, feature](std::function<void(const QString &)> next) {
         const QString home = qEnvironmentVariable("JAVA_HOME");
         if (home.isEmpty()) { next(QString()); return; }
-        const QString he = QDir(home).absolutePath() + QStringLiteral("/bin/java.exe");
+        const QString he = QDir(home).absolutePath() + QStringLiteral("/bin/") + QString::fromLatin1(javaBinName());
         if (!QFile::exists(he)) { next(QString()); return; }
         probeJava(he, feature, next);
     });
@@ -289,9 +338,13 @@ void JavaManager::probeJava(const QString &exe, int feature, std::function<void(
     };
     QObject::connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), p,
         [p, finalize, exe, feature](int code, QProcess::ExitStatus) {
-            if (code != 0) { finalize(false, exe); return; }
             const QString out = QString::fromLocal8Bit(p->readAllStandardOutput())
                                 + QString::fromLocal8Bit(p->readAllStandardError());
+            if (code != 0) {
+                qDebug() << "[MSM][probeJava] java 进程退出码非0:" << exe << "code=" << code;
+                qDebug().noquote() << "[MSM][probeJava] 输出:" << out;
+                finalize(false, exe); return;
+            }
             auto majorOf = [](const QString &s) -> int {
                 int idx = s.indexOf(QLatin1String("version \""));
                 if (idx < 0) return -1;
@@ -302,9 +355,18 @@ void JavaManager::probeJava(const QString &exe, int feature, std::function<void(
                     return v.mid(2).section(QLatin1Char('.'), 0, 0).toInt();
                 return v.section(QLatin1Char('.'), 0, 0).toInt();
             };
-            finalize(majorOf(out) == feature, exe);
+            const int major = majorOf(out);
+            if (major != feature) {
+                qDebug() << "[MSM][probeJava] 主版本不匹配: 期望" << feature << "实际" << major << exe;
+                qDebug().noquote() << "[MSM][probeJava] 输出:" << out;
+                finalize(false, exe); return;
+            }
+            finalize(true, exe);
         });
-    QObject::connect(p, &QProcess::errorOccurred, p, [finalize]() { finalize(false, QString()); });
+    QObject::connect(p, &QProcess::errorOccurred, p, [finalize, p]() {
+        qDebug() << "[MSM][probeJava] 进程错误:" << p->errorString() << p->program();
+        finalize(false, QString());
+    });
     // 超时保护：最多等待 3s（与旧 waitForFinished(3000) 等价的安全上限），超时则终止进程
     auto *timer = new QTimer(p);
     timer->setSingleShot(true);
@@ -362,7 +424,7 @@ void JavaManager::scanCommonJava(int feature, std::function<void(const QString &
         if (!d.exists()) continue;
         const QFileInfoList subs = d.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
         for (const QFileInfo &sub : subs) {
-            const QString je = sub.absoluteFilePath() + QStringLiteral("/bin/java.exe");
+            const QString je = sub.absoluteFilePath() + QStringLiteral("/bin/") + QString::fromLatin1(javaBinName());
             if (!QFile::exists(je)) continue;
             const int maj = majorFromName(sub.fileName());
             // 名称能确定主版本且不匹配则跳过（不浪费一次进程探测）；其余情况再实测
@@ -553,13 +615,19 @@ void JavaManager::startDownload(int feature, const QString &listId, std::functio
 
 QString JavaManager::latestRedirectUrl(int feature) const
 {
+#ifdef Q_OS_WIN
     return QStringLiteral("https://api.adoptium.net/v3/binary/latest/%1/ga/windows/x64/jdk/hotspot/normal/eclipse")
             .arg(feature);
+#else
+    return QStringLiteral("https://api.adoptium.net/v3/binary/latest/%1/ga/linux/%2/jdk/hotspot/normal/eclipse")
+            .arg(feature).arg(hostArchitecture());
+#endif
 }
 
 void JavaManager::resolveDownloadUrl(int feature, std::function<void(bool, QString, QString)> cb)
 {
-    // 优先使用用户指定的 Oracle 官网直链（优先于自动解析，确保稳定可用）
+#ifdef Q_OS_WIN
+    // 优先使用用户指定的 Oracle 官网直链（仅 Windows 提供 exe 安装包）
     switch (feature) {
     case 26:
         cb(true, QStringLiteral("https://download.oracle.com/java/26/latest/jdk-26_windows-x64_bin.exe"),
@@ -596,6 +664,29 @@ void JavaManager::resolveDownloadUrl(int feature, std::function<void(bool, QStri
     // 其他未知版本兜底
     cb(true, latestRedirectUrl(feature),
        QStringLiteral("OpenJDK%1-installer.msi").arg(feature));
+#else
+    // 非 Windows（如 Linux）：没有 exe 可用，所有版本统一走 Adoptium，
+    // resolveAdoptium() 会按当前平台返回 zip(Windows)/tar.gz(Linux) 直链，解压即用。
+    resolveAdoptium(feature, [this, feature, cb](bool ok, QString tuna) {
+        if (ok && !tuna.isEmpty()) {
+            // Adoptium 的 package.link 指向 github.com 发布资源；改写为清华 TUNA 的
+            // github-release 镜像（国内快且稳）。其它来源（非 github）保持原样。
+            if (QUrl(tuna).host() == QStringLiteral("github.com")) {
+                QUrl m; m.setScheme(QStringLiteral("https"));
+                m.setHost(QStringLiteral("mirrors.tuna.tsinghua.edu.cn"));
+                m.setPath(QStringLiteral("/github-release") + QUrl(tuna).path());
+                tuna = m.toString();
+            }
+            const QString fname = tuna.mid(tuna.lastIndexOf(QLatin1Char('/')) + 1);
+            cb(true, tuna, fname);
+            return;
+        }
+        // Adoptium 不可用：退回 Oracle 官方 linux tar.gz 直链（架构自适应）
+        const QString arch = hostArchitecture();
+        const QString linuxLink = QStringLiteral("https://download.oracle.com/java/%1/latest/jdk-%1_linux-%2_bin.tar.gz").arg(feature).arg(arch);
+        cb(true, linuxLink, QStringLiteral("jdk-%1_linux-%2_bin.tar.gz").arg(feature).arg(arch));
+    });
+#endif
 }
 
 void JavaManager::pause(const QString &id)
@@ -703,10 +794,15 @@ void JavaManager::resolveInstaller(int feature, std::function<void(bool, QString
             return;
         }
 
-        // —— Adoptium 不可用，尝试 Oracle zip 兜底 ——
-        // Oracle latest 直链（zip 版本，解压即用）
+        // —— Adoptium 不可用，尝试 Oracle 兜底 ——
+        // Oracle latest 直链（Windows 为 zip，Linux 为 tar.gz，均解压即用）
+#ifdef Q_OS_WIN
         const QString latest = QStringLiteral("https://download.oracle.com/java/%1/latest/jdk-%1_windows-x64_bin.zip")
                 .arg(feature);
+#else
+        const QString latest = QStringLiteral("https://download.oracle.com/java/%1/latest/jdk-%1_linux-%2_bin.tar.gz")
+                .arg(feature).arg(hostArchitecture());
+#endif
         QUrl latestUrl(latest);
         QNetworkRequest headReq(latestUrl);
         headReq.setTransferTimeout(15000);
@@ -747,9 +843,9 @@ void JavaManager::resolveInstaller(int feature, std::function<void(bool, QString
                     QStringLiteral(R"(https://download\.oracle\.com/[^\s"'>]+windows-x64_bin\.zip)"));
                 QRegularExpressionMatch mz = reZip.match(html);
                 QString winLink = mz.hasMatch() ? mz.captured(0) : QString();
-                // linux 备用链接缓存
+                // linux 备用链接缓存（同时匹配 x64 与 aarch64）
                 const QRegularExpression reLinux(
-                    QStringLiteral(R"(https://download\.oracle\.com/[^\s"'>]+linux-x64_bin\.tar\.gz)"));
+                    QStringLiteral(R"(https://download\.oracle\.com/[^\s"'>]+linux-(x64|aarch64)_bin\.tar\.gz)"));
                 const QRegularExpressionMatch ml = reLinux.match(html);
                 if (ml.hasMatch()) m_linuxLinks[feature] = ml.captured(0);
 
@@ -769,11 +865,24 @@ QString JavaManager::knownOracleLink(int feature) const
 {
     // 抓取归档页失败时的兜底（依当前实测）。用公开的 download.oracle.com 归档直链，
     // 无需 otn cookie / 二次鉴权（otn 路径在 Qt6+MinGW+Schannel 下大文件下载易 SIGSEGV）。
+#ifdef Q_OS_WIN
     switch (feature) {
     case 17: return QStringLiteral("https://download.oracle.com/java/17/archive/jdk-17.0.12_windows-x64_bin.zip");
     case 11: return QStringLiteral("https://download.oracle.com/java/11/archive/jdk-11.0.30_windows-x64_bin.zip");
     default: return QString();
     }
+#else
+    {
+        const QString arch = hostArchitecture();
+        const QString lx = QStringLiteral("linux-x64");
+        const QString la = QStringLiteral("linux-") + arch;
+        switch (feature) {
+        case 17: return QStringLiteral("https://download.oracle.com/java/17/archive/jdk-17.0.12_linux-x64_bin.tar.gz").replace(lx, la);
+        case 11: return QStringLiteral("https://download.oracle.com/java/11/archive/jdk-11.0.30_linux-x64_bin.tar.gz").replace(lx, la);
+        default: return QString();
+        }
+    }
+#endif
 }
 
 void JavaManager::resolveAdoptium(int feature, std::function<void(bool, QString)> cb)
@@ -784,15 +893,22 @@ void JavaManager::resolveAdoptium(int feature, std::function<void(bool, QString)
     // 取 package（ZIP）而非 installer（MSI），ZIP 解压即用、不需安装器/管理员/UAC。
     // TUNA 镜像直接托管二进制、不走 GitHub，国内下载快且稳。
     // 候选顺序：TUNA 镜像 API -> 腾讯云镜像 API -> 官方 API（国内优先，避免被墙时龟速）。
+    // 平台相关的 Adoptium os 参数：Windows 为 windows，其它平台（Linux/macOS）为 linux
+#ifdef Q_OS_WIN
+    const QString osName = QStringLiteral("windows");
+#else
+    const QString osName = QStringLiteral("linux");
+#endif
+    const QString arch = hostArchitecture();
     const QStringList candidates = {
-        QStringLiteral("https://mirrors.tuna.tsinghua.edu.cn/adoptium/api/v3/assets/feature_releases/%1/ga?architecture=x64&image_type=jdk&os=windows&vendor=eclipse&page_size=1").arg(feature),
-        QStringLiteral("https://mirrors.cloud.tencent.com/adoptium/api/v3/assets/feature_releases/%1/ga?architecture=x64&image_type=jdk&os=windows&vendor=eclipse&page_size=1").arg(feature),
-        QStringLiteral("https://api.adoptium.net/v3/assets/feature_releases/%1/ga?architecture=x64&image_type=jdk&os=windows&vendor=eclipse&page_size=1").arg(feature)
+        QStringLiteral("https://mirrors.tuna.tsinghua.edu.cn/adoptium/api/v3/assets/feature_releases/%1/ga?architecture=%3&image_type=jdk&os=%2&vendor=eclipse&page_size=1").arg(feature).arg(osName).arg(arch),
+        QStringLiteral("https://mirrors.cloud.tencent.com/adoptium/api/v3/assets/feature_releases/%1/ga?architecture=%3&image_type=jdk&os=%2&vendor=eclipse&page_size=1").arg(feature).arg(osName).arg(arch),
+        QStringLiteral("https://api.adoptium.net/v3/assets/feature_releases/%1/ga?architecture=%3&image_type=jdk&os=%2&vendor=eclipse&page_size=1").arg(feature).arg(osName).arg(arch)
     };
     QPointer<JavaManager> self(this);
     // 递归尝试各候选 API（按值捕获的 std::function 需以 shared_ptr 持有，避免递归时捕获到空对象）
     auto step = std::make_shared<std::function<void(int)>>();
-    *step = [self, feature, candidates, cb, step](int idx) {
+    *step = [self, feature, candidates, cb, step, osName, arch](int idx) {
         if (idx >= candidates.size()) { cb(false, QString()); return; }
         QNetworkRequest req{QUrl(candidates[idx])};
         req.setTransferTimeout(15000);
@@ -802,7 +918,7 @@ void JavaManager::resolveAdoptium(int feature, std::function<void(bool, QString)
                       QStringLiteral("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                                      "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"));
         QNetworkReply *reply = self->m_nam->get(req);
-        connect(reply, &QNetworkReply::finished, self.data(), [self, reply, feature, idx, cb, step]() {
+        connect(reply, &QNetworkReply::finished, self.data(), [self, reply, feature, idx, cb, step, osName, arch]() {
             reply->deleteLater();
             if (!self) return;
             QString zipName;
@@ -825,7 +941,7 @@ void JavaManager::resolveAdoptium(int feature, std::function<void(bool, QString)
             }
             if (!zipName.isEmpty()) {
                 QUrl tuna; tuna.setScheme(QStringLiteral("https")); tuna.setHost(QStringLiteral("mirrors.tuna.tsinghua.edu.cn"));
-                tuna.setPath(QStringLiteral("/Adoptium/%1/jdk/x64/windows/%2").arg(feature).arg(zipName));
+                tuna.setPath(QStringLiteral("/Adoptium/%1/jdk/%3/%2/%4").arg(feature).arg(osName).arg(arch).arg(zipName));
                 cb(true, tuna.toString());
                 return;
             }
@@ -891,6 +1007,7 @@ void JavaManager::launchInstaller(int feature, const QString &msiPath, std::func
         QSettings s;
         s.setValue(QStringLiteral("java/installed/%1").arg(feature),
                    QDir::fromNativeSeparators(QFileInfo(java).absolutePath()));
+        s.setValue(QStringLiteral("java/installedArch/%1").arg(feature), hostArchitecture());
         done(true);
     };
 
@@ -1164,14 +1281,17 @@ void JavaManager::fetchInstaller(int feature, const QUrl &url, const QString &li
         const bool isMsi = head.startsWith(QByteArray("\xD0\xCF\x11\xE0")); // OLE 复合文档
         const bool isExe = head.startsWith(QByteArray("MZ"));               // DOS/PE 可执行
         const bool isZip = head.startsWith(QByteArray("PK"));               // zip 压缩包
+        const bool isGz  = head.startsWith(QByteArray("\x1F\x8B"));         // gzip（tar.gz 压缩包）
         // 在状态栏明确告知用户下载到的是"安装程序"还是"压缩包"，便于排查卡死/失败
         const QString pkgType = isMsi ? QStringLiteral("MSI 安装包")
-                                      : (isExe ? QStringLiteral("EXE 安装程序")
-                                               : (isZip ? QStringLiteral("压缩包(zip)") : QStringLiteral("未知文件")));
+                                     : (isExe ? QStringLiteral("EXE 安装程序")
+                                              : (isZip ? QStringLiteral("压缩包(zip)")
+                                                       : (isGz ? QStringLiteral("压缩包(tar.gz)") : QStringLiteral("未知文件"))));
         self->setStatus(QStringLiteral("已下载 Java %1（%2，约 %3 MB），开始处理…")
                                 .arg(feature).arg(pkgType).arg(size / (1024 * 1024)));
         const QString ext = isMsi ? QStringLiteral("installer.msi")
-                                  : (isExe ? QStringLiteral("installer.exe") : QStringLiteral("archive.zip"));
+                                  : (isExe ? QStringLiteral("installer.exe")
+                                           : (isGz ? QStringLiteral("archive.tar.gz") : QStringLiteral("archive.zip")));
         const QString tmp = root + QStringLiteral("/jdk-%1-%2").arg(feature).arg(ext);
         // 魔数校验：防止把错误页/重定向页/被拦截的占位文件当安装包
         if (isMsi && !head.startsWith(QByteArray("\xD0\xCF\x11\xE0"))) {
@@ -1225,20 +1345,28 @@ void JavaManager::fetchInstaller(int feature, const QUrl &url, const QString &li
             const QString nativeTmp = QDir::toNativeSeparators(tmp);
             const QString nativeDest = QDir::toNativeSeparators(dest);
             // 优先用系统自带的 tar.exe（Win10+ 内置，对大 zip 更可靠），失败再回退 PowerShell ZipFile
-            const QString tar = QStandardPaths::findExecutable(QStringLiteral("tar"),
-                    { QStringLiteral("C:/Windows/System32") });
+            // 跨平台查找 tar：在 PATH 中找（Windows 10+ 自带 tar.exe，Linux/macOS 自带 /usr/bin/tar）。
+            // 不再限定 C:/Windows/System32，否则 Linux 上 findExecutable 找不到 tar 导致解压失败。
+            const QString tar = QStandardPaths::findExecutable(QStringLiteral("tar"));
             QString program;
             QStringList args;
             if (!tar.isEmpty()) {
                 program = tar;
                 args << QStringLiteral("-xf") << nativeTmp << QStringLiteral("-C") << nativeDest;
             } else {
+#ifdef Q_OS_WIN
+                // Windows 极端情况：tar 不在 PATH，回退 PowerShell 的 ZipFile（仅 zip 包有效）
                 program = QStringLiteral("powershell");
                 args << QStringLiteral("-NoProfile") << QStringLiteral("-ExecutionPolicy") << QStringLiteral("Bypass")
                      << QStringLiteral("-Command")
                      << QStringLiteral("Add-Type -AssemblyName System.IO.Compression.FileSystem; "
                                         "[System.IO.Compression.ZipFile]::ExtractToDirectory($args[0],$args[1])")
                      << nativeTmp << nativeDest;
+#else
+                // Linux 上 tar 必然在 PATH；此分支仅作极端兜底（用 unzip 解 zip）
+                program = QStringLiteral("unzip");
+                args << nativeTmp << QStringLiteral("-d") << nativeDest;
+#endif
             }
             QProcess *ps = new QProcess(self.data());
             ps->setProcessChannelMode(QProcess::MergedChannels);
@@ -1303,6 +1431,7 @@ void JavaManager::fetchInstaller(int feature, const QUrl &url, const QString &li
                 QSettings s;
                 s.setValue(QStringLiteral("java/installed/%1").arg(feature),
                            QDir::fromNativeSeparators(QFileInfo(java).absolutePath()));
+                s.setValue(QStringLiteral("java/installedArch/%1").arg(feature), hostArchitecture());
                 self->setBusy(false);
                 self->setProgressFor(feature, 1);
                 self->setStatus(QStringLiteral("Java %1 安装完成（%2）").arg(feature).arg(java));
@@ -1372,14 +1501,28 @@ QString JavaManager::adoptiumZipLinkFor(int feature, const QJsonDocument &doc) c
 QString JavaManager::oracleZipLinkFor(int feature) const
 {
     // 甲骨文公开“latest”永久别名直链（无需登录/otn cookie），指向该特性版本最新的
-    // Windows x64 压缩包(zip)。用 latest 别名而非具体版本号，避免硬编码版本过期后 404。
-    // 国内下载快（用户实测 5~6 MB/s）。feature=8 等不提供公开 zip 时返回空，走 Adoptium 兜底。
+    // 压缩包（Windows 为 zip，Linux 为 tar.gz）。用 latest 别名而非具体版本号，避免硬编码版本过期后 404。
+    // feature=25/26 等不提供公开直链时返回空，走 Adoptium 兜底。
+#ifdef Q_OS_WIN
     switch (feature) {
     case 21: return QStringLiteral("https://download.oracle.com/java/21/latest/jdk-21_windows-x64_bin.zip");
     case 17: return QStringLiteral("https://download.oracle.com/java/17/latest/jdk-17_windows-x64_bin.zip");
     case 11: return QStringLiteral("https://download.oracle.com/java/11/latest/jdk-11_windows-x64_bin.zip");
-    default: return QString();   // 25/26 等无公开 zip 直链，回退 TUNA/Adoptium 官方镜像
+    default: return QString();
     }
+#else
+    {
+        const QString arch = hostArchitecture();
+        const QString lx = QStringLiteral("linux-x64");
+        const QString la = QStringLiteral("linux-") + arch;
+        switch (feature) {
+        case 21: return QStringLiteral("https://download.oracle.com/java/21/latest/jdk-21_linux-x64_bin.tar.gz").replace(lx, la);
+        case 17: return QStringLiteral("https://download.oracle.com/java/17/latest/jdk-17_linux-x64_bin.tar.gz").replace(lx, la);
+        case 11: return QStringLiteral("https://download.oracle.com/java/11/latest/jdk-11_linux-x64_bin.tar.gz").replace(lx, la);
+        default: return QString();
+        }
+    }
+#endif
 }
 
 void JavaManager::downloadToTemp(const QString &url, const QString &dest, std::function<void(bool, QString)> cb,
@@ -1440,7 +1583,9 @@ void JavaManager::downloadToTemp(const QString &url, const QString &dest, std::f
 void JavaManager::extractZip(const QString &zip, const QString &dest, std::function<void(bool)> cb)
 {
     QDir().mkpath(dest);
-    // 写一段临时 PowerShell 脚本，用 Expand-Archive 纯解压（不安装、不动注册表）
+    QPointer<JavaManager> self(this);
+#ifdef Q_OS_WIN
+    // Windows：PowerShell Expand-Archive 纯解压（不安装、不动注册表）
     const QString scriptPath = QDir::cleanPath(dest + QStringLiteral("/../__msm_extract__.ps1"));
     {
         QFile sf(scriptPath);
@@ -1469,22 +1614,134 @@ void JavaManager::extractZip(const QString &zip, const QString &dest, std::funct
         p->deleteLater();
         cb(false);
     }
+#else
+    // 非 Windows（Linux/macOS）：按文件魔数选择 tar（gzip/tar.gz）或 unzip（zip），
+    // 不依赖 PowerShell。
+    QByteArray head;
+    {
+        QFile f(zip);
+        if (f.open(QIODevice::ReadOnly)) { head = f.read(4); f.close(); }
+    }
+    QString program;
+    QStringList args;
+    const QString nativeZip = QDir::toNativeSeparators(zip);
+    const QString nativeDest = QDir::toNativeSeparators(dest);
+    // zip 家族（PK 头）用 unzip；其余按 tar 系列（gzip/xz/bz2/zstd 等）处理，
+    // 统一用 tar -xf（libarchive 自动识别压缩格式），不再按魔数分流，从而兼容新发布的 .tar.xz。
+    const bool isZip = (head.size() >= 2 && head.at(0) == 'P' && head.at(1) == 'K');
+    if (isZip) {
+        program = QStandardPaths::findExecutable(QStringLiteral("unzip"));
+        if (program.isEmpty()) { cb(false); return; }
+        args << QStringLiteral("-o") << nativeZip << QStringLiteral("-d") << nativeDest;
+    } else {
+        program = QStandardPaths::findExecutable(QStringLiteral("tar"));
+        if (program.isEmpty()) { cb(false); return; }
+        args << QStringLiteral("-xf") << nativeZip << QStringLiteral("-C") << nativeDest;
+    }
+    auto *p = new QProcess(this);
+    connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), p,
+            [p, cb](int code, QProcess::ExitStatus) {
+                p->deleteLater();
+                cb(code == 0);
+            });
+    p->start(program, args);
+    if (!p->waitForStarted(5000)) {
+        p->deleteLater();
+        cb(false);
+    }
+#endif
+}
+
+// 将已下载到本地的 Java 压缩包（tar.gz/tar.xz/zip）解压到托管目录并登记为可移植 JDK，
+// 实现“下载即安装”。解压后删除原压缩包，回调 (ok, javaPath)。
+void JavaManager::installManagedArchive(const QString &archivePath, int feature, std::function<void(bool, QString)> cb)
+{
+    if (archivePath.isEmpty() || !QFile::exists(archivePath)) { cb(false, QString()); return; }
+    const QString dest = managedDir() + QStringLiteral("/%1").arg(feature);
+    QDir().mkpath(dest);
+    const QString nativeArchive = QDir::toNativeSeparators(archivePath);
+    const QString nativeDest = QDir::toNativeSeparators(dest);
+    QByteArray head;
+    { QFile f(archivePath); if (f.open(QIODevice::ReadOnly)) { head = f.read(4); f.close(); } }
+    const bool isZip = (head.size() >= 2 && head.at(0) == 'P' && head.at(1) == 'K');
+    QString program; QStringList args;
+    if (!isZip) {
+        // gzip/xz/bz2/zstd 等 tarball：tar -xf 自动识别压缩格式
+        program = QStandardPaths::findExecutable(QStringLiteral("tar"));
+        if (program.isEmpty()) { cb(false, QString()); return; }
+        args << QStringLiteral("-xf") << nativeArchive << QStringLiteral("-C") << nativeDest;
+    } else {
+        program = QStandardPaths::findExecutable(QStringLiteral("unzip"));
+        if (program.isEmpty()) { cb(false, QString()); return; }
+        args << QStringLiteral("-o") << nativeArchive << QStringLiteral("-d") << nativeDest;
+    }
+    auto *ps = new QProcess(this);
+    ps->setProcessChannelMode(QProcess::MergedChannels);
+    connect(ps, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), ps,
+            [this, ps, archivePath, nativeDest, feature, cb](int code, QProcess::ExitStatus) {
+                ps->deleteLater();
+                if (code != 0) { cb(false, QString()); return; }
+                // 展平单层顶层目录（如 jdk-21.0.x+xx/ → 内容上移到 dest 根，便于 javaPathFor 直接定位）
+                {
+                    QDir d(nativeDest);
+                    const QStringList sub = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+                    if (sub.size() == 1) {
+                        QDir subDir(d.filePath(sub.first()));
+                        if (QFile::exists(subDir.filePath(QStringLiteral("bin")))) {
+                            const QStringList inner = subDir.entryList(QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot);
+                            for (const QString &name : inner) {
+                                const QString from = subDir.filePath(name);
+                                const QString to = d.filePath(name);
+                                if (QFile::exists(to)) QFile::remove(to);
+                                QDir().rename(from, to);
+                            }
+                            subDir.removeRecursively();
+                        }
+                    }
+                }
+                const QString java = javaPathFor(feature);
+                QFile::remove(archivePath);   // 解压成功后删除原压缩包，避免重复占用空间
+                if (java.isEmpty()) { cb(false, QString()); return; }
+                QSettings s;
+                s.setValue(QStringLiteral("java/installed/%1").arg(feature),
+                           QDir::fromNativeSeparators(QFileInfo(java).absolutePath()));
+                s.setValue(QStringLiteral("java/installedArch/%1").arg(feature), hostArchitecture());
+                cb(true, java);
+            });
+    ps->start(program, args);
+    if (!ps->waitForStarted(5000)) { ps->deleteLater(); cb(false, QString()); }
 }
 
 void JavaManager::ensureTemp(int feature, std::function<void(bool, QString)> cb)
 {
-    if (!m_dm) { setStatus(QStringLiteral("下载管理器未初始化，无法准备临时 Java")); return; }
+    if (!m_dm) { setStatus(QStringLiteral("下载管理器未初始化，无法准备临时 Java")); qDebug() << "[MSM][ensureTemp] 下载管理器未初始化"; return; }
     const QString base = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
     const QString dir = QDir::cleanPath(base + QStringLiteral("/msm-jdk-temp-") + QString::number(feature));
     QDir().mkpath(dir);
 
-    // 已解压过则直接复用
+    QPointer<JavaManager> self(this);
+
+    // 已解压过则尝试复用，但先校验可用（避免复用残留的损坏/截断 JDK，
+    // 否则损坏 JDK 会被直接交给安装器，运行时报 UnsatisfiedLinkError 等原生错误）
     {
         const QString existing = findExtractedJava(dir);
-        if (!existing.isEmpty()) { m_tempJavaDir = dir; emit hasTempJavaChanged(); cb(true, existing); return; }
+        if (!existing.isEmpty()) {
+            self->probeJava(existing, feature, [self, dir, feature, cb, existing](const QString &probed) {
+                if (!probed.isEmpty()) {
+                    self->m_tempJavaDir = dir;
+                    emit self->hasTempJavaChanged();
+                    qDebug() << "[MSM][ensureTemp] 复用已校验 JDK:" << existing;
+                    cb(true, probed);
+                } else {
+                    qDebug() << "[MSM][ensureTemp] 残留 JDK 校验失败，删除后重新下载:" << existing;
+                    QDir(dir).removeRecursively();
+                    QDir().mkpath(dir);
+                    self->ensureTemp(feature, cb); // 重新进入：existing 已空，走下载流程
+                }
+            });
+            return;
+        }
     }
-
-    QPointer<JavaManager> self(this);
 
     const QList<QPair<QByteArray, QByteArray>> oracleHeaders = {
         { QByteArrayLiteral("Referer"), QByteArrayLiteral("https://www.oracle.com/") },
@@ -1497,23 +1754,24 @@ void JavaManager::ensureTemp(int feature, std::function<void(bool, QString)> cb)
                                                          const QList<QPair<QByteArray, QByteArray>> &headers,
                                                          const std::function<void()> &onFail) {
         Q_UNUSED(headers); // DownloadManager 不支持自定义请求头；甲骨文 latest 公开直链无需鉴权
-        if (link.isEmpty()) { onFail(); return; }
-        if (!self->m_dm) { onFail(); return; }
+        if (link.isEmpty()) { qDebug() << "[MSM][ensureTemp] 下载链接为空，切换下一源"; onFail(); return; }
+        if (!self->m_dm) { qDebug() << "[MSM][ensureTemp] DownloadManager 不可用"; onFail(); return; }
         const QString zipName = QStringLiteral("adoptium.zip");
+        qDebug() << "[MSM][ensureTemp] 开始下载临时 Java 压缩包:" << link;
         self->setStatus(QStringLiteral("正在准备临时 Java %1（下载压缩包）…").arg(feature));
         const QString id = self->m_dm->download(link, dir, zipName,
                                                 QStringLiteral("Java %1 压缩包").arg(feature));
         // 登记续跑：下载成功则解压+校验，失败则走 onFail 尝试下一个源
         self->m_pending.insert(id, [self, dir, feature, cb, onFail](bool ok, QString) {
-            if (!ok) { onFail(); return; }
+            if (!ok) { qDebug() << "[MSM][ensureTemp] 下载失败（DM 回调 ok=false），尝试下一源"; onFail(); return; }
             self->setStatus(QStringLiteral("正在解压临时 Java %1…").arg(feature));
             const QString zipPath = QDir::cleanPath(dir + QStringLiteral("/adoptium.zip"));
             self->extractZip(zipPath, dir, [self, dir, feature, cb, onFail](bool ok2) {
-                if (!ok2) { onFail(); return; }
+                if (!ok2) { qDebug() << "[MSM][ensureTemp] 解压失败:" << dir; onFail(); return; }
                 const QString java = self->findExtractedJava(dir);
-                if (java.isEmpty()) { onFail(); return; }
-                self->probeJava(java, feature, [self, dir, feature, cb, onFail](const QString &probed) {
-                    if (probed.isEmpty()) { onFail(); return; }
+                if (java.isEmpty()) { qDebug() << "[MSM][ensureTemp] 解压后未找到 bin/java:" << dir; onFail(); return; }
+                self->probeJava(java, feature, [self, dir, feature, cb, onFail, java](const QString &probed) {
+                    if (probed.isEmpty()) { qDebug() << "[MSM][ensureTemp] probeJava 失败（java 不可用/主版本不匹配）:" << java; onFail(); return; }
                     self->m_tempJavaDir = dir;
                     emit self->hasTempJavaChanged();
                     cb(true, probed);
@@ -1528,35 +1786,53 @@ void JavaManager::ensureTemp(int feature, std::function<void(bool, QString)> cb)
     //   3) Adoptium 官方 package.link（直连/302，龟速但可达）
     // resolveInstaller 已对 TUNA/腾讯镜像做候选排序，返回官方直链 tunaUrl。
     resolveInstaller(feature, [self, dir, feature, cb, oracleHeaders, tryDownloadAndVerify](bool ok, QString tunaUrl, QString fallback) {
-        Q_UNUSED(fallback);
-        if (!ok || tunaUrl.isEmpty()) {
+        // resolveInstaller 把成功直链放在第三参数 fallback（第二参数 tunaUrl 仅 Windows/MSI 场景使用，
+        // Linux 下恒为空），故优先取 fallback 作为压缩包直链。
+        const QString primary = !tunaUrl.isEmpty() ? tunaUrl : fallback;
+        if (!ok || primary.isEmpty()) {
+            qDebug() << "[MSM][ensureTemp] resolveInstaller 失败或未返回直链(ok=" << ok << ", empty=" << primary.isEmpty() << ")";
             const QString oracleLink = self->oracleZipLinkFor(feature);
             if (!oracleLink.isEmpty())
                 tryDownloadAndVerify(oracleLink, oracleHeaders, [cb]() {
+                    qDebug() << "[MSM][ensureTemp] 甲骨文兜底也失败";
                     cb(false, QStringLiteral("所有下载源均失败（甲骨文/Adoptium）"));
                 });
             else
                 cb(false, QStringLiteral("无法获取 Java 下载链接"));
             return;
         }
-        const QString zipFname = QUrl(tunaUrl).fileName();
-        QUrl tuna; tuna.setScheme(QStringLiteral("https")); tuna.setHost(QStringLiteral("mirrors.tuna.tsinghua.edu.cn"));
-        tuna.setPath(QStringLiteral("/Adoptium/%1/jdk/x64/windows/%2").arg(feature).arg(zipFname));
+        QString ensureUrl = primary;
+        // 若为 github.com 直链（Adoptium package.link），改写为清华 TUNA 的 github-release 镜像，国内快且稳
+        if (QUrl(ensureUrl).host() == QStringLiteral("github.com")) {
+            QUrl g; g.setScheme(QStringLiteral("https")); g.setHost(QStringLiteral("mirrors.tuna.tsinghua.edu.cn"));
+            g.setPath(QStringLiteral("/github-release") + QUrl(ensureUrl).path());
+            ensureUrl = g.toString();
+        }
         const QString oracleLink = self->oracleZipLinkFor(feature);
         // Adoptium 官方“latest binary”直链（302 到实际二进制，龟速但可达），作为最后的兜底源
+#ifdef Q_OS_WIN
         const QString official = QStringLiteral(
             "https://api.adoptium.net/v3/binary/latest/%1/ga/windows/x64/jdk/hotspot/normal/eclipse?project=jdk")
                 .arg(feature);
-        // 1) TUNA 镜像 2) 甲骨文直链 3) Adoptium 官方直链
-        tryDownloadAndVerify(tuna.toString(), {}, [self, feature, cb, oracleLink, oracleHeaders, official, tryDownloadAndVerify]() {
+#else
+        const QString official = QStringLiteral(
+            "https://api.adoptium.net/v3/binary/latest/%1/ga/linux/%2/jdk/hotspot/normal/eclipse?project=jdk")
+                .arg(feature).arg(hostArchitecture());
+#endif
+        // 1) TUNA 镜像(github-release) 2) 甲骨文直链 3) Adoptium 官方直链
+        tryDownloadAndVerify(ensureUrl, {}, [self, feature, cb, oracleLink, oracleHeaders, official, tryDownloadAndVerify]() {
+            qDebug() << "[MSM][ensureTemp] TUNA 镜像失败，尝试甲骨文兜底";
             if (!oracleLink.isEmpty())
                 tryDownloadAndVerify(oracleLink, oracleHeaders, [self, feature, cb, official, tryDownloadAndVerify]() {
+                    qDebug() << "[MSM][ensureTemp] 甲骨文兜底失败，尝试 Adoptium 官方直链";
                     tryDownloadAndVerify(official, {}, [cb]() {
+                        qDebug() << "[MSM][ensureTemp] 全部下载源失败";
                         cb(false, QStringLiteral("所有下载源均失败（TUNA/甲骨文/Adoptium）"));
                     });
                 });
             else
                 tryDownloadAndVerify(official, {}, [cb]() {
+                    qDebug() << "[MSM][ensureTemp] 全部下载源失败";
                     cb(false, QStringLiteral("所有下载源均失败（TUNA/Adoptium）"));
                 });
         });

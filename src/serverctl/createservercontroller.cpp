@@ -21,13 +21,19 @@
 #include <QEventLoop>
 #include <algorithm>
 #include <QVersionNumber>
+#include <QDateTime>
+#include <QRandomGenerator>
 #include <QTimer>
+#include <QProcess>
+#include <QProcessEnvironment>
+#include <QCoreApplication>
+#include <QDirIterator>
 #include <functional>
 #include <memory>
 #include <QDir>
-#include <QDirIterator>
 #include <QFileInfo>
 #include <QDebug>
+#include <QStandardPaths>
 
 CreateServerController::CreateServerController(DownloadManager *dm, ServerManager *sm,
                                                JavaManager *java, QObject *parent)
@@ -336,6 +342,10 @@ void CreateServerController::reset()
     m_activeLoader.clear();
     m_loaderByTask.clear();
     m_tempJava.clear();
+    if (!m_modsTemp.isEmpty()) {
+        QDir(m_modsTemp).removeRecursively();
+        m_modsTemp.clear();
+    }
     m_loaderTotal = 0;
     m_loaderDone = 0;
 
@@ -557,13 +567,13 @@ void CreateServerController::resolveLoaderUrl(const QString &loader, const QStri
                 else for (auto it = promos.begin(); it != promos.end(); ++it)
                     if (it.key().section(QLatin1Char('-'), 0, 0) == mcver) { build = it.value().toString(); break; }
                 if (build.isEmpty()) { tryForgeMirror(); return; }
-                const QString primary = QStringLiteral("https://maven.minecraftforge.net/net/minecraftforge/forge/")
+                const QString official = QStringLiteral("https://maven.minecraftforge.net/net/minecraftforge/forge/")
                    + mcver + QLatin1Char('-') + build + QStringLiteral("/forge-")
                    + mcver + QLatin1Char('-') + build + QStringLiteral("-installer.jar");
                 const QString mirror = QStringLiteral("https://bmclapi2.bangbang93.com/maven/net/minecraftforge/forge/")
                    + mcver + QLatin1Char('-') + build + QStringLiteral("/forge-")
                    + mcver + QLatin1Char('-') + build + QStringLiteral("-installer.jar");
-                cb(primary, mirror);
+                cb(official, mirror);
             },
             [tryForgeMirror](const QString &) { tryForgeMirror(); });
     } else if (loader == QStringLiteral("neoforge")) {
@@ -1010,6 +1020,11 @@ void CreateServerController::startModCreate()
             return;
         }
         m_tempJava = java;
+        // 初始化模组安装工作目录（程序同目录 Temp/<随机标识>，纯 ASCII）：
+        // 安装器 jar 与生成的核心都放在这里，最终整体复制回含中文的 saveDir。
+        // 用随机标识避免依赖可能含中文的服务器名，并允许多实例/重试不冲突。
+        m_modsTemp = modsTempDir();
+        QDir().mkpath(m_modsTemp);
         m_loaderQueue = m_selectedLoaders;
         m_loaderDone = 0;
         setStage(1);   // 进入第一个加载器阶段
@@ -1069,7 +1084,8 @@ void CreateServerController::startLoaderDownload(const QString &loader, const QS
     setStageProgress(0);
     setStatus(QStringLiteral("正在下载 ") + loaderLabel(loader) + QStringLiteral(" 安装器…"));
     const QString file = loader + QStringLiteral("-installer.jar");
-    const QString id = m_dm->download(url, m_saveDir, file);
+    // 下载到纯 ASCII 的模组工作目录（而非含中文的 saveDir），避免 java 子进程路径解码失败
+    const QString id = m_dm->download(url, m_modsTemp, file);
     if (id.isEmpty()) {
         // 下载管理器不可用：再尝试镜像兜底
         if (!m_loaderFallbackUrl.isEmpty()) {
@@ -1088,11 +1104,11 @@ void CreateServerController::startLoaderDownload(const QString &loader, const QS
     m_taskId = id;
 }
 
-void CreateServerController::runModInstaller(const QString &loader)
+void CreateServerController::runModInstaller(const QString &loader, bool useMirror)
 {
-    qDebug() << "[MSM] runModInstaller loader=" << loader;
+    qDebug() << "[MSM] runModInstaller loader=" << loader << "useMirror=" << useMirror;
     const QString installer = loader + QStringLiteral("-installer.jar");
-    const QString installerPath = m_saveDir + QStringLiteral("/") + installer;
+    const QString installerPath = m_modsTemp + QStringLiteral("/") + installer;
     if (!QFile::exists(installerPath)) {
         setStatus(QStringLiteral("安装器缺失，跳过 ") + loaderLabel(loader) + QStringLiteral("：") + installerPath);
         m_loaderDone++;
@@ -1105,9 +1121,16 @@ void CreateServerController::runModInstaller(const QString &loader)
         setStatus(QStringLiteral("临时 Java 不可用，无法运行 ") + loaderLabel(loader) + QStringLiteral(" 安装器。"));
         return;
     }
+    // 重试计数：首次（useMirror=false）清 0，镜像重试时累加到 1；用于限制最多一次镜像重试，
+    // 避免无限循环。镜像重试仅当安装器因网络下载失败（超时 / 库拉取失败）时由 onModInstallerFinished 触发。
+    if (useMirror)
+        ++m_installAttempt;
+    else
+        m_installAttempt = 0;
+
     m_activeLoader = loader;
-    setStageText(QStringLiteral("正在运行 ") + loaderLabel(loader)
-                  + QStringLiteral(" 安装器生成服务端核心…（首次可能需下载 Minecraft，进度不可读）"));
+    setStageText((useMirror ? tr("重试（BMCLAPI 镜像）：") : QString())
+                  + loaderLabel(loader) + tr(" 安装器生成服务端核心…（首次可能需下载 Minecraft，进度不可读）"));
     setStageProgress(75);   // 下载已完成（70%），进入安装阶段
     // 安装器运行期间其自身下载进度无法读取：用缓慢爬升的动画表示“进行中”，
     // 避免进度条在安装阶段长时间冻结。完成时由 onModInstallerFinished 停止并置 100%。
@@ -1122,7 +1145,7 @@ void CreateServerController::runModInstaller(const QString &loader)
         });
     }
     m_installTimer->start(350);
-    startInstallerProcess(m_tempJava, loader);
+    startInstallerProcess(m_tempJava, loader, useMirror);
 }
 
 void CreateServerController::onModInstallerFinished(const QString &loader, int exitCode, QProcess::ExitStatus)
@@ -1130,6 +1153,17 @@ void CreateServerController::onModInstallerFinished(const QString &loader, int e
     if (m_installTimer) m_installTimer->stop();
     m_installAnim = 0;
     if (exitCode != 0) {
+        // 安装器内部从官方源（Cloudflare 背后的 maven.minecraftforge.net / libraries.minecraft.net）
+        // 拉取 libraries 时，在部分网络下会因连接/读取超时失败（如 guava SocketTimeout），退出码 1，
+        // 日志出现 "These libraries failed to download"。此时若尚未用过镜像，自动带 -Dforge.mavenMirror
+        // 重跑一次改用 BMCLAPI 镜像；仍失败则如实报错，不再无限重试。
+        if (m_installAttempt == 0 && installerFailedByNetwork()) {
+            qWarning() << "[Create] installer" << loader
+                       << "failed by network, retrying with BMCLAPI mirror. exitCode=" << exitCode;
+            setStageText(tr("首次安装因网络超时失败，正在改用 BMCLAPI 镜像重试…"));
+            runModInstaller(loader, true);
+            return;
+        }
         cleanupTempJava();
         setBusy(false);
         setStatus(QStringLiteral("安装器 ") + loaderLabel(loader) + QStringLiteral(" 执行失败（退出码 ")
@@ -1137,8 +1171,8 @@ void CreateServerController::onModInstallerFinished(const QString &loader, int e
                   + installerErrorTail());
         return;
     }
-    // 清理安装器 jar（生成的核心保留）
-    QFile::remove(m_saveDir + QStringLiteral("/") + loader + QStringLiteral("-installer.jar"));
+    // 清理安装器 jar（生成的核心保留在 m_modsTemp，稍后整体复制到 saveDir）
+    QFile::remove(m_modsTemp + QStringLiteral("/") + loader + QStringLiteral("-installer.jar"));
     m_loaderDone++;
     setStageProgress(100);   // 当前加载器阶段完成
     processNextLoader();
@@ -1146,10 +1180,23 @@ void CreateServerController::onModInstallerFinished(const QString &loader, int e
 
 void CreateServerController::finalizeModCreate()
 {
+    // 安装产物（Forge/NeoForge/Fabric 生成的服务端核心、libraries 等）全部位于纯 ASCII 的临时
+    // 构建目录 m_modsTemp（TempLocation/MSM/msm-build-*）。所有整理（server.jar、eula、loaders.txt、
+    // 清理安装器残留）都在 m_modsTemp 内完成；打包也只读 m_modsTemp，最后把 .zip 复制到下载目录。
+    // 这样无论用户把 saveDir 设在哪（甚至程序目录），压缩包内容都来自临时构建目录的真实产物，
+    // 绝不会把 exe/日志误打进包。仅非 packageOnly（真正创建服务器）才把 m_modsTemp 整体复制到
+    // m_saveDir（运行目录）并加入服务器列表；packageOnly（下载中心“仅打包”）不碰 saveDir。
+    if (m_modsTemp.isEmpty() || !QDir(m_modsTemp).exists()) {
+        cleanupTempJava();
+        setBusy(false);
+        setStatus(QStringLiteral("安装工作目录丢失，无法继续：") + m_modsTemp);
+        return;
+    }
+
     // 找到第一个成功生成核心的加载器，作为默认 server.jar（其余加载器核心也保留在目录中）
     QString serverJar;
     for (const QString &loader : m_selectedLoaders) {
-        const QString jar = findLoaderJar(m_saveDir, loader);
+        const QString jar = findLoaderJar(m_modsTemp, loader);
         if (jar.isEmpty())
             continue;
         if (serverJar.isEmpty())
@@ -1158,46 +1205,60 @@ void CreateServerController::finalizeModCreate()
     if (serverJar.isEmpty()) {
         cleanupTempJava();
         setBusy(false);
-        setStatus(QStringLiteral("安装完成但未找到任何加载器生成的服务端核心，请检查目录：") + m_saveDir);
+        setStatus(QStringLiteral("安装完成但未找到任何加载器生成的服务端核心，请检查目录：") + m_modsTemp);
         return;
     }
     // 先确定压缩包路径（须在删除原始加载器 jar 之前取出加载器版本号）
     const QString zipPath = computeServerZipName();
-    const QString dst = m_saveDir + QStringLiteral("/server.jar");
+    const QString dst = m_modsTemp + QStringLiteral("/server.jar");
     QFile::remove(dst);
-    if (!QFile::copy(m_saveDir + QStringLiteral("/") + serverJar, dst)) {
+    if (!QFile::copy(m_modsTemp + QStringLiteral("/") + serverJar, dst)) {
         cleanupTempJava();
         setBusy(false);
-        setStatus(QStringLiteral("无法复制生成的服务端核心到 server.jar：") + m_saveDir);
+        setStatus(QStringLiteral("无法复制生成的服务端核心到 server.jar：") + m_modsTemp);
         return;
     }
     // 原始的加载器核心（如 forge-…jar / neoforge-…jar / fabric-…jar）已复制为 server.jar，
     // 删除冗余原件；并清理安装器生成的启动脚本/元数据，使目录呈现为单个 server.jar。
     // 注意：libraries/ 与 minecraft_server-*.jar 必须保留——Forge/NeoForge 通用 jar 运行期依赖它们。
-    QFile::remove(m_saveDir + QStringLiteral("/") + serverJar);
+    QFile::remove(m_modsTemp + QStringLiteral("/") + serverJar);
     cleanupInstallerLeftovers();
     // 记录本服务器使用的 Java（优先已安装/PATH；否则留空，启动时使用系统 Java）
     m_resolvedJava = m_java ? m_java->javaPathFor(m_currentVersion) : QString();
-    m_dm->writeTextFile(m_saveDir + QStringLiteral("/eula.txt"),
+    m_dm->writeTextFile(m_modsTemp + QStringLiteral("/eula.txt"),
                         QStringLiteral("eula=true\n# 由 MSM 创建服务器时自动生成（已同意 Minecraft EULA）\n"));
     if (!m_resolvedJava.isEmpty())
-        m_dm->writeTextFile(m_saveDir + QStringLiteral("/.msm/java.txt"), m_resolvedJava + QStringLiteral("\n"));
+        m_dm->writeTextFile(m_modsTemp + QStringLiteral("/.msm/java.txt"), m_resolvedJava + QStringLiteral("\n"));
     QStringList lines;
     for (const QString &l : m_selectedLoaders)
         lines << l;
-    m_dm->writeTextFile(m_saveDir + QStringLiteral("/.msm/loaders.txt"),
+    m_dm->writeTextFile(m_modsTemp + QStringLiteral("/.msm/loaders.txt"),
                         lines.join(QStringLiteral("\n")) + QStringLiteral("\n"));
-    if (!m_packageOnly && m_sm)
-        m_sm->addServer(m_name, m_currentVersion, typeKey(), m_saveDir);
+
+    if (!m_packageOnly) {
+        // 真正创建服务器：把临时构建目录整体复制到运行目录 saveDir（用 Qt 复制，不受 JVM locale 影响），
+        // 并加入服务器列表。
+        if (!copyDirRecursive(m_modsTemp, m_saveDir)) {
+            cleanupTempJava();
+            setBusy(false);
+            setStatus(QStringLiteral("无法将生成的服务端文件复制到保存目录（磁盘空间不足或权限不足）：") + m_saveDir);
+            return;
+        }
+        if (m_sm)
+            m_sm->addServer(m_name, m_currentVersion, typeKey(), m_saveDir);
+    }
 
     if (zipPath.isEmpty()) {
-        cleanupTempJava();   // 不打包：配置完模组服即清理临时 Java
+        // 不打包：配置完即清理临时 Java 与临时构建目录
+        QDir(m_modsTemp).removeRecursively();
+        m_modsTemp.clear();
+        cleanupTempJava();
         setProgress(100);
         setStageText(QString());
         setBusy(false);
         setDone(true);
         if (m_packageOnly)
-            setStatus(QStringLiteral("服务端目录已就绪（未加入服务器列表）：") + m_saveDir);
+            setStatus(QStringLiteral("服务端目录已就绪（未加入服务器列表）"));
         else
             setStatus(QStringLiteral("安装完成，已加入服务器列表（加载器：")
                       + m_selectedLoaders.join(QStringLiteral("/")) + QStringLiteral("）"));
@@ -1210,7 +1271,7 @@ void CreateServerController::finalizeModCreate()
         setStatus(m_packageOnly
                   ? QStringLiteral("配置完成，正在打包压缩包到下载文件夹…")
                   : QStringLiteral("安装完成，正在打包压缩包…"));
-        beginServerZip(zipPath);   // 打包完成（zipDone）后再清理临时 Java
+        beginServerZip(zipPath);   // 打包完成（zipDone）后再清理临时 Java 与临时构建目录
     }
 }
 
@@ -1232,7 +1293,7 @@ void CreateServerController::cleanupInstallerLeftovers()
         QStringLiteral("win_args.txt"), QStringLiteral("unix_args.txt")
     };
     for (const QString &f : clutter) {
-        const QString p = m_saveDir + QStringLiteral("/") + f;
+        const QString p = m_modsTemp + QStringLiteral("/") + f;
         if (QFile::exists(p))
             QFile::remove(p);
     }
@@ -1240,23 +1301,50 @@ void CreateServerController::cleanupInstallerLeftovers()
 
 QString CreateServerController::loaderVersion(const QString &loader) const
 {
+    // 探测临时构建目录（m_modsTemp）中的加载器版本；与 finalizeModCreate 整理目录一致，
+    // 不依赖 m_saveDir（可能设在程序目录、或尚未复制）。
+    const QString bd = m_modsTemp.isEmpty() ? m_saveDir : m_modsTemp;
     if (loader == QStringLiteral("forge")) {
-        QDir d(m_saveDir);
+        // 版本号最可靠地位于 libraries/net/minecraftforge/forge/<ver>/ 目录名
+        // （如 libraries/net/minecraftforge/forge/26.2-65.1.0/forge-26.2-65.1.0-server.jar）
+        QDir vf(bd + QStringLiteral("/libraries/net/minecraftforge/forge"));
+        QStringList vs = vf.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        if (!vs.isEmpty()) {
+            QString best;
+            for (const QString &v : vs)
+                if (best.isEmpty() || QVersionNumber::fromString(v) > QVersionNumber::fromString(best))
+                    best = v;
+            if (!best.isEmpty())
+                return best;
+        }
+        // 兜底：从根目录 forge-*-shim.jar（如 forge-26.2-65.1.0-shim.jar）提取
+        QDir d(bd);
         for (const QString &f : d.entryList(QStringList() << QStringLiteral("forge-*.jar"), QDir::Files)) {
-            const auto m = QRegularExpression(QStringLiteral("forge-[^-]+-([^-]+)\\.jar")).match(f);
+            const auto m = QRegularExpression(QStringLiteral("forge-(.+?)(?:-shim|-server|\\.jar)")).match(f);
             if (m.hasMatch())
                 return m.captured(1);
         }
     } else if (loader == QStringLiteral("neoforge")) {
-        QDir d(m_saveDir);
+        // NeoForge 版本号在 libraries/net/neoforged/neoforge/<ver>/ 目录名
+        QDir vf(bd + QStringLiteral("/libraries/net/neoforged/neoforge"));
+        QStringList vs = vf.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        if (!vs.isEmpty()) {
+            QString best;
+            for (const QString &v : vs)
+                if (best.isEmpty() || QVersionNumber::fromString(v) > QVersionNumber::fromString(best))
+                    best = v;
+            if (!best.isEmpty())
+                return best;
+        }
+        QDir d(bd);
         for (const QString &f : d.entryList(QStringList() << QStringLiteral("neoforge-*.jar"), QDir::Files)) {
-            const auto m = QRegularExpression(QStringLiteral("neoforge-([^-]+)\\.jar")).match(f);
+            const auto m = QRegularExpression(QStringLiteral("neoforge-(.+?)(?:-shim|-server|\\.jar)")).match(f);
             if (m.hasMatch())
                 return m.captured(1);
         }
     } else if (loader == QStringLiteral("fabric")) {
         // Fabric 安装器文件名不含加载器版本，版本号在 libraries/net/fabricmc/fabric-loader/<ver>/ 目录名中
-        QDir ld(m_saveDir + QStringLiteral("/libraries/net/fabricmc/fabric-loader"));
+        QDir ld(bd + QStringLiteral("/libraries/net/fabricmc/fabric-loader"));
         QString best;
         for (const QString &v : ld.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
             if (best.isEmpty() || QVersionNumber::fromString(v) > QVersionNumber::fromString(best))
@@ -1270,8 +1358,9 @@ QString CreateServerController::loaderVersion(const QString &loader) const
 QString CreateServerController::computeServerZipName() const
 {
     QStringList types, vers;
+    // 安装产物在临时构建目录 m_modsTemp，从那里探测加载器 jar（不读 saveDir，避免误判程序目录）
     for (const QString &loader : m_selectedLoaders) {
-        if (findLoaderJar(m_saveDir, loader).isEmpty())
+        if (findLoaderJar(m_modsTemp, loader).isEmpty())
             continue;
         types << loader;                       // 加载器类型（forge/neoforge/fabric）
         vers << loaderVersion(loader);        // 加载器版本
@@ -1280,15 +1369,32 @@ QString CreateServerController::computeServerZipName() const
         return QString();
     const QString name = m_currentVersion + QStringLiteral("-") + types.join(QStringLiteral("+"))
                        + QStringLiteral("-") + vers.join(QStringLiteral("+"));
-    return QDir::cleanPath(QFileInfo(m_saveDir).dir().absoluteFilePath(name + QStringLiteral(".zip")));
+    // 最终包落到“下载目录”（如 ~/Downloads/MSM，或用户在设置里指定的下载目录），
+    // 不再落在 saveDir 父目录——即使 saveDir 被设在程序目录，压缩包也出现在下载文件夹。
+    const QString dir = DownloadManager::defaultDownloadDir();
+    QDir().mkpath(dir);
+    return QDir::cleanPath(dir + QStringLiteral("/") + name + QStringLiteral(".zip"));
 }
 
-void CreateServerController::beginServerZip(const QString &zipPath)
+void CreateServerController::beginServerZip(const QString &)
 {
-    m_zipPath = zipPath;
-    m_zipAttempt = 0;
-    QFile::remove(zipPath); // 覆盖旧包
-    QDir().mkpath(QFileInfo(zipPath).dir().path());
+    // 最终包路径：下载目录（computeServerZipName 已确保目录存在）
+    m_zipFinalPath = computeServerZipName();
+    if (m_zipFinalPath.isEmpty()) {
+        // 异常：未探测到任何加载器 jar（理论上 finalizeModCreate 已拦截），不打包。
+        setBusy(false);
+        setStatus(QStringLiteral("无需打包：未找到加载器生成的服务端核心。"));
+        return;
+    }
+    // 中间包先生成在临时构建目录内（纯 ASCII、无路径长度顾虑），打包完成后再复制到下载目录。
+    m_zipPath = QDir(m_modsTemp).absoluteFilePath(QFileInfo(m_zipFinalPath).fileName());
+    QFile::remove(m_zipFinalPath); // 覆盖下载目录里的旧包
+    QFile::remove(m_zipPath);      // 覆盖临时构建目录里的旧中间包
+    // 诊断：打印打包源（临时构建目录）的顶层条目，确认打包内容来自 Forge 真实产物，
+    // 而非程序目录（之前“打包的还是那些东西/exe+logs”是旧 exe 打包读 saveDir 所致）。
+    qDebug() << "[MSM] beginServerZip src=" << m_modsTemp
+             << "final=" << m_zipFinalPath
+             << "entries=" << QDir(m_modsTemp).entryList(QDir::AllEntries | QDir::NoDotAndDotDot);
     launchZipAttempt();
 }
 
@@ -1297,36 +1403,42 @@ void CreateServerController::launchZipAttempt()
     if (m_zipProc)
         m_zipProc->deleteLater();
     m_zipProc = new QProcess(this);
+    // 启动失败（如 Linux 上根本没有 powershell）走 errorOccurred —— 否则 finished 永不会触发，
+    // 会导致永远卡在“正在打包压缩包…”而无法进入 zipDone(ok) 收尾。
     connect(m_zipProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, [this](int exitCode, QProcess::ExitStatus) {
-                m_zipProc->deleteLater();
-        m_zipProc = nullptr;
         const bool ok = (exitCode == 0) && QFile::exists(m_zipPath);
         if (ok) {
+            m_zipProc->deleteLater();
+            m_zipProc = nullptr;
             zipDone(true);
             return;
         }
-        // 第一次（PowerShell）失败则改用 tar 兜底；都失败则报非致命警告
-        if (m_zipAttempt == 0) {
-            ++m_zipAttempt;
-            launchZipAttempt();
-        } else {
-            zipDone(false);
-        }
+        // 进程启动成功但打包失败（如命令存在但参数/路径问题）：清理并直接报失败，不再多级回退。
+        m_zipProc->deleteLater();
+        m_zipProc = nullptr;
+        zipDone(false);
     });
-    if (m_zipAttempt == 0) {
-        // Windows：PowerShell Compress-Archive（与解压用的 Expand-Archive 一致）
-        // 通过 $args 传参，避免把路径拼进 PowerShell 命令字符串（路径含单引号会导致命令注入）
-        const QString script = QStringLiteral("Compress-Archive -Force -Path ($args[0] + '\\*') -DestinationPath $args[1]");
-        m_zipProc->start(QStringLiteral("powershell"),
-                         QStringList() << QStringLiteral("-NoProfile") << QStringLiteral("-Command") << script
-                                       << m_saveDir << m_zipPath);
-    } else {
-        // 兜底：Windows 10+ 自带 tar（bsdtar）支持 -a 自动按扩展名压缩，长路径更稳
-        m_zipProc->start(QStringLiteral("tar"),
-                         QStringList() << QStringLiteral("-a") << QStringLiteral("-cf") << m_zipPath
-                                       << QStringLiteral("-C") << m_saveDir << QStringLiteral("."));
-    }
+    connect(m_zipProc, &QProcess::errorOccurred, this, [this](QProcess::ProcessError) {
+        // 打包工具根本起不来（如系统缺失该命令）：清理并直接报失败。
+        if (m_zipProc) { m_zipProc->deleteLater(); m_zipProc = nullptr; }
+        zipDone(false);
+    });
+#ifdef Q_OS_WIN
+    // Windows：最初的打包方式，使用系统自带的 PowerShell 5.1 Compress-Archive，
+    // 产物为资源管理器/7z/WinRAR 原生识别的标准 .zip。
+    const QString script = QStringLiteral("Compress-Archive -Force -Path ($args[0] + '\\*') -DestinationPath $args[1]");
+    m_zipProc->start(QStringLiteral("powershell"),
+                     QStringList() << QStringLiteral("-NoProfile") << QStringLiteral("-Command") << script
+                                   << m_modsTemp << m_zipPath);
+#else
+    // Linux / 其他类 Unix：直接用标准 zip 工具（产出真实 .zip，与 UI/下载中心约定一致）。
+    // 工作目录切到临时构建目录，对 "." 递归打包。zip 缺失时直接报错（不再用 tar 兜成 .gz 伪装 .zip）。
+    m_zipProc->setWorkingDirectory(m_modsTemp);
+    m_zipProc->start(QStringLiteral("zip"),
+                     QStringList() << QStringLiteral("-r") << QStringLiteral("-q") << m_zipPath
+                                   << QStringLiteral("."));
+#endif
 }
 
 void CreateServerController::zipDone(bool ok)
@@ -1337,20 +1449,25 @@ void CreateServerController::zipDone(bool ok)
     setBusy(false);
     setDone(true);
     if (ok) {
-        if (m_packageOnly) {
-            // 仅打包模式：压缩包已自包含，删除下载文件夹中的临时构建目录，只保留 .zip
-            QDir(m_saveDir).removeRecursively();
-            setStatus(QStringLiteral("打包完成，已生成压缩包（未加入服务器列表）：") + m_zipPath);
-        } else {
-            setStatus(QStringLiteral("安装完成，已加入服务器列表并打包压缩包：") + m_zipPath);
+        // 中间包在临时构建目录（m_zipPath）生成，复制到“下载目录”的最终位置（m_zipFinalPath）。
+        // 无论 packageOnly 与否，下载目录始终是用户预期的压缩包落点。
+        if (!QFile::exists(m_zipFinalPath) || QFile::remove(m_zipFinalPath)) {
+            QFile::copy(m_zipPath, m_zipFinalPath);
         }
+        // 清理临时构建目录（含中间包、Forge 安装产物、installer jar 残留），不碰 saveDir，
+        // 避免误删用户设在程序目录的 saveDir。
+        QDir(m_modsTemp).removeRecursively();
+        setStatus((m_packageOnly ? QStringLiteral("打包完成，已生成压缩包（未加入服务器列表）：")
+                                 : QStringLiteral("安装完成，已加入服务器列表并打包压缩包："))
+                  + m_zipFinalPath);
     } else {
+        // 打包失败：临时构建目录保留，便于用户手动打包排查。
         if (m_packageOnly)
             setStatus(QStringLiteral("服务端目录已就绪，但压缩包生成失败（可手动打包目录：")
-                      + m_saveDir + QStringLiteral("）"));
+                      + m_modsTemp + QStringLiteral("）"));
         else
             setStatus(QStringLiteral("安装完成，已加入服务器列表，但压缩包生成失败（可手动打包目录：")
-                      + m_saveDir + QStringLiteral("）"));
+                      + m_modsTemp + QStringLiteral("）"));
     }
 }
 
@@ -1413,7 +1530,12 @@ void CreateServerController::resolveJava(std::function<void(const QString &)> cb
     // 先设 installBase 为本服务器目录，确保后续解析/下载都针对本目录
     if (m_java)
         m_java->setInstallBase(localDir);
+    // 平台相关的 Java 可执行文件名（Windows 为 java.exe，其它平台为 java）
+#ifdef Q_OS_WIN
     const QString localJava = localDir + QStringLiteral("/bin/java.exe");
+#else
+    const QString localJava = localDir + QStringLiteral("/bin/java");
+#endif
     if (QFile::exists(localJava)) {
         if (m_java)
             m_java->setInstallBase(QString());   // 复用本目录既有 JDK，无需下载，复位避免泄漏
@@ -1445,7 +1567,7 @@ void CreateServerController::resolveJava(std::function<void(const QString &)> cb
     cb(java);
 }
 
-void CreateServerController::startInstallerProcess(const QString &java, const QString &loader)
+void CreateServerController::startInstallerProcess(const QString &java, const QString &loader, bool useMirror)
 {
     const QString installer = loader + QStringLiteral("-installer.jar");
     m_installerLog.clear();
@@ -1454,30 +1576,57 @@ void CreateServerController::startInstallerProcess(const QString &java, const QS
     // 让独立的 java 安装器进程继承系统代理：主程序通过 Qt 使用系统代理
     // (setUseSystemConfiguration)，但派生的 java 进程默认不继承。
     args.append(systemProxyJvmArgs());
-    // 安装器自身访问 maven.neoforged.net / libraries.minecraft.net 的
-    // 连接超时；网络不稳时默认 15 s 可能不够，拉到 90 s 减少间歇性失败。
-    args << QStringLiteral("-Dsun.net.client.defaultConnectTimeout=90000");
-    args << QStringLiteral("-Dsun.net.client.defaultReadTimeout=90000");
+    // 连接/读取超时：官方源（Cloudflare 背后）在部分网络下会长时间挂起，
+    // 默认 15 s 偏短、90 s 又太长（单个 library 卡 90 s 才报超时）。
+    // 取 30 s 兼顾：失败较快暴露，从而触发镜像重试，而不是让用户干等数分钟。
+    args << QStringLiteral("-Dsun.net.client.defaultConnectTimeout=30000");
+    args << QStringLiteral("-Dsun.net.client.defaultReadTimeout=30000");
+    // 官方源不稳定时的兜底：让安装器把所有 maven 坐标下载（含第三方库 guava、
+    // 以及 libraries.minecraft.net 的 MC 库）重定向到 BMCLAPI 镜像。
+    // 仅镜像重试（useMirror=true）时注入；首次仍优先官方源以保留可观测性。
+    if (useMirror)
+        args << QStringLiteral("-Dforge.mavenMirror=https://bmclapi2.bangbang93.com/maven/");
     args << QStringLiteral("-Djava.awt.headless=true"); // 无显示器下避免 AWT 初始化崩溃
-    args << QStringLiteral("-jar") << installer;
+    // installer 与生成的核心都位于纯 ASCII 的模组工作目录 m_modsTemp：
+    // 用绝对路径运行，避免 Forge 安装器（LaunchWrapper）在 Linux 上基于 user.dir 解析
+    // 相对文件名失败而报 “unexpected error occurred while trying to open file xxx.jar”。
+    // 同时彻底规避含中文 saveDir 在 C locale 下路径解码成 '?' 的问题。
+    const QString installerAbs = QDir(m_modsTemp).absoluteFilePath(installer);
+    args << QStringLiteral("-jar") << installerAbs;
     if (loader == QStringLiteral("fabric")) {
+        // Fabric 安装器把核心生成在 cwd（已设为 m_modsTemp，纯 ASCII），不认 --installServer
         args << QStringLiteral("server")
              << QStringLiteral("-mcversion") << m_currentVersion
              << QStringLiteral("-downloadMinecraft");
     } else {
-        args << QStringLiteral("--installServer");
+        // Forge/NeoForge：--installServer <dir> 把核心生成到指定目录（纯 ASCII 的 m_modsTemp）
+        args << QStringLiteral("--installServer") << m_modsTemp;
     }
 
     setStatus(QStringLiteral("正在运行安装器生成服务端核心…（首次可能需下载 Minecraft，请稍候）"));
     m_installer = new QProcess(this);
-    m_installer->setWorkingDirectory(m_saveDir);
+    m_installer->setWorkingDirectory(m_modsTemp);
     m_installer->setProcessChannelMode(QProcess::MergedChannels);
+    // 派生的 java 安装器进程需 UTF-8 locale 才能正确解码含中文的 saveDir 路径：
+    // JVM 不读取 Qt 的 locale 覆盖，原进程若在 C locale 下会因路径中文变 '?' 而打不开 jar。
+    // 仅 Linux 需要（Windows 用 UTF-16 不受此影响）；设置 C.UTF-8 大多数发行版都提供。
+#ifdef Q_OS_LINUX
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    if (env.value(QStringLiteral("LC_ALL")).isEmpty() && env.value(QStringLiteral("LANG")).isEmpty())
+        env.insert(QStringLiteral("LC_ALL"), QStringLiteral("C.UTF-8"));
+    m_installer->setProcessEnvironment(env);
+#endif
     connect(m_installer, &QProcess::readyReadStandardOutput, this, [this]() {
         // 累积安装器输出，失败时取末尾展示真实原因（Java 版本不匹配、网络被墙等），
         // 同时消费管道避免缓冲区打满导致子进程阻塞。
-        m_installerLog += QString::fromLocal8Bit(m_installer->readAllStandardOutput());
+        const QByteArray out = m_installer->readAllStandardOutput();
+        m_installerLog += QString::fromLocal8Bit(out);
         if (m_installerLog.size() > 65536)
             m_installerLog.remove(0, m_installerLog.size() - 65536);
+        // 安装器输出实时打到控制台（Qt Creator“应用程序输出”面板可见），
+        // 同时经 msmMessageOutput 写入 msm.log：Debug 构建回显到 stderr，
+        // Release 仅进日志文件、不污染控制台。noquote 避免 qDebug 给文本加引号/转义。
+        qDebug().noquote().nospace() << QString::fromLocal8Bit(out.constData(), out.size());
     });
     connect(m_installer, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, &CreateServerController::onInstallerFinished);
@@ -1524,6 +1673,32 @@ QString CreateServerController::installerErrorTail() const
     if (lines.size() <= 25)
         return s.trimmed();
     return QStringList(lines.mid(lines.size() - 25)).join(QLatin1Char('\n')).trimmed();
+}
+
+bool CreateServerController::installerFailedByNetwork() const
+{
+    // 安装器因网络下载失败而退出（而非 Java 版本不匹配 / 磁盘满等本地错误）的特征串。
+    // 命中这些才触发 BMCLAPI 镜像重试；其它失败直接如实报错，避免无意义重试。
+    static const QStringList keys = {
+        QStringLiteral("These libraries failed to download"),
+        QStringLiteral("failed to download"),
+        QStringLiteral("SocketTimeout"),
+        QStringLiteral("connect timed out"),
+        QStringLiteral("Read timed out"),
+        QStringLiteral("Connection timed out"),
+        QStringLiteral("Connection refused"),
+        QStringLiteral("UnknownHostException"),
+        QStringLiteral("SSLHandshakeException"),
+        QStringLiteral("java.net.SocketException"),
+        QStringLiteral("Could not download"),
+        QStringLiteral("Unable to download"),
+        QStringLiteral("Connection reset"),
+    };
+    for (const QString &k : keys) {
+        if (m_installerLog.contains(k, Qt::CaseInsensitive))
+            return true;
+    }
+    return false;
 }
 
 void CreateServerController::onInstallerFinished(int exitCode, QProcess::ExitStatus status)
@@ -1605,3 +1780,50 @@ void CreateServerController::onDownloadError(const QString &id, const QString &m
     setBusy(false);
     setStatus(QStringLiteral("下载失败：") + (message.isEmpty() ? QStringLiteral("未知错误") : message));
 }
+
+// 模组服安装工作目录：统一放在系统临时目录下的 MSM 子文件夹里（纯 ASCII）。
+// ① 工作目录必须用“保证纯 ASCII”的路径：saveDir 可能含中文；程序可能装在含中文目录
+//    （applicationDirPath 会带回中文）；JVM 在系统无 UTF-8 locale 时（日志常见
+//    “Detected locale "C" … not UTF-8”）会把中文路径解码成 '?'，导致
+//    “unexpected error occurred while trying to open file …/forge-installer.jar”。
+// ② 把安装/打包的所有临时文件都收在 TempLocation/MSM/ 下，安装产物（Forge 生成的服务端）
+//    也在此处；最终打包只读取这个目录，再复制到“下载目录”，绝不读取用户可能设在程序
+//    目录的 saveDir，从根本上避免把 exe/logs 误打进压缩包。
+// 标识用时间戳+随机，确保纯 ASCII 且不同创建任务/重试不冲突（不依赖可能含中文的服务器名）。
+QString CreateServerController::modsTempDir() const
+{
+    const QString base = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+    const QString msmRoot = QDir::cleanPath(base + QStringLiteral("/MSM"));
+    QDir().mkpath(msmRoot); // 确保 MSM 子文件夹存在
+    const QString stamp = QStringLiteral("msm-build-%1-%2")
+        .arg(QDateTime::currentMSecsSinceEpoch())
+        .arg((qulonglong)QRandomGenerator::global()->generate64(), 0, 36);
+    return QDir::cleanPath(msmRoot + QStringLiteral("/") + stamp);
+}
+
+// 递归复制目录内容到目标（目标已存在则覆盖）。用于把纯 ASCII 的 m_modsTemp 里
+// 安装器生成的服务端文件整体搬到可能含中文的 saveDir（Qt 层复制，不受 JVM locale 影响）。
+bool CreateServerController::copyDirRecursive(const QString &src, const QString &dst)
+{
+    QDir srcDir(src);
+    if (!srcDir.exists())
+        return false;
+    if (!QDir().mkpath(dst))
+        return false;
+    bool ok = true;
+    // 递归列出所有文件，目录据文件父路径推断创建；覆盖已存在文件。
+    QDirIterator fi(src, QDir::Files | QDir::NoDotAndDotDot | QDir::Hidden,
+                    QDirIterator::Subdirectories);
+    while (fi.hasNext()) {
+        const QString s = fi.next();
+        const QString rel = srcDir.relativeFilePath(s);
+        const QString d = QDir(dst).absoluteFilePath(rel);
+        QDir().mkpath(QFileInfo(d).absolutePath());
+        if (QFile::exists(d))
+            QFile::remove(d);
+        if (!QFile::copy(s, d))
+            ok = false;
+    }
+    return ok;
+}
+

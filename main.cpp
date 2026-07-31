@@ -18,6 +18,9 @@
 #include <QColor>
 #include <QtQuickControls2/QQuickStyle>
 #include <QLibraryInfo>
+#ifdef Q_OS_LINUX
+#include <sys/sysinfo.h>   // SystemMonitor 内存回退检测用
+#endif
 #include <QDebug>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -32,6 +35,15 @@
 #include <QRegularExpression>
 #include <QVector>
 #include <QPair>
+#include <QFile>
+#include <QStringList>
+
+#include <QWidget>
+#include <QLabel>
+#include <QVBoxLayout>
+#include <QScreen>
+#include <QMouseEvent>
+#include <QPainter>
 
 
 
@@ -169,38 +181,37 @@ public:
         setupTray();
     }
 
-private:
+    private:
     void setupTray()
     {
-        m_hasTray = QSystemTrayIcon::isSystemTrayAvailable();
-        if (!m_hasTray) {
-            // 无系统托盘（如多数 Linux 桌面）：关闭窗口即真正退出（见 eventFilter），
-            // 启动直接显示主窗口，不允许 hide 到托盘（否则窗口隐藏后无托盘可恢复、程序空跑）。
-            qWarning("系统不支持系统托盘：关闭窗口直接退出，启动时显示主窗口");
-            QApplication::setQuitOnLastWindowClosed(true);
-            return;
-        }
-        QApplication::setQuitOnLastWindowClosed(false);
-
-        m_tray = new QSystemTrayIcon(this);
-        m_tray->setIcon(QIcon(QStringLiteral(":/icon/ApplicationIcon")));
-        m_tray->setToolTip(QStringLiteral("Minecraft Server Manager"));
-
+        // 所有平台统一使用系统原生托盘（QSystemTrayIcon）：图标落到通知区。
+        // 仅当通知区可用时程序常驻（关闭窗口=收起托盘而非退出）；
+        // 通知区不可用时（如无桌面的服务器环境）保持默认行为——关闭窗口即退出，避免程序空跑。
+        // 托盘右键菜单（原生托盘使用），按需重建以反映各窗口可见状态
         m_trayMenu = new QMenu;
-        m_tray->setContextMenu(m_trayMenu);
-        // 右键菜单按需重建：动态反映各窗口当前可见状态，实现多窗口分别控制
         connect(m_trayMenu, &QMenu::aboutToShow, this, &AppController::rebuildTrayMenu);
 
-        // 单击托盘图标：切换主窗口显隐（QQ 式行为）。各窗口关闭时隐藏到托盘，
-        // 因此"打开/关闭"都收敛到托盘，单点即可来回切换。
-        connect(m_tray, &QSystemTrayIcon::activated, this,
-                [this](QSystemTrayIcon::ActivationReason reason) {
-                    if (reason == QSystemTrayIcon::Trigger)
-                        toggleWindow(QStringLiteral("MainWindow"));
-                });
+        if (QSystemTrayIcon::isSystemTrayAvailable()) {
+            QApplication::setQuitOnLastWindowClosed(false);
+            m_tray = new QSystemTrayIcon(this);
+            m_tray->setIcon(QIcon(QStringLiteral(":/icon/ApplicationIcon")));
+            m_tray->setToolTip(QStringLiteral("Minecraft Server Manager"));
+            m_tray->setContextMenu(m_trayMenu);
 
-        rebuildTrayMenu();   // 先行构建一次，保证托盘菜单立即可用
-        m_tray->show();
+            // 单击托盘图标：切换主窗口显隐（QQ 式行为）
+            connect(m_tray, &QSystemTrayIcon::activated, this,
+                    [this](QSystemTrayIcon::ActivationReason reason) {
+                        if (reason == QSystemTrayIcon::Trigger)
+                            toggleWindow(QStringLiteral("MainWindow"));
+                    });
+
+            rebuildTrayMenu();
+            m_tray->show();
+            m_hasTray = true;
+        } else {
+            qWarning("系统托盘（通知区）不可用：窗口关闭将直接退出程序"
+                     "（如需常驻请安装带通知区的桌面环境，或在桌面环境中启用通知区）");
+        }
     }
 
     QQuickWindow *createWindow(const QString &type)
@@ -266,9 +277,11 @@ private:
             auto *win = qobject_cast<QQuickWindow *>(watched);
             if (win) {
                 const QString mode = win->property("closeMode").toString();
-                // 有托盘时：非 close 模式的窗口收起托盘；无托盘（如 Linux）一律真正关闭，
-                // 避免窗口被隐藏后无托盘可恢复、程序空跑。
-                if (m_hasTray && mode != QStringLiteral("close")) {
+                if (mode == QStringLiteral("close")) {
+                    // 显式"关闭"模式：真正退出该窗口
+                    m_windows.removeAll(win);
+                } else if (m_tray) {
+                    // 原生托盘：收起托盘（隐藏窗口，无任务栏条目；由托盘恢复）
                     event->ignore();
                     win->hide();
                     return true;
@@ -285,14 +298,28 @@ signals:
 
 public slots:
     void showMainWindow()            { showUnique(QStringLiteral("MainWindow")); }
-    // 切换指定窗口：已可见则隐藏，否则显示并置前（供托盘单击/菜单分别控制各窗口）
+    // 是否有原生托盘（通知区）可用
+    bool hasTray() const { return m_hasTray; }
+    // 切换指定窗口：已可见则收起（真实托盘隐藏 / 模拟托盘最小化到任务栏），
+    // 已最小化则恢复，否则显示并置前（供托盘单击/菜单分别控制各窗口）
     void toggleWindow(const QString &type)
     {
         QQuickWindow *w = m_unique.value(type, nullptr);
-        if (w && w->isVisible())
-            w->hide();
-        else
+        if (!w) {
             showUnique(type);
+            return;
+        }
+        if (w->windowState() & Qt::WindowMinimized) {
+            // 已最小化（模拟托盘场景）：恢复并置前
+            w->showNormal();
+            w->raise();
+            w->requestActivate();
+        } else if (w->isVisible()) {
+            // 有托盘则收起隐藏；无托盘直接隐藏（窗口关闭即退出）
+            w->hide();
+        } else {
+            showUnique(type);
+        }
     }
     void openDownloadCenter()        { showUnique(QStringLiteral("DownloadCenter")); }
     void openCreateServer() {
@@ -312,11 +339,13 @@ public slots:
         for (QQuickWindow *win : list) {
             if (!win)
                 continue;
-            // 无托盘时（如 Linux）隐藏无意义，直接关闭；有托盘时非 close 模式才收起托盘。
-            if (win->property("closeMode").toString() == QStringLiteral("close") || !m_hasTray)
-                win->close();
+            const QString mode = win->property("closeMode").toString();
+            if (mode == QStringLiteral("close"))
+                win->close();          // 真正关闭
+            else if (m_tray)
+                win->hide();           // 原生托盘：收起托盘
             else
-                win->hide();
+                win->close();          // 无托盘：关闭窗口（默认 quitOnLastWindowClosed 退出程序）
         }
     }
 
@@ -331,7 +360,7 @@ private:
     QQmlApplicationEngine *m_engine = nullptr;
     QSystemTrayIcon *m_tray = nullptr;
     QMenu *m_trayMenu = nullptr;
-    bool m_hasTray = false;           // 系统是否支持托盘（Linux 多数桌面无托盘）
+    bool m_hasTray = false;           // 是否已有原生托盘（通知区）可用
     QHash<QString, QQuickWindow *> m_unique;
     QList<QQuickWindow *> m_windows;
     QHash<QString, QString> m_dict;
@@ -487,7 +516,61 @@ private:
         if (GlobalMemoryStatusEx(&ms))
             mem = double(ms.dwMemoryLoad);
 #else
-        Q_UNUSED(cpu); Q_UNUSED(mem);
+        // Linux：读取 /proc/stat 与 /proc/meminfo，无需任何外部命令
+        // CPU 利用率：两次采样之间 (总刻度差 - 空闲刻度差) / 总刻度差
+        QFile fstat(QStringLiteral("/proc/stat"));
+        if (fstat.open(QIODevice::ReadOnly)) {
+            const QString line = QString::fromLatin1(fstat.readLine()).trimmed();
+            fstat.close();
+            const QStringList parts = line.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+            if (parts.size() >= 5) {
+                qint64 sum = 0;
+                for (int i = 1; i < parts.size(); ++i) sum += parts.at(i).toLongLong();
+                const qint64 idle = parts.at(4).toLongLong()
+                                    + (parts.size() > 5 ? parts.at(5).toLongLong() : 0);
+                if (m_hasPrev) {
+                    const qint64 dTotal = sum - m_prevSys;
+                    const qint64 dIdle  = idle - m_prevIdle;
+                    if (dTotal > 0)
+                        cpu = qBound(0.0, 100.0 * double(dTotal - dIdle) / double(dTotal), 100.0);
+                }
+                m_prevSys  = sum;
+                m_prevIdle = idle;
+                m_hasPrev  = true;
+            }
+        }
+        // 内存利用率：优先读 /proc/meminfo 的 MemTotal - MemAvailable；
+        // 老内核无 MemAvailable 时退化为 MemFree；仍不可用则回退 sysinfo()，保证有值。
+        {
+            QFile fmem(QStringLiteral("/proc/meminfo"));
+            qint64 total = 0, avail = 0, freeMem = 0;
+            bool got = false;
+            if (fmem.open(QIODevice::ReadOnly)) {
+                while (!fmem.atEnd()) {
+                    const QString l = QString::fromLatin1(fmem.readLine()).trimmed();
+                    const QStringList kv = l.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+                    if (kv.size() >= 2) {
+                        if (kv.at(0) == QStringLiteral("MemTotal:")) total = kv.at(1).toLongLong();
+                        else if (kv.at(0) == QStringLiteral("MemAvailable:")) avail = kv.at(1).toLongLong();
+                        else if (kv.at(0) == QStringLiteral("MemFree:")) freeMem = kv.at(1).toLongLong();
+                    }
+                }
+                fmem.close();
+                if (total > 0) {
+                    const qint64 used = total - (avail > 0 ? avail : freeMem);
+                    mem = qBound(0.0, 100.0 * double(used) / double(total), 100.0);
+                    got = true;
+                }
+            }
+            if (!got) {
+                // 回退：sysinfo()（freeram 含页缓存，数值偏低但保证有值）
+                struct sysinfo si;
+                if (sysinfo(&si) == 0 && si.totalram > 0) {
+                    const double used = double(si.totalram - si.freeram);
+                    mem = qBound(0.0, 100.0 * used / double(si.totalram), 100.0);
+                }
+            }
+        }
 #endif
         if (qAbs(cpu - m_cpu) > 0.05 || qAbs(mem - m_mem) > 0.05) {
             m_cpu = cpu; m_mem = mem;
@@ -942,11 +1025,14 @@ int main(int argc, char *argv[])
     // QtQuick/QtQuick.Controls 等模块加载失败，进而 MainWindow 创建不出来（启动后无操作页面）。
     engine.addImportPath(QLibraryInfo::path(QLibraryInfo::Qml2ImportsPath));
 
-    // 启动即显示主操作页面：此前主窗口只在点击托盘时才创建，故启动后看不到任何界面。
-    // 由“启动时显示窗口”设置决定：开启则创建并显示主窗口，否则仅驻留系统托盘（点托盘“显示主窗口”可打开）。
-    // 无系统托盘（如多数 Linux 桌面）时强制显示主窗口，否则启动后既无窗口也无托盘可恢复。
-    if (settingsController.showOnStartup() || !QSystemTrayIcon::isSystemTrayAvailable())
+    // 启动窗口策略：
+    // - 开启"启动时显示窗口"或有托盘：创建主窗口并（按需）显示；
+    //   有原生托盘时关闭窗口只是收起托盘，程序常驻。
+    // - 无托盘（无通知区的环境）：显示主窗口，关闭即退出程序。
+    if (settingsController.showOnStartup() || !appController->hasTray()) {
         appController->showMainWindow();
+    }
+    // 有托盘且未要求启动时显示窗口：仅驻留托盘，不显示主窗口。
 
     return app.exec();
 }

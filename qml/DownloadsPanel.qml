@@ -23,9 +23,16 @@ Popup {
         border.width: 1
     }
 
-    ColumnLayout {
+    // 用不透明 Rectangle 作为面板内容底色：部分平台/合成器下 Popup 的 background 可能未被绘制，
+    // 导致头部（透明）直接透出后面窗口。这里让内容自身不透明，确保各平台都不透。
+    Rectangle {
         anchors.fill: parent
-        spacing: 0
+        color: Theme.panel
+        radius: Theme.radius
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 0
 
         // 头部：固定 47px（标题栏 42 + 5）。
         // 用 Rectangle 锁死高度——Rectangle 的高度不受子项影响，比直接约束 RowLayout 可靠，
@@ -210,6 +217,7 @@ Popup {
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.top: parent.top; anchors.topMargin: 40
             }
+        }
         }
     }
 }

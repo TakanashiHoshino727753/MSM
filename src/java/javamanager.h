@@ -40,6 +40,11 @@ public:
     // 根据 MC 版本号返回所需 Java 特性版本（8 / 17 / 21 …）
     Q_INVOKABLE static int requiredFeature(const QString &mcVersion);
 
+    // 返回当前主机的 CPU 架构字符串（Adoptium/Oracle 用），如 x64 / aarch64 / arm / x86。
+    // 用于按真实架构请求 JDK，避免在非 x86_64 机器（aarch64/arm64 的云 VM、树莓派、Apple Silicon 虚拟机）
+    // 上下载到跑不起来的 x64 JDK（会报 sun.nio.fs.UnixNativeDispatcher.init() 的 UnsatisfiedLinkError）。
+    static QString hostArchitecture();
+
     // 同步查找：返回可直接使用的 java 可执行文件路径（已管理安装或 PATH 上匹配版本），否则空串
     Q_INVOKABLE QString javaPathFor(const QString &mcVersion);
 
@@ -56,6 +61,10 @@ public:
     // 仅解析 Java 安装包直链（不下载、不安装），供下载中心"只下载原文件、不解压不安装"场景使用。
     // 成功回调 (true, url, 建议文件名)；失败则回调 (false, QString(), QString())，调用方仍可尝试下载。
     void resolveDownloadUrl(int feature, std::function<void(bool, QString, QString)> cb);
+
+    // 将已下载到本地的 Java 压缩包（tar.gz/tar.xz/zip）解压到托管目录并登记为可移植 JDK，
+    // 回调 (ok, javaPath)。供下载中心在 Linux 等无安装器的平台实现"下载即安装"。
+    void installManagedArchive(const QString &archivePath, int feature, std::function<void(bool, QString)> cb);
 
     // 覆盖默认安装根目录（默认 Downloads/jvm/）。由 CreateServerController 在创建服务器时
     // 设置为 "{服务器路径}/jvm"，让 Java 与服务端核心同目录、自带、可单独删除。空串恢复默认。

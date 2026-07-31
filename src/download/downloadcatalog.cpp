@@ -393,11 +393,23 @@ void DownloadCatalog::loadJava()
         // 8/11/17/21/25 为 LTS，26 为半年期特性版，标签据此区分
         const bool isLts = (v == 8 || v == 11 || v == 17 || v == 21 || v == 25);
         const QString tag = isLts ? QStringLiteral("LTS") : QStringLiteral("特性版");
+#ifdef Q_OS_WIN
+        // Windows：提供 exe/msi 安装器，下载后由用户运行安装
         appendItem(new DownloadItem(QStringLiteral("OpenJDK ") + QString::number(v),
                                      tag + QStringLiteral(" · Windows x64 · JDK（下载到本地，运行安装）"),
                                      QStringLiteral("java://%1").arg(v),
                                      QStringLiteral("OpenJDK%1-installer.msi").arg(v),
                                      QString(), this));
+#else
+        // Linux/macOS：无安装器，提供可移植压缩包，下载中心会自动解压安装为可移植 JDK。
+        // 按真实架构显示/命名（避免 aarch64/arm64 机器上误标 x64）；压缩包内容按魔数自动识别解压。
+        const QString arch = JavaManager::hostArchitecture();
+        appendItem(new DownloadItem(QStringLiteral("OpenJDK ") + QString::number(v),
+                                     tag + QStringLiteral(" · Linux %1 · JDK（下载后自动解压安装）").arg(arch),
+                                     QStringLiteral("java://%1").arg(v),
+                                     QStringLiteral("OpenJDK%1.tar.gz").arg(v),
+                                     QString(), this));
+#endif
     }
     setLoading(false);
     setStatus(QString());
@@ -941,6 +953,30 @@ void DownloadCatalog::onDownloadFinished(const QString &id, const QString &path)
     it->setDone(true);
     it->setPercent(100);
     it->setErrorText(QString());
+
+    // 无安装器的平台（Linux 等）：Java 压缩包下载完成后自动解压并登记为可移植 JDK，实现“下载即安装”
+    if (!path.isEmpty() && m_java && it->url().startsWith(QStringLiteral("java://"))) {
+        const int feat = it->url().mid(QStringLiteral("java://").length()).toInt();
+        const QString ext = QFileInfo(path).suffix().toLower();
+        const bool isInstaller = (ext == QStringLiteral("exe") || ext == QStringLiteral("msi"));
+        if (!isInstaller) {
+            setStatus(ts("Java %1 下载完成，正在解压安装…").arg(feat));
+            QPointer<DownloadCatalog> self(this);
+            QPointer<DownloadItem> item(it);
+            m_java->installManagedArchive(path, feat, [self, item, feat](bool ok, const QString &javaPath) {
+                if (!self || !item) return;
+                if (ok) {
+                    const QString home = QFileInfo(javaPath).absolutePath();
+                    item->setFilePath(home);
+                    self->setStatus(self->ts("Java %1 已安装为可移植 JDK（%2）").arg(feat).arg(home));
+                } else {
+                    self->setStatus(self->ts("Java %1 下载完成，但自动解压安装失败；请手动解压：%2")
+                                        .arg(feat).arg(item->filePath()));
+                }
+            });
+            return;
+        }
+    }
     setStatus(ts("下载完成"));
 }
 

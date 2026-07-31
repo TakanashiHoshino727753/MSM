@@ -16,6 +16,7 @@
 #include <QHostAddress>
 #include <QTimer>
 #include <QSettings>
+#include <QProcessEnvironment>
 
 ServerController::ServerController(QObject *parent) : QObject(parent)
 {
@@ -126,6 +127,16 @@ void ServerController::start(const QString &name, const QString &path,
     p.proc = new QProcess(this);
     p.proc->setWorkingDirectory(path);
     p.proc->setProcessChannelMode(QProcess::MergedChannels);
+    // Linux 下主进程若在 C locale 中，派生的 java 子进程会因路径含中文解码成 '?' 而打不开
+    // server.jar / 无法写含中文目录。强制注入 UTF-8 locale（仅当环境未指定时），与安装器一致。
+#ifdef Q_OS_LINUX
+    {
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        if (env.value(QStringLiteral("LC_ALL")).isEmpty() && env.value(QStringLiteral("LANG")).isEmpty())
+            env.insert(QStringLiteral("LC_ALL"), QStringLiteral("C.UTF-8"));
+        p.proc->setProcessEnvironment(env);
+    }
+#endif
 
     connect(p.proc, &QProcess::readyReadStandardOutput, this, [this, name]() {
         handleOutput(name);
@@ -136,7 +147,7 @@ void ServerController::start(const QString &name, const QString &path,
     QStringList args;
     args << QStringLiteral("-Xms%1M").arg(minMem)
          << QStringLiteral("-Xmx%1M").arg(maxMem)
-         << QStringLiteral("-jar") << QStringLiteral("server.jar")
+         << QStringLiteral("-jar") << QDir(path).absoluteFilePath(QStringLiteral("server.jar"))
          << QStringLiteral("nogui");
     p.proc->start(effectiveJava, args);
     if (!p.proc->waitForStarted(5000)) {
