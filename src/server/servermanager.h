@@ -176,11 +176,15 @@ public:
         // 只以文档根目录为扫描根（msmDir 是其子目录，递归必覆盖），避免根目录重叠
         // 导致同一目录被两次遍历而依赖去重逻辑。
         QStringList roots = {docDir};
-        // 刷新时先移除磁盘上已不存在的已登记服务器（点“刷新服务器”应能反映删除）。
+        // 刷新时以自己当前的列表为基准，逐个检查其登记路径在磁盘上是否仍是有效的
+        // 服务器目录（目录存在且含 server.properties）。失效（被删除/目录残留无服务端文件）
+        // 的则从列表移除，从而“根据列表去找该位置有没有服务器，更新自己的列表”。
         QList<Server *> stale;
-        for (Server *s : m_servers)
-            if (!QDir(s->path()).exists())
+        for (Server *s : m_servers) {
+            const QDir dir(s->path());
+            if (!dir.exists() || !dir.exists(QStringLiteral("server.properties")))
                 stale.append(s);
+        }
         for (Server *s : stale) {
             qDebug() << "[ServerManager] 刷新移除失效服务器" << s->name() << s->path();
             m_servers.removeAll(s);
