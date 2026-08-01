@@ -66,11 +66,9 @@ void ServerController::start(const QString &name, const QString &path,
         return;
     }
     m_args[name] = {path, javaPath, minMem, maxMem};
-    const QString jar = path + QStringLiteral("/server.jar");
-    if (!QFile::exists(jar)) {
-        emit consoleAppended(name, QStringLiteral("[MSM] 未找到 server.jar，无法启动：") + jar);
-        return;
-    }
+    // 注意：不再前置硬校验 server.jar 是否存在——模组服（Forge/NeoForge/Fabric）的真实启动核心
+    // 可能是 fabric-server-launch.jar / forge-*.jar / unix_args.txt 等，并不一定是 server.jar。
+    // 是否存在可识别核心由下方启动探测逻辑统一判断并在缺失时报错，避免误拒模组服启动。
 
     // ---- 多开端口冲突检测：与其他运行中的受管服务器或系统进程抢占同一端口时取消启动 ----
     const int port = serverPort(path);
