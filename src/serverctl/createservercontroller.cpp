@@ -1136,14 +1136,19 @@ void CreateServerController::onModInstallerFinished(const QString &loader, int e
     if (m_installTimer) m_installTimer->stop();
     m_installAnim = 0;
     if (exitCode != 0) {
-        // 安装器内部从官方源（Cloudflare 背后的 maven.minecraftforge.net / libraries.minecraft.net）
-        // 拉取 libraries 时，在部分网络下会因连接/读取超时失败（如 guava SocketTimeout），退出码 1，
-        // 日志出现 "These libraries failed to download"。此时若尚未用过镜像，自动带 -Dforge.mavenMirror
-        // 重跑一次改用 BMCLAPI 镜像；仍失败则如实报错，不再无限重试。
-        if (m_installAttempt == 0 && installerFailedByNetwork()) {
+        // 安装器内部从官方源（Cloudflare 背后的 maven.neoforged.net / maven.minecraftforge.net /
+        // libraries.minecraft.net）拉取 libraries 时，在部分网络下会因连接/读取超时失败（如 guava
+        // SocketTimeout），退出码 1，日志出现 "These libraries failed to download"。此时自动带
+        // -Dforge.mavenMirror 重跑改用 BMCLAPI 镜像；由于失败会保留已下载/校验过的库（m_modsTemp
+        // 不清除），重试会在同一目录继续、跳过已完成的库，逐步推进直至全部就绪。
+        // 网络完全不通时无限重试无意义，故限制最大重试次数（默认 5 次）；仍失败才如实报错。
+        static const int kMaxInstallRetries = 5;
+        if (installerFailedByNetwork() && m_installAttempt < kMaxInstallRetries) {
             qWarning() << "[Create] installer" << loader
-                       << "failed by network, retrying with BMCLAPI mirror. exitCode=" << exitCode;
-            setStageText(tr("首次安装因网络超时失败，正在改用 BMCLAPI 镜像重试…"));
+                       << "failed by network, retrying (" << (m_installAttempt + 1) << "/"
+                       << kMaxInstallRetries << ") with BMCLAPI mirror. exitCode=" << exitCode;
+            setStageText(tr("安装因网络超时失败，正在改用 BMCLAPI 镜像重试（%1/%2）…")
+                         .arg(m_installAttempt + 1).arg(kMaxInstallRetries));
             runModInstaller(loader, true);
             return;
         }

@@ -18,6 +18,15 @@
 #include <QSettings>
 #include <QProcessEnvironment>
 
+// 判断 JVM 参数字符串列表里是否已包含某前缀（用于避免重复追加 -D 参数）
+static bool ulinesContains(const QStringList &lines, const QString &prefix)
+{
+    for (const QString &l : lines)
+        if (l.startsWith(prefix))
+            return true;
+    return false;
+}
+
 ServerController::ServerController(QObject *parent) : QObject(parent)
 {
     QSettings s(QStringLiteral("MSM"), QStringLiteral("MSM"));
@@ -174,6 +183,13 @@ void ServerController::start(const QString &name, const QString &path,
             uf.close();
         }
         ulines << QStringLiteral("-Xms%1M").arg(minMem) << QStringLiteral("-Xmx%1M").arg(maxMem);
+        // NeoForge/Forge 1.17+ 的 args 文件（win_args.txt/unix_args.txt）里不带 nogui，
+        // 主类 net.neoforged.fml.startup.Server / net.minecraftforge.fml.server.Server 会弹
+        // 出早期显示（earlydisplay）GUI 窗口。该窗口由 JVM 的 AWT 决定：置 headless=true 即
+        // 抑制（日志可见 “Not loading early display in headless mode”）。否则 Windows 上会多
+        // 出一个关不掉的服务器 GUI 窗口，必须手动关掉才不卡进程。
+        if (!ulinesContains(ulines, QStringLiteral("-Djava.awt.headless")))
+            ulines << QStringLiteral("-Djava.awt.headless=true");
         if (uf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             uf.write(ulines.join(QLatin1Char('\n')).toUtf8());
             uf.close();
