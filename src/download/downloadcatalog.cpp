@@ -717,10 +717,24 @@ void DownloadCatalog::setSelectedLoaders(const QStringList &v)
     emit selectedLoadersChanged();
 }
 
+void DownloadCatalog::setPackager(const std::function<void()> &f)
+{
+    m_packager = f;
+}
+
 void DownloadCatalog::downloadSelectedLoaders()
 {
     if (m_modVersion.isEmpty()) { setStatus(ts("请先选择 Minecraft 版本")); return; }
     if (m_modLoaders.isEmpty()) { setStatus(ts("请先勾选至少一个加载器")); return; }
+
+    // “下载并打包选中加载器”：交由上层注入的打包委托完成（复用 CreateServerController，
+    // setSkipAddList=true，与本地端“创建服务器”完全一致：准备 Java + 跑安装器 + 产出可运行
+    // 服务端）。未注入委托时回退为仅下载安装器到列表。
+    if (m_packager) {
+        setStatus(ts("正在打包模组服（准备 Java + 运行安装器）…"));
+        m_packager();
+        return;
+    }
     for (const QString &loader : m_modLoaders) {
         if (!loaderCompatible(loader, m_modVersion)) continue;
         resolveLoaderUrl(loader, m_modVersion, [this, loader](const QString &u) {

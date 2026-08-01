@@ -18,6 +18,9 @@
 #include <QTimer>
 #include <QSettings>
 #include <QProcessEnvironment>
+#ifdef Q_OS_UNIX
+#include <unistd.h>   // sysconf(_SC_CLK_TCK)，用于 /proc 时钟滴答换算
+#endif
 
 // 判断 JVM 参数字符串列表里是否已包含某前缀（用于避免重复追加 -D 参数）
 static bool ulinesContains(const QStringList &lines, const QString &prefix)
@@ -474,6 +477,54 @@ QVariantList ServerController::runningServerUsages() const
                     s.second = wallMs;
                 }
                 CloseHandle(h);
+            }
+#else
+            // Linux/Unix：进程级采样走 /proc。
+            // CPU：/proc/<pid>/stat 第 14/15 字段 utime+stime（时钟滴答），结合墙钟差分算占用率。
+            // 内存：/proc/<pid>/status 的 VmRSS（KB）换算为字节。
+            const QString procDir = QStringLiteral("/proc/%1").arg(pid);
+            QFile statFile(procDir + QStringLiteral("/stat"));
+            if (statFile.open(QIODevice::ReadOnly)) {
+                const QByteArray data = statFile.readAll();
+                statFile.close();
+                // comm 可能含空格/括号，从最后一个 ')' 之后解析剩余字段
+                const int rp = data.lastIndexOf(')');
+                if (rp > 0) {
+                    const QList<QByteArray> f = data.mid(rp + 1).trimmed().split(' ');
+                    // 1-based: 14=utime, 15=stime -> 相对 ')' 后的索引为 13, 14
+                    if (f.size() >= 15) {
+                        const qint64 ticks = f[13].toLongLong() + f[14].toLongLong();
+                        const long clk = sysconf(_SC_CLK_TCK);
+                        const qint64 cpuTimeMs = (clk > 0) ? (ticks * 1000 / clk) : 0;
+                        const qint64 wallMs = QDateTime::currentMSecsSinceEpoch();
+                        QPair<qint64, qint64> &s = m_usageSamples[name];
+                        if (s.second > 0) {
+                            const qint64 dCpu = cpuTimeMs - s.first;
+                            const qint64 dWall = wallMs - s.second;
+                            if (dWall > 0)
+                                cpu = double(dCpu) / double(dWall) * 100.0 / coreCount;
+                        }
+                        s.first = cpuTimeMs;
+                        s.second = wallMs;
+                    }
+                }
+            }
+            QFile statusFile(procDir + QStringLiteral("/status"));
+            if (statusFile.open(QIODevice::ReadOnly)) {
+                while (!statusFile.atEnd()) {
+                    const QByteArray line = statusFile.readLine();
+                    if (line.startsWith("VmRSS:")) {
+                        // 形如 "VmRSS:   123456 kB"
+                        const QList<QByteArray> p = line.split(' ');
+                        for (const QByteArray &tok : p) {
+                            bool ok = false;
+                            const qint64 kb = tok.toLongLong(&ok);
+                            if (ok) { memBytes = kb * 1024; break; }
+                        }
+                        break;
+                    }
+                }
+                statusFile.close();
             }
 #endif
         }

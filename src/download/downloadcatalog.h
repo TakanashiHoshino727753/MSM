@@ -6,6 +6,7 @@
 #include <QStringList>
 #include <QHash>
 #include <QUrl>
+#include <functional>
 
 class DownloadManager;
 class DownloadItem;
@@ -135,6 +136,10 @@ public:
     QString saveDir() const { return m_saveDir; }
     void setSaveDir(const QString &d);
     void setJavaManager(JavaManager *j);
+    // 注入“打包器”委托：下载中心“下载并打包选中加载器”不再自己下载安装器，而是调用
+    // 此委托。由上层（webui/本地）注入复用 CreateServerController（setSkipAddList=true）的
+    // 打包逻辑，与“创建服务器”完全一致，确保打出的包已准备 Java + 运行安装器，可直接运行。
+    void setPackager(const std::function<void()> &f);
 
     // 模组服（多加载器）
     QString modVersion() const { return m_modVersion; }
@@ -211,6 +216,7 @@ private:
 
     JavaManager *m_java = nullptr;
     DownloadManager *m_dm = nullptr;
+    std::function<void()> m_packager;   // 注入的打包委托（复用创建服务器引擎）
     QNetworkAccessManager *m_nam = nullptr;
     QList<DownloadItem *> m_items;
     QString m_statusRaw;

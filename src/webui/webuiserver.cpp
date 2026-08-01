@@ -78,6 +78,35 @@ WebUIServer::WebUIServer(ServerManager *sm, ServerController *sc, DownloadManage
     m_dm = dm;   // 保存底层下载管理器，供 WebUI 暴露统一的“下载任务”列表
     m_webCatalog = new DownloadCatalog(dm, this);
     m_webCatalog->setJavaManager(m_java);
+    // “下载并打包选中加载器”复用 CreateServerController（setSkipAddList=true），与本地端
+    // “创建服务器”完全一致：准备临时 Java（架构自适应）+ 跑安装器 + 产出可直接运行的服务端目录。
+    m_webCatalog->setPackager([this, dm, sm]() {
+        auto *builder = new CreateServerController(dm, sm, m_java, m_webCatalog);
+        QString parent = m_webCatalog->saveDir();
+        if (parent.isEmpty()) parent = dm->defaultDownloadDir();
+        QStringList labs;
+        for (const QString &ld : m_webCatalog->selectedLoaders()) labs.append(m_webCatalog->loaderLabel(ld));
+        const QString folder = QStringLiteral("Mod-") + m_webCatalog->modVersion() + QStringLiteral("-")
+                               + labs.join(QStringLiteral("-"));
+        const QString dest = QDir::cleanPath(QDir::fromNativeSeparators(parent) + QStringLiteral("/") + folder);
+        // 顺序：trigger refreshSaveDir 的 setter 先设，最后 setSaveDir 固定产物目录
+        builder->setCurrentType(QStringLiteral("Mod"));
+        builder->setCurrentVersion(m_webCatalog->modVersion());
+        builder->setSelectedLoaders(m_webCatalog->selectedLoaders());
+        builder->setEulaAccepted(true);
+        builder->setSkipAddList(true);
+        builder->setSaveDir(dest);
+        connect(builder, &CreateServerController::statusTextChanged, m_webCatalog, [this, builder]() {
+            m_webCatalog->setStatus(builder->status());
+        });
+        connect(builder, &CreateServerController::busyChanged, builder, [this, builder]() {
+            if (!builder->busy()) {
+                if (m_java) m_java->cleanupTemp();
+                builder->deleteLater();
+            }
+        });
+        builder->create();
+    });
     m_webCatalog->refresh();
     // 设置中已启用则随启动自动开启（无需每次手动拨动开关）
     if (m_settings && m_settings->webuiEnabled())

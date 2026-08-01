@@ -109,6 +109,10 @@ signals:
     void stageProgressChanged();
     void stageTextChanged();
 
+public:
+    // 供外部（如下载中心打包委托）读取当前状态文案，转发到上层状态栏
+    QString status() const { return m_status; }
+
 private:
     QString typeKey() const;
     void setStatus(const QString &s);
