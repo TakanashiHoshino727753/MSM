@@ -870,6 +870,10 @@ int main(int argc, char *argv[])
     ModpackImporter importModpack(&downloadManager, &serverManager);
     ServerController serverController;
     SettingsController settingsController;
+    // 让服务器扫描只针对“默认服务器目录”（文档/MSM 或用户自定义），不递归整个文档目录。
+    serverManager.setDefaultServerDir(settingsController.defaultServerDir());
+    QObject::connect(&settingsController, &SettingsController::defaultServerDirChanged,
+                     &serverManager, [&]() { serverManager.setDefaultServerDir(settingsController.defaultServerDir()); });
     // WebUI 本地 HTTP 服务：随设置开关/端口变化启动或停止
     WebUIServer webuiServer(&serverManager, &serverController, &downloadManager, &createServer,
                             &importModpack, &settingsController, &systemMonitor, &javaManager);

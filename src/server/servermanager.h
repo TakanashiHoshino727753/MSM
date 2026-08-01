@@ -169,24 +169,30 @@ public:
         emit serversChanged();
     }
 
-    // 扫描"我的文档"和"文档/MSM"文件夹，自动发现 Minecraft 服务端并加入列表
+    // 扫描"默认服务器目录"文件夹，自动发现 Minecraft 服务端并加入列表
     Q_INVOKABLE void scanServers() {
+        // 只扫描“默认服务器目录”（文档/MSM 或用户自定义目录）下的服务器，不递归整个文档目录，
+        // 避免把文档里其它含 server.properties 的目录误判为服务器。
         const QString docDir = QStandardPaths::writableLocation(
             QStandardPaths::DocumentsLocation);
-        // 只以文档根目录为扫描根（msmDir 是其子目录，递归必覆盖），避免根目录重叠
-        // 导致同一目录被两次遍历而依赖去重逻辑。
-        QStringList roots = {docDir};
+        QStringList roots = { m_scanRoot.isEmpty() ? (docDir + QStringLiteral("/MSM"))
+                                                    : m_scanRoot };
         // 刷新时以自己当前的列表为基准，逐个检查其登记路径在磁盘上是否仍是有效的
-        // 服务器目录（目录存在且含 server.properties）。失效（被删除/目录残留无服务端文件）
-        // 的则从列表移除，从而“根据列表去找该位置有没有服务器，更新自己的列表”。
+        // 服务器目录（目录存在且含 server.properties），且仍位于“默认服务器目录”树内。
+        // 失效（被删除/目录残留无服务端文件）或已不在默认目录下的条目从列表移除，
+        // 从而“只显示默认服务器目录下的服务器”。
+        const QString scanRootAbs = QDir::cleanPath(roots.first());
         QList<Server *> stale;
         for (Server *s : m_servers) {
-            const QDir dir(s->path());
+            const QString p = QDir::cleanPath(QDir(s->path()).absolutePath());
+            const QDir dir(p);
             if (!dir.exists() || !dir.exists(QStringLiteral("server.properties")))
+                stale.append(s);
+            else if (!p.startsWith(scanRootAbs, Qt::CaseInsensitive))
                 stale.append(s);
         }
         for (Server *s : stale) {
-            qDebug() << "[ServerManager] 刷新移除失效服务器" << s->name() << s->path();
+            qDebug() << "[ServerManager] 刷新移除失效/越界服务器" << s->name() << s->path();
             m_servers.removeAll(s);
             s->deleteLater();
         }
@@ -302,6 +308,11 @@ public:
 signals:
     void serversChanged();
 
+public:
+    // 设置扫描服务器时使用的“默认服务器目录”根（由 SettingsController.defaultServerDir 注入）。
+    // 留空时回退到“文档/MSM”。扫描将只在该根目录下发现服务器，不清扫整个文档目录。
+    void setDefaultServerDir(const QString &dir) { m_scanRoot = dir; }
+
 private:
     static QString configPath() {
         const QString dir = QStandardPaths::writableLocation(
@@ -369,4 +380,5 @@ private:
         if (self) { qDeleteAll(self->m_servers); self->m_servers.clear(); self->saveServers(); emit self->serversChanged(); }
     }
     QList<Server *> m_servers;
+    QString m_scanRoot;   // 扫描根（默认服务器目录），为空时回退“文档/MSM”
 };
