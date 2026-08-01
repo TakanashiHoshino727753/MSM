@@ -1257,6 +1257,14 @@ void BotController::stopControlServer()
     }
 }
 
+void BotController::stopAll()
+{
+    qDebug() << "[BOT] stopAll()：退出前清理机器人相关进程";
+    stopControlServer();
+    stopNapcat();
+    stopNonebot();
+}
+
 void BotController::onApiNewConnection()
 {
     m_botSeen.restart();                       // 记录机器人最近一次连入

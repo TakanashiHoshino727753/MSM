@@ -176,10 +176,10 @@ ApplicationWindow {
                             Repeater {
                                 model: serverManager ? serverManager.servers : null
                                 ServerCard {
-                                    name: modelData.name; version: modelData.version
+                                    name: modelData.name; version: modelData.version; path: modelData.path
                                     onStartClicked: serverController.start(modelData.name, modelData.path)
-                                    onStopClicked: serverController.stop(modelData.name)
-                                    onForceStopClicked: serverController.forceStop(modelData.name)
+                                    onStopClicked: serverController.stop(modelData.path)
+                                    onForceStopClicked: serverController.forceStop(modelData.path)
                                     onDetailsClicked: function() { tabBar.currentIndex = index + 1 }
                                     // 属性：先切到对应服务器页签（使 ServerPage 可见），再直接打开其属性弹窗，
                                     // 避免仅跳转到详情页而看不到属性；openProps 同时加载属性并弹出 propsPopup。

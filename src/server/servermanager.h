@@ -12,6 +12,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QRegularExpression>
+#include <QUuid>
 #include <QDebug>
 
 // 单个被管理的服务器（数据行）。属性变化通过 NOTIFY 信号驱动 QML 绑定。
@@ -22,11 +23,12 @@ class Server : public QObject
     Q_PROPERTY(QString version READ version WRITE setVersion NOTIFY versionChanged)
     Q_PROPERTY(QString type READ type WRITE setType NOTIFY typeChanged)
     Q_PROPERTY(QString path READ path WRITE setPath NOTIFY pathChanged)
+    Q_PROPERTY(QString id READ id WRITE setId NOTIFY idChanged)
 public:
     explicit Server(QObject *parent = nullptr) : QObject(parent) {}
     Server(const QString &name, const QString &version, const QString &type,
-           const QString &path, QObject *parent = nullptr)
-        : QObject(parent), m_name(name), m_version(version), m_type(type), m_path(path) {}
+           const QString &path, const QString &id = QString(), QObject *parent = nullptr)
+        : QObject(parent), m_name(name), m_version(version), m_type(type), m_path(path), m_id(id) {}
 
     QString name() const { return m_name; }
     void setName(const QString &v) { if (m_name != v) { m_name = v; emit nameChanged(); } }
@@ -36,13 +38,16 @@ public:
     void setType(const QString &v) { if (m_type != v) { m_type = v; emit typeChanged(); } }
     QString path() const { return m_path; }
     void setPath(const QString &v) { if (m_path != v) { m_path = v; emit pathChanged(); } }
+    QString id() const { return m_id; }
+    void setId(const QString &v) { if (m_id != v) { m_id = v; emit idChanged(); } }
 signals:
     void nameChanged();
     void versionChanged();
     void typeChanged();
     void pathChanged();
+    void idChanged();
 private:
-    QString m_name, m_version, m_type, m_path;
+    QString m_name, m_version, m_type, m_path, m_id;
 };
 
 // 服务器集合（C++ 逻辑层）：提供 QML 列表并支持持久化、扫描文档文件夹。
@@ -58,6 +63,8 @@ public:
         // 第一次使用自动扫描文档文件夹
         if (m_servers.isEmpty())
             scanServers();
+        // 无论来自加载还是扫描，均按物理路径清洗一次重复登记
+        dedupeByPath();
     }
 
     QQmlListProperty<Server> servers() {
@@ -78,6 +85,7 @@ public:
             m[QStringLiteral("version")] = s->version();
             m[QStringLiteral("type")] = s->type();
             m[QStringLiteral("path")] = s->path();
+            m[QStringLiteral("id")] = s->id();
             out << m;
         }
         return out;
@@ -93,10 +101,56 @@ public:
         return -1;
     }
 
+    // 为某服务器目录生成/读取稳定的唯一标识，写入目录内的 .msm/id 文件。
+    // 即使服务器重名，只要目录不同，id 就不同，从而把"多个服务器"正确区分。
+    Q_INVOKABLE QString ensureServerId(const QString &path) {
+        const QString dir = QDir(path).absolutePath();
+        if (dir.isEmpty() || !QDir().exists(dir))
+            return QString();
+        const QString msmDir = dir + QStringLiteral("/.msm");
+        QDir().mkpath(msmDir);
+        const QString idFile = msmDir + QStringLiteral("/id");
+        QFile f(idFile);
+        if (f.open(QIODevice::ReadOnly)) {
+            const QString existing = QString::fromUtf8(f.readAll()).trimmed();
+            f.close();
+            if (!existing.isEmpty())
+                return existing;
+        }
+        const QString newId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            f.write(newId.toUtf8());
+            f.close();
+        }
+        return newId;
+    }
+
+    // 路径归一化 + 大小写无关比较：Windows 上 servers.json 存储的路径与运行时扫描到的
+    // 路径可能因大小写/斜杠差异被当成不同目录，导致同一个服务器被重复识别。统一用
+    // QDir::cleanPath + 小写比较，避免这种重复。
+    static bool samePath(const QString &a, const QString &b) {
+        if (a.isEmpty() || b.isEmpty())
+            return false;
+        return QDir::cleanPath(QDir(a).absolutePath()).toLower()
+               == QDir::cleanPath(QDir(b).absolutePath()).toLower();
+    }
+    bool hasServerPath(const QString &path) const {
+        for (Server *s : m_servers)
+            if (samePath(s->path(), path))
+                return true;
+        return false;
+    }
+
     Q_INVOKABLE void addServer(const QString &name, const QString &version,
                                const QString &type = QString(),
-                               const QString &path = QString()) {
-        auto *s = new Server(name, version, type, path, this);
+                               const QString &path = QString(),
+                               const QString &id = QString()) {
+        // 去重：同一物理目录只登记一次（大小写/斜杠无关），避免单服务器被识别成多个
+        const QString norm = QDir::cleanPath(QDir(path).absolutePath());
+        if (hasServerPath(norm))
+            return;
+        const QString realId = id.isEmpty() ? ensureServerId(norm) : id;
+        auto *s = new Server(name, version, type, norm, realId, this);
         m_servers.append(s);
         saveServers();
         emit serversChanged();
@@ -119,11 +173,9 @@ public:
     Q_INVOKABLE void scanServers() {
         const QString docDir = QStandardPaths::writableLocation(
             QStandardPaths::DocumentsLocation);
-        const QString msmDir = docDir + QStringLiteral("/MSM");
-        // 优先扫 MSM 子目录（创建服务器的默认位置），再扫文档根目录
-        QStringList roots = {msmDir};
-        if (msmDir != docDir)
-            roots << docDir;
+        // 只以文档根目录为扫描根（msmDir 是其子目录，递归必覆盖），避免根目录重叠
+        // 导致同一目录被两次遍历而依赖去重逻辑。
+        QStringList roots = {docDir};
         int added = 0;
         for (const QString &root : roots) {
             QDirIterator it(root, QDir::Dirs | QDir::NoDotAndDotDot,
@@ -134,16 +186,25 @@ public:
                 // 判断是否为 Minecraft 服务器目录：含有 server.properties
                 if (!dir.exists(QStringLiteral("server.properties")))
                     continue;
-                const QString absPath = dir.absolutePath();
-                // 跳过已录入的
-                bool known = false;
-                for (Server *s : m_servers) {
-                    if (QDir(s->path()).absolutePath() == absPath) {
-                        known = true;
-                        break;
+                const QString absPath = QDir::cleanPath(dir.absolutePath());
+                // 跳过已录入的（大小写/斜杠无关比较）
+                if (hasServerPath(absPath))
+                    continue;
+
+                // 跳过“嵌套在另一个服务器目录内”的目录（如 backups/worlds/解包临时目录也含
+                // server.properties），否则单个服务器会被识别成多个。仅把“最外层含
+                // server.properties 的目录”当作服务器根目录。
+                {
+                    QDir cur = dir;
+                    bool nested = false;
+                    while (cur.cdUp()) {
+                        if (cur.exists(QStringLiteral("server.properties"))) {
+                            nested = true;
+                            break;
+                        }
                     }
+                    if (nested) continue;
                 }
-                if (known) continue;
 
                 // 名称 = 类型-版本（规范化命名，如 Paper-1.21.1）
                 const QString folderName = dir.dirName();
@@ -190,12 +251,36 @@ public:
                     }
                 }
 
-                addServer(type + QStringLiteral("-") + version, version, type, absPath);
+                addServer(type + QStringLiteral("-") + version, version, type, absPath,
+                          ensureServerId(absPath));
                 added++;
             }
         }
         if (added > 0) {
             qDebug() << "[ServerManager] 扫描发现" << added << "台服务器";
+        }
+        dedupeByPath();
+    }
+
+    // 按物理路径去重：扫描（或 JSON 加载）可能因大小写/斜杠差异、根目录重叠遍历、
+    // 或持久化脏数据导致同一服务器被登记多次。统一用 samePath 清洗，只保留首条。
+    void dedupeByPath() {
+        QList<Server *> unique;
+        for (Server *s : m_servers) {
+            bool dup = false;
+            for (Server *u : unique)
+                if (samePath(u->path(), s->path())) { dup = true; break; }
+            if (dup) {
+                qDebug() << "[ServerManager] 去重：丢弃重复服务器" << s->name() << s->path();
+                s->deleteLater();
+            } else {
+                unique.append(s);
+            }
+        }
+        if (unique.size() != m_servers.size()) {
+            m_servers = unique;
+            saveServers();
+            emit serversChanged();
         }
     }
 
@@ -217,6 +302,7 @@ private:
             obj[QStringLiteral("version")] = s->version();
             obj[QStringLiteral("type")] = s->type();
             obj[QStringLiteral("path")] = s->path();
+            obj[QStringLiteral("id")] = s->id();
             arr.append(obj);
         }
         QFile f(configPath());
@@ -237,11 +323,16 @@ private:
             // 跳过路径不在磁盘上的服务器（清理旧版硬编码示例、已删除的服务器）
             if (!QDir().exists(path))
                 continue;
+            // id 优先取持久化值；若目录内 .msm/id 存在则以目录内为准（跨设备迁移/重建时保持一致）
+            QString id = obj[QStringLiteral("id")].toString();
+            const QString dirId = ensureServerId(path);
+            if (id.isEmpty()) id = dirId;
             auto *s = new Server(
                 obj[QStringLiteral("name")].toString(),
                 obj[QStringLiteral("version")].toString(),
                 obj[QStringLiteral("type")].toString(),
                 path,
+                id,
                 this);
             m_servers.append(s);
         }

@@ -81,6 +81,9 @@ public:
     Q_INVOKABLE QString detectNonebotDir() const;
     // 检测当前 NoneBot 目录是否已接入 msm_control 插件
     Q_INVOKABLE bool isMsmPluginInstalled() const;
+    // 退出时彻底停止所有机器人相关进程（控制服务 / NapCat / NoneBot），避免残留
+    void stopAll();
+
     // 自动把 MSM 自带的 msm_control 插件部署进当前 NoneBot 目录（复制文件 + 改写 pyproject），成功后自动启动
     Q_INVOKABLE bool installMsmPlugin();
     // 用户在"手动安装"后点击"我已装好，重试"时调用：重新检测并启动 NoneBot

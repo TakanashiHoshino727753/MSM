@@ -8,6 +8,7 @@
 #include "servercontroller.h"
 #include <QDir>
 #include <QDirIterator>
+#include <QThread>
 #include <QFile>
 #include <QFileInfo>
 #include <QTextStream>
@@ -70,11 +71,12 @@ bool ServerController::isRunning(const QString &name) const
 void ServerController::start(const QString &name, const QString &path,
                              const QString &javaPath, int minMem, int maxMem)
 {
-    if (m_procs.contains(name)) {
-        emit consoleAppended(name, QStringLiteral("[MSM] 服务器已在运行"));
+    // path 作为唯一身份键：同名不同目录的服务器互不串台
+    if (m_procs.contains(path)) {
+        emit consoleAppended(path, QStringLiteral("[MSM] 服务器已在运行"));
         return;
     }
-    m_args[name] = {path, javaPath, minMem, maxMem};
+    m_args[path] = {name, path, javaPath, minMem, maxMem};
     // 注意：不再前置硬校验 server.jar 是否存在——模组服（Forge/NeoForge/Fabric）的真实启动核心
     // 可能是 fabric-server-launch.jar / forge-*.jar / unix_args.txt 等，并不一定是 server.jar。
     // 是否存在可识别核心由下方启动探测逻辑统一判断并在缺失时报错，避免误拒模组服启动。
@@ -84,7 +86,7 @@ void ServerController::start(const QString &name, const QString &path,
     QString holder;
     bool conflict = false;
     for (auto it = m_ports.cbegin(); it != m_ports.cend(); ++it) {
-        if (it.value() == port && it.key() != name) {
+        if (it.value() == port && it.key() != path) {
             holder = it.key();
             conflict = true;
             break;
@@ -93,7 +95,7 @@ void ServerController::start(const QString &name, const QString &path,
     if (!conflict && !isPortFree(port))
         conflict = true;    // holder 留空 = 被系统其他程序占用
     if (conflict) {
-        emit consoleAppended(name, QStringLiteral("[MSM] 端口 %1 已被%2占用，启动已取消（可自动分配空闲端口后重试）")
+        emit consoleAppended(path, QStringLiteral("[MSM] 端口 %1 已被%2占用，启动已取消（可自动分配空闲端口后重试）")
                                        .arg(port)
                                        .arg(holder.isEmpty() ? QStringLiteral("其他程序")
                                                              : QStringLiteral("服务器“%1”").arg(holder)));
@@ -145,11 +147,11 @@ void ServerController::start(const QString &name, const QString &path,
     }
 #endif
 
-    connect(p.proc, &QProcess::readyReadStandardOutput, this, [this, name]() {
-        handleOutput(name);
+    connect(p.proc, &QProcess::readyReadStandardOutput, this, [this, path]() {
+        handleOutput(path);
     });
     connect(p.proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this, [this, name](int code, QProcess::ExitStatus s) { onFinished(name, code, s); });
+            this, [this, path](int code, QProcess::ExitStatus s) { onFinished(path, code, s); });
 
     QStringList args;
     // 自适应探测启动方式：不同加载器（NeoForge/Forge 1.17+、Fabric、Forge 1.16-）的安装产物结构
@@ -221,7 +223,7 @@ void ServerController::start(const QString &name, const QString &path,
         if (launch.isEmpty() && QFile::exists(path + QStringLiteral("/server.jar")))
             launch = QDir(path).absoluteFilePath(QStringLiteral("server.jar"));
         if (launch.isEmpty()) {
-            emit consoleAppended(name, QStringLiteral("[MSM] 启动失败：未找到任何可识别的服务端核心"
+            emit consoleAppended(path, QStringLiteral("[MSM] 启动失败：未找到任何可识别的服务端核心"
                 "（server.jar / fabric-server-launch.jar / forge-*.jar / neoforge-*.jar / args 文件）。"
                 "请重新创建服务器。"));
             p.proc->deleteLater();
@@ -234,27 +236,27 @@ void ServerController::start(const QString &name, const QString &path,
     }
     p.proc->start(effectiveJava, args);
     if (!p.proc->waitForStarted(5000)) {
-        emit consoleAppended(name, QStringLiteral("[MSM] 启动失败：无法执行 ") + effectiveJava +
+        emit consoleAppended(path, QStringLiteral("[MSM] 启动失败：无法执行 ") + effectiveJava +
                                    QStringLiteral("（请确认已安装并加入 PATH）"));
         p.proc->deleteLater();
         return;
     }
 
-    m_procs.insert(name, p);
-    m_retryCount.remove(name);
-    m_startTime.insert(name, QDateTime::currentMSecsSinceEpoch());
-    m_ports.insert(name, port);
-    m_intentionalKill.remove(name);
-    m_tps[name] = 20.0;
-    m_lastOverload.remove(name);
+    m_procs.insert(path, p);
+    m_retryCount.remove(path);
+    m_startTime.insert(path, QDateTime::currentMSecsSinceEpoch());
+    m_ports.insert(path, port);
+    m_intentionalKill.remove(path);
+    m_tps[path] = 20.0;
+    m_lastOverload.remove(path);
     emit consoleAppended(name, QStringLiteral("[MSM] 正在启动服务器…"));
-    emit stateChanged(name, true);
+    emit stateChanged(path, true);
     emit runningCountChanged();
 }
 
-void ServerController::handleOutput(const QString &name)
+void ServerController::handleOutput(const QString &path)
 {
-    auto it = m_procs.find(name);
+    auto it = m_procs.find(path);
     if (it == m_procs.end())
         return;
     QProcess *proc = it->proc;
@@ -267,7 +269,7 @@ void ServerController::handleOutput(const QString &name)
         it->console.append(line + QLatin1Char('\n'));
         if (it->console.size() > 200000)
             it->console = it->console.right(200000);
-        emit consoleAppended(name, line);
+        emit consoleAppended(path, line);
 
         // 在线玩家追踪
         QRegularExpression reJoin(QStringLiteral("(\\S+) joined the game"));
@@ -278,13 +280,13 @@ void ServerController::handleOutput(const QString &name)
             const QString who = m.captured(1);
             if (!it->playerList.contains(who)) {
                 it->playerList.append(who);
-                emit playersChanged(name, it->playerList);
-                emit playerJoined(name, who);
+                emit playersChanged(path, it->playerList);
+                emit playerJoined(path, who);
             }
         } else if ((m = reLeft.match(line)).hasMatch()) {
             const QString who = m.captured(1);
             if (it->playerList.removeAll(who) > 0)
-                emit playersChanged(name, it->playerList);
+                emit playersChanged(path, it->playerList);
         }
 
         // A2：资源监控 - 估算 TPS。服务端在高负载时输出
@@ -297,89 +299,112 @@ void ServerController::handleOutput(const QString &name)
             const double behind = tm.captured(1).toDouble();
             // 满速 20 TPS 对应 20000ms/窗口；落后越多 TPS 越低（单调、上限 20）。
             const double tps = qBound(0.0, 20000.0 / (20000.0 + behind), 20.0);
-            m_tps[name] = tps;
-            m_lastOverload[name] = QDateTime::currentMSecsSinceEpoch();
+            m_tps[path] = tps;
+            m_lastOverload[path] = QDateTime::currentMSecsSinceEpoch();
         }
     }
 }
 
-void ServerController::onFinished(const QString &name, int exitCode, QProcess::ExitStatus status)
+void ServerController::onFinished(const QString &path, int exitCode, QProcess::ExitStatus status)
 {
-    auto it = m_procs.find(name);
+    auto it = m_procs.find(path);
     if (it == m_procs.end())
         return;
     const QString tail = it->console.right(3000);
-    const bool intentional = m_intentionalKill.remove(name);
+    const bool intentional = m_intentionalKill.remove(path);
     it->proc->deleteLater();
-    m_consoleCache.insert(name, it->console);
+    m_consoleCache.insert(path, it->console);
     m_procs.erase(it);
-    m_startTime.remove(name);
-    m_ports.remove(name);
-    m_usageSamples.remove(name);
-    m_tps.remove(name);
-    m_lastOverload.remove(name);
-    emit consoleAppended(name, QStringLiteral("[MSM] 服务器已停止"));
-    emit stateChanged(name, false);
-    emit playersChanged(name, {});
+    m_startTime.remove(path);
+    m_ports.remove(path);
+    m_usageSamples.remove(path);
+    m_tps.remove(path);
+    m_lastOverload.remove(path);
+    emit consoleAppended(path, QStringLiteral("[MSM] 服务器已停止"));
+    emit stateChanged(path, false);
+    emit playersChanged(path, {});
     emit runningCountChanged();
     // 非主动强关却异常退出（崩溃 / 非 0 退出码）→ 上报错误日志
     if (!intentional && (status == QProcess::CrashExit || exitCode != 0)) {
-        emit serverError(name, tail);
+        emit serverError(path, tail);
         // 后端崩溃自动拉起：指数退避，最多 m_maxRetries 次；EULA 未同意或用户已手动停止则不再拉起
+        const QString retryKey = path;
         if (m_autoRestart && !tail.contains(QLatin1String("eula"), Qt::CaseInsensitive)
-            && m_retryCount[name] < m_maxRetries) {
-            const int attempt = ++m_retryCount[name];
+            && m_retryCount[retryKey] < m_maxRetries) {
+            const int attempt = ++m_retryCount[retryKey];
             const int delay = m_backoffSec * (1 << (attempt - 1));
-            emit consoleAppended(name, QStringLiteral("[MSM] 后端异常退出，%1 秒后自动重启（第 %2/%3 次）")
+            emit consoleAppended(retryKey, QStringLiteral("[MSM] 后端异常退出，%1 秒后自动重启（第 %2/%3 次）")
                                           .arg(delay).arg(attempt).arg(m_maxRetries));
-            const StartArgs a = m_args.value(name);
-            QTimer::singleShot(delay * 1000, this, [this, name, a, attempt]() {
-                if (m_intentionalKill.contains(name)) {
-                    m_retryCount.remove(name);
+            const StartArgs a = m_args.value(retryKey);
+            QTimer::singleShot(delay * 1000, this, [this, retryKey, a, attempt]() {
+                if (m_intentionalKill.contains(retryKey)) {
+                    m_retryCount.remove(retryKey);
                     return;
                 }
-                start(name, a.path, a.javaPath, a.minMem, a.maxMem);
+                start(a.name, a.path, a.javaPath, a.minMem, a.maxMem);
             });
         }
     }
 }
 
-void ServerController::stop(const QString &name)
+void ServerController::stop(const QString &path)
 {
-    auto it = m_procs.find(name);
+    auto it = m_procs.find(path);
     if (it == m_procs.end())
         return;
     it->proc->write("stop\n");
 }
 
-void ServerController::forceStop(const QString &name)
+void ServerController::forceStop(const QString &path)
 {
-    auto it = m_procs.find(name);
+    auto it = m_procs.find(path);
     if (it == m_procs.end())
         return;
-    m_intentionalKill.insert(name);
+    m_intentionalKill.insert(path);
     it->proc->kill();
 }
 
-void ServerController::send(const QString &name, const QString &cmd)
+void ServerController::stopAll()
 {
-    auto it = m_procs.find(name);
+    if (m_procs.isEmpty())
+        return;
+    qWarning() << "[Server] 程序退出：强制停止" << m_procs.size() << "个运行中的服务器进程";
+    for (auto it = m_procs.begin(); it != m_procs.end(); ++it) {
+        m_intentionalKill.insert(it.key());
+        QProcess *p = it->proc;
+        if (p) {
+            p->kill();           // TerminateProcess：立即结束，避免退出时残留
+            p->waitForFinished(2000);
+        }
+    }
+    m_procs.clear();
+    m_usageSamples.clear();
+    m_tps.clear();
+    m_lastOverload.clear();
+    m_startTime.clear();
+    m_ports.clear();
+    emit runningCountChanged();
+}
+
+void ServerController::send(const QString &path, const QString &cmd)
+{
+    auto it = m_procs.find(path);
     if (it == m_procs.end())
         return;
     it->proc->write(cmd.toLocal8Bit() + "\n");
 }
 
-QString ServerController::getConsole(const QString &name) const
+QString ServerController::getConsole(const QString &path) const
 {
-    auto it = m_procs.find(name);
+    auto it = m_procs.find(path);
     if (it != m_procs.end())
         return it->console;
-    return m_consoleCache.value(name);
+    return m_consoleCache.value(path);
 }
 
-QStringList ServerController::players(const QString &name) const
+QStringList ServerController::players(const QString &path) const
 {
-    auto it = m_procs.find(name);
+    auto it = m_procs.find(path);
     if (it != m_procs.end())
         return it->playerList;
     return {};
@@ -400,11 +425,14 @@ QVariantList ServerController::runningServerUsages() const
 {
     QVariantList out;
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    // 将多核机器上"进程占用全部核心"的 CPU 时间换算为 0–100% 的单核等效占用率，
+    // 更符合用户对“一台服务器占了多少 CPU”的认知（避免显示成几百%）。
+    const int coreCount = qMax(1, QThread::idealThreadCount());
     for (auto it = m_procs.constBegin(); it != m_procs.constEnd(); ++it) {
         const QString name = it.key();
         const QProcess *proc = it->proc;
         QVariantMap m;
-        m[QStringLiteral("name")] = name;
+        m[QStringLiteral("path")] = name;
         m[QStringLiteral("players")] = it->playerList.size();
         const qint64 start = m_startTime.value(name, now);
         m[QStringLiteral("uptimeSec")] = start ? (now - start) / 1000 : 0;
@@ -432,17 +460,18 @@ QVariantList ServerController::runningServerUsages() const
                         i.HighPart = f.dwHighDateTime;
                         return qint64(i.QuadPart);
                     };
-                    const qint64 cpuTime = toQ(k) + toQ(u);
-                    const qint64 wall = QDateTime::currentMSecsSinceEpoch();
+                    // FILETIME 单位为 100 纳秒，转为毫秒与 wall 量纲统一，否则 CPU% 会放大 1e4 倍
+                    const qint64 cpuTimeMs = (toQ(k) + toQ(u)) / 10000;
+                    const qint64 wallMs = QDateTime::currentMSecsSinceEpoch();
                     QPair<qint64, qint64> &s = m_usageSamples[name];
                     if (s.second > 0) {
-                        const qint64 dCpu = cpuTime - s.first;
-                        const qint64 dWall = wall - s.second;
+                        const qint64 dCpu = cpuTimeMs - s.first;
+                        const qint64 dWall = wallMs - s.second;
                         if (dWall > 0)
-                            cpu = double(dCpu) / double(dWall) * 100.0;
+                            cpu = double(dCpu) / double(dWall) * 100.0 / coreCount;
                     }
-                    s.first = cpuTime;
-                    s.second = wall;
+                    s.first = cpuTimeMs;
+                    s.second = wallMs;
                 }
                 CloseHandle(h);
             }

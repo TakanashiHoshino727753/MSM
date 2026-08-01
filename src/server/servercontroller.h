@@ -43,23 +43,26 @@ public:
     int backoffSec() const { return m_backoffSec; }
     void setBackoffSec(int v);
 
-    // 判断指定服务器当前是否在运行
-    Q_INVOKABLE bool isRunning(const QString &name) const;
+    // 判断指定服务器当前是否在运行（按 path 身份键区分，同名不同目录互不干扰）
+    Q_INVOKABLE bool isRunning(const QString &path) const;
     // 以给定的 java 路径与内存参数（最小/最大，单位 MB）启动一台服务器。
-    // name 用作进程键（控制台/状态索引），path 为服务端根目录（含核心 jar）。
+    // path 为服务端根目录（含核心 jar），同时作为唯一进程键（同名不同目录互不串台）；
+    // name 仅用于日志/控制台展示。
     Q_INVOKABLE void start(const QString &name, const QString &path,
                            const QString &javaPath = QStringLiteral("java"),
                            int minMem = 1024, int maxMem = 2048);
     // 向服务端发送 stop 指令（优雅停止，等待存档保存后退出）
-    Q_INVOKABLE void stop(const QString &name);
+    Q_INVOKABLE void stop(const QString &path);
     // 强制终止进程（TerminateProcess），不等待存档；仅在无响应时兜底使用
-    Q_INVOKABLE void forceStop(const QString &name);
+    Q_INVOKABLE void forceStop(const QString &path);
+    // 退出时强制终止所有运行中的服务器进程，避免残留孤儿进程
+    Q_INVOKABLE void stopAll();
     // 向运行中的服务端发送一条控制台指令（如 op、gamemode、whitelist 等）
-    Q_INVOKABLE void send(const QString &name, const QString &cmd);
+    Q_INVOKABLE void send(const QString &path, const QString &cmd);
     // 取回指定服务器的完整控制台历史文本（进程结束后仍保留缓存）
-    Q_INVOKABLE QString getConsole(const QString &name) const;
+    Q_INVOKABLE QString getConsole(const QString &path) const;
     // 取回当前在线玩家名列表
-    Q_INVOKABLE QStringList players(const QString &name) const;
+    Q_INVOKABLE QStringList players(const QString &path) const;
     // 列举指定服务端目录下的 mods（文件名列表）
     Q_INVOKABLE QStringList listMods(const QString &path) const;
     // 读取 server.properties 为键值映射（便于 QML 表单双向编辑）
@@ -134,7 +137,7 @@ private:
     QSet<QString> m_intentionalKill;
 
     // 崩溃自动重启：记录启动参数用于重拉起，以及每服重试计数与全局配置
-    struct StartArgs { QString path; QString javaPath; int minMem = 1024; int maxMem = 2048; };
+    struct StartArgs { QString name; QString path; QString javaPath; int minMem = 1024; int maxMem = 2048; };
     QHash<QString, StartArgs> m_args;
     QMap<QString, int> m_retryCount;
     bool m_autoRestart = true;

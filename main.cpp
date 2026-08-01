@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <functional>
 #include <QQmlApplicationEngine>
 #include <QQmlEngine>
 #include <QJSEngine>
@@ -368,10 +369,24 @@ public slots:
         if (m_trayMenu && m_trayMenu->isVisible())
             m_trayMenu->close();
         else
-            QApplication::quit();
+            doQuit();
         if (m_tray)
             m_tray->hide();
-        QTimer::singleShot(500, qApp, []() { QApplication::quit(); });
+        QTimer::singleShot(500, qApp, [this]() { doQuit(); });
+    }
+
+    // 注册退出前的清理回调（释放运行中的子进程等），由 main() 注入；
+    // 仅在真正执行退出时调用一次，避免重复触发。
+    void setQuitCleanup(std::function<void()> f) { m_cleanup = std::move(f); }
+
+    void doQuit()
+    {
+        if (m_quitting)
+            return;
+        m_quitting = true;
+        if (m_cleanup)
+            m_cleanup();   // 释放所有运行中的子进程（服务器/bot/代理…），避免退出后残留
+        QApplication::quit();
     }
 
 private:
@@ -379,7 +394,9 @@ private:
     QSystemTrayIcon *m_tray = nullptr;
     QMenu *m_trayMenu = nullptr;
     bool m_quitRequested = false;     // 托盘菜单“退出”已点击，待菜单关闭后真正退出主循环
+    bool m_quitting = false;          // 真正退出流程已触发，防止清理回调/quit 重入
     bool m_hasTray = false;           // 是否已有原生托盘（通知区）可用
+    std::function<void()> m_cleanup;  // 退出前清理回调（释放子进程）
     QHash<QString, QQuickWindow *> m_unique;
     QList<QQuickWindow *> m_windows;
     QHash<QString, QString> m_dict;
@@ -988,6 +1005,14 @@ int main(int argc, char *argv[])
     // 退出时 QML 仍可安全访问 appController。
     AppController *appController = new AppController(&engine);
     engine.rootContext()->setContextProperty(QStringLiteral("appController"), appController);
+
+    // 退出前释放所有运行中的子进程，避免调试器/detach 或正常退出后服务器/bot/代理进程残留。
+    appController->setQuitCleanup([&]() {
+        serverController.stopAll();           // 强制终止所有运行中的 Minecraft 服务器进程
+        if (proxyController.running())
+            proxyController.stop();           // 停止代理后端
+        botController.stopAll();              // 关闭控制服务 / NapCat / NoneBot
+    });
 
     // 注册各后端控制器为上下文属性（供 QML 绑定）
     engine.rootContext()->setContextProperty(QStringLiteral("serverManager"), &serverManager);

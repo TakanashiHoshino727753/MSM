@@ -99,19 +99,23 @@ Item {
         { label: I18n.t("关机", I18n.lang), cmd: "stop" }
     ]
     ListModel { id: hintModel }
+    property bool hintsVisible: false
 
     function updateHints() {
         const t = cmdField.text.trim().toLowerCase()
         hintModel.clear()
-        if (!t) return
+        if (!t) { hintsVisible = false; return }
         for (let ci = 0; ci < cmdCatalog.length; ++ci) {
             const items = cmdCatalog[ci].items
             for (let i = 0; i < items.length; ++i) {
-                const c = items[i].c.toLowerCase()
+                const item = items[i]
+                if (item === undefined || item === null) continue
+                const c = item.c.toLowerCase()
                 if (c.indexOf(t) >= 0)
-                    hintModel.append({ cmd: items[i].c, desc: items[i].d })
+                    hintModel.append({ cmd: item.c, desc: item.d })
             }
         }
+        hintsVisible = hintModel.count > 0 && cmdField.activeFocus
     }
     function applyCommand(cmd) {
         cmdField.text = cmd
@@ -122,7 +126,7 @@ Item {
         if (cmd.indexOf("<") >= 0 || cmd.indexOf("[") >= 0)
             applyCommand(cmd)
         else
-            serverController.send(root.serverName, cmd)
+            serverController.send(root.serverPath, cmd)
     }
     function updateUptime() {
         if (!root.running) { uptimeText = "—"; return }
@@ -136,7 +140,7 @@ Item {
         const list = serverController.runningServerUsages()
         for (let i = 0; i < list.length; ++i) {
             const u = list[i]
-            if (u.name === root.serverName) {
+            if (u.path === root.serverPath) {
                 cpuVal = u.cpu
                 cpuText = u.cpu.toFixed(0) + "%"
                 memText = (u.memMB >= 1024 ? (u.memMB / 1024).toFixed(1) + " GB" : u.memMB + " MB")
@@ -150,7 +154,7 @@ Item {
     // 或隐藏期间状态变化、或信号因线程时序遗漏时，仍按 ServerController 当前真实运行态修正本页，
     // 避免状态显示卡在“已停止”。
     function syncState() {
-        const r = serverController.isRunning(root.serverName)
+        const r = serverController.isRunning(root.serverPath)
         if (r === root.running) return
         root.running = r
         if (r) {
@@ -182,14 +186,14 @@ Item {
         if (!cmd.length) return
         consoleModel.append({ line: "> " + cmd })
         consoleView.positionViewAtEnd()
-        serverController.send(root.serverName, cmd)
+        serverController.send(root.serverPath, cmd)
         cmdField.text = ""
         hintModel.clear()
     }
 
     function reloadConsole() {
         pendingLines = []
-        const text = serverController.getConsole(root.serverName)
+        const text = serverController.getConsole(root.serverPath)
         consoleModel.clear()
         const lines = text.split("\n")
         for (let i = 0; i < lines.length; ++i)
@@ -205,17 +209,17 @@ Item {
         for (let i = 0; i < players.length; ++i) playersModel.append({ name: players[i] })
     }
     function reloadPlayers() {
-        reloadPlayersFromList(serverController.players(root.serverName))
+        reloadPlayersFromList(serverController.players(root.serverPath))
     }
     function queryWorld() {
         if (!root.running) return
         worldStateModel.clear()
         worldQueryActive = true
         worldQueryTimer.restart()
-        serverController.send(root.serverName, "difficulty")
-        serverController.send(root.serverName, "time query daytime")
-        serverController.send(root.serverName, "weather")
-        serverController.send(root.serverName, "seed")
+        serverController.send(root.serverPath, "difficulty")
+        serverController.send(root.serverPath, "time query daytime")
+        serverController.send(root.serverPath, "weather")
+        serverController.send(root.serverPath, "seed")
     }
     function captureWorldLine(line) {
         let m
@@ -230,7 +234,7 @@ Item {
         worldStateModel.append({ k: k, v: v })
     }
     function sendWorld(cmd) {
-        serverController.send(root.serverName, cmd)
+        serverController.send(root.serverPath, cmd)
         worldRetryTimer.restart()
     }
 
@@ -265,7 +269,7 @@ Item {
             map[d.key] = d.value
         }
         serverController.writeProperties(root.serverPath, map)
-        if (root.running) { serverController.send(root.serverName, "reload"); queryWorld() }
+        if (root.running) { serverController.send(root.serverPath, "reload"); queryWorld() }
     }
 
     // 高频日志（服务器启动期每秒几十行）若逐行 append 到 ListView 并每次滚动到底，主线程会被
@@ -292,12 +296,12 @@ Item {
     Connections {
         target: serverController
         function onConsoleAppended(name, line) {
-            if (name !== root.serverName) return
+            if (name !== root.serverPath) return
             pendingLines.push(line)
             if (worldQueryActive) captureWorldLine(line)
         }
         function onStateChanged(name, running) {
-            if (name !== root.serverName) return
+            if (name !== root.serverPath) return
             root.running = running
             if (running) { root.runningSince = new Date(); root.uptimeText = "0s"; updateUsage() }
             else { root.uptimeText = "—"; cpuText = "—"; memText = "—"; tpsText = "—" }
@@ -305,7 +309,7 @@ Item {
             if (running) queryWorld()
         }
         function onPlayersChanged(name, players) {
-            if (name !== root.serverName) return
+            if (name !== root.serverPath) return
             reloadPlayersFromList(players)
         }
     }
@@ -318,14 +322,14 @@ Item {
     Connections {
         target: backupController
         function onBackupFinished(name, ok, message, dest) {
-            if (name !== root.serverName) return
+            if (name !== root.serverPath) return
             showToast((ok ? I18n.t("备份成功", I18n.lang) + "：" : I18n.t("备份失败", I18n.lang) + "：") + message, ok)
         }
     }
     Connections {
         target: updateController
         function onUpdateAvailable(name, current, latest, url) {
-            if (name !== root.serverName) return
+            if (name !== root.serverPath) return
             if (url.indexOf("http") === 0) {
                 updateLatest = latest
                 updateUrl = url
@@ -335,7 +339,7 @@ Item {
             }
         }
         function onUpdateFinished(name, ok, message, newVersion) {
-            if (name !== root.serverName) return
+            if (name !== root.serverPath) return
             showToast(message, ok)
         }
     }
@@ -347,7 +351,7 @@ Item {
     // 周期兜底校正运行态（每 2 秒）：与 syncState 同理，确保任何生命周期下状态显示都不会
     // 卡在旧值（例如本地端窗口关闭期间由 WebUI 启动服务器，再打开本地窗口时仍显示正确）。
     Timer { id: stateSyncTimer; interval: 2000; running: true; repeat: true; onTriggered: {
-        const r = serverController.isRunning(root.serverName)
+        const r = serverController.isRunning(root.serverPath)
         if (r !== root.running) {
             root.running = r
             if (r) { if (!root.runningSince || root.runningSince.getTime() === 0) root.runningSince = new Date(); queryWorld() }
@@ -383,12 +387,12 @@ Item {
                     AccentButton {
                         text: I18n.t("停止", I18n.lang)
                         accentColor: Qt.lighter(Theme.danger, 1.3)
-                        onClicked: serverController.stop(root.serverName)
+                        onClicked: serverController.stop(root.serverPath)
                     }
                     AccentButton {
                         text: I18n.t("强制停止", I18n.lang)
                         accentColor: Qt.darker(Theme.danger, 1.3)
-                        onClicked: serverController.forceStop(root.serverName)
+                        onClicked: serverController.forceStop(root.serverPath)
                     }
                 }
         AccentButton {
@@ -518,7 +522,7 @@ Item {
                         delegate: Rectangle {
                             width: consoleView.width
                             height: consoleLine.implicitHeight + 6
-                            color: index % 2 === 0 ? "transparent" : Qt.rgba(0,0,0,0.04)
+                            color: "transparent"
                 Text {
                     id: consoleLine
                     x: 6; y: 3
@@ -552,7 +556,7 @@ Item {
                         id: hintView
                         Layout.fillWidth: true
                         Layout.preferredHeight: hintView.visible ? Math.min(hintModel.count * 26 + 8, 170) : 0
-                        visible: cmdField.text.trim().length > 0 && hintModel.count > 0 && cmdField.activeFocus
+                        visible: hintsVisible
                         Rectangle {
                             anchors.fill: parent
                             color: Theme.panel; radius: 6; border.color: Theme.border
@@ -567,17 +571,14 @@ Item {
                             delegate: Item {
                                 width: ListView.view.width
                                 height: 26
-                                // modelData 在 clear()/append() 竞态中可能短暂为 undefined，直接访问会
-                                // 刷大量 TypeError 并拖垮输入响应，故加守卫。
-                                visible: modelData !== undefined && modelData !== null
                                 RowLayout {
                                     anchors.fill: parent
                                     anchors.leftMargin: 8; anchors.rightMargin: 8
                                     spacing: 10
-                                    Label { text: modelData ? modelData.cmd : ""; color: Theme.text; font.family: "Consolas, monospace"; Layout.fillWidth: true }
-                                    Label { text: modelData ? modelData.desc : ""; color: Theme.textMuted; font.pixelSize: 11 }
+                                    Label { text: cmd; color: Theme.text; font.family: "Consolas, monospace"; Layout.fillWidth: true }
+                                    Label { text: desc; color: Theme.textMuted; font.pixelSize: 11 }
                                 }
-                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: applyCommand(modelData ? modelData.cmd : "") }
+                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: applyCommand(cmd) }
                             }
                         }
                     }
@@ -587,10 +588,14 @@ Item {
                             Layout.fillWidth: true
                             Layout.minimumWidth: 180
                             placeholderText: I18n.t("输入服务器指令，如 gamemode creative @a（输入时显示指令提示）", I18n.lang)
+                            color: Theme.text
+                            selectionColor: Theme.accent
+                            selectedTextColor: Theme.text
                             palette.text: Theme.text
                             palette.placeholderText: Theme.textMuted
                             background: Rectangle { color: Theme.panel; radius: 6; border.color: Theme.border }
                             onTextChanged: updateHints()
+                            onActiveFocusChanged: { if (!cmdField.activeFocus) hintsVisible = false }
                             onAccepted: { sendCommand(text) }
                         }
                         SubtleButton {
@@ -627,10 +632,10 @@ Item {
                         model: playersModel
                         RowLayout { spacing: 6
                             Label { text: modelData.name; color: Theme.text; font.family: "Consolas, monospace"; Layout.fillWidth: true }
-                            Button { text: I18n.t("OP", I18n.lang); flat: true; implicitHeight: 24; implicitWidth: 46; background: Rectangle { color: parent.hovered ? Theme.accentSoft : Theme.panelAlt; radius: 5; border.color: Theme.border } onClicked: serverController.send(root.serverName, "op " + modelData.name) }
-                            Button { text: I18n.t("取消OP", I18n.lang); flat: true; implicitHeight: 24; implicitWidth: 56; background: Rectangle { color: parent.hovered ? Theme.accentSoft : Theme.panelAlt; radius: 5; border.color: Theme.border } onClicked: serverController.send(root.serverName, "deop " + modelData.name) }
-                            Button { text: I18n.t("踢出", I18n.lang); flat: true; implicitHeight: 24; implicitWidth: 46; background: Rectangle { color: parent.hovered ? Theme.accentSoft : Theme.panelAlt; radius: 5; border.color: Theme.border } onClicked: serverController.send(root.serverName, "kick " + modelData.name) }
-                            Button { text: I18n.t("封禁", I18n.lang); flat: true; implicitHeight: 24; implicitWidth: 46; background: Rectangle { color: parent.hovered ? Theme.accentSoft : Theme.panelAlt; radius: 5; border.color: Theme.border } onClicked: serverController.send(root.serverName, "ban " + modelData.name) }
+                            Button { text: I18n.t("OP", I18n.lang); flat: true; implicitHeight: 24; implicitWidth: 46; background: Rectangle { color: parent.hovered ? Theme.accentSoft : Theme.panelAlt; radius: 5; border.color: Theme.border } onClicked: serverController.send(root.serverPath, "op " + modelData.name) }
+                            Button { text: I18n.t("取消OP", I18n.lang); flat: true; implicitHeight: 24; implicitWidth: 56; background: Rectangle { color: parent.hovered ? Theme.accentSoft : Theme.panelAlt; radius: 5; border.color: Theme.border } onClicked: serverController.send(root.serverPath, "deop " + modelData.name) }
+                            Button { text: I18n.t("踢出", I18n.lang); flat: true; implicitHeight: 24; implicitWidth: 46; background: Rectangle { color: parent.hovered ? Theme.accentSoft : Theme.panelAlt; radius: 5; border.color: Theme.border } onClicked: serverController.send(root.serverPath, "kick " + modelData.name) }
+                            Button { text: I18n.t("封禁", I18n.lang); flat: true; implicitHeight: 24; implicitWidth: 46; background: Rectangle { color: parent.hovered ? Theme.accentSoft : Theme.panelAlt; radius: 5; border.color: Theme.border } onClicked: serverController.send(root.serverPath, "ban " + modelData.name) }
                         }
                     }
                     Label { text: I18n.t("（当前无在线玩家，或服务器未运行）", I18n.lang); color: Theme.textMuted; visible: playersModel.count === 0 }
