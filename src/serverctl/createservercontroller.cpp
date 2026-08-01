@@ -1261,16 +1261,17 @@ void CreateServerController::finalizeModCreateAfterNeoforge()
               + m_selectedLoaders.join(QStringLiteral("/")) + QStringLiteral("）"));
 }
 
-// 校验 NeoForge 安装是否生成了 FML 运行时需要的核心 jar（neoforge-{ver}.jar）。
-// 背景：NeoForge 某些版本（尤其 -beta 预发布）的安装器只跑 EXTRACT_FILES +
-// PROCESS_MINECRAFT_JAR 两个 processor，不生成 libraries/net/neoforged/neoforge/{ver}/
-// neoforge-{ver}.jar 核心文件，导致 FML 启动报 "The NeoForge jar is missing"。
-// 该核心 jar 在 maven 上没有独立 artifact（仅 neoforge-{ver}-universal.jar 库 jar，非核心），
-// 无法靠下载补齐。因此这里的职责是“校验并暴露真实问题”：核心缺失则明确报错，
-// 引导用户改用稳定版 NeoForge（版本号不含 -beta/-alpha 后缀）。
+// 校验并补齐 NeoForge 安装生成的 FML 标记 jar（neoforge-{ver}.jar）。
+// 背景：NeoForge 26.x+ 的新安装器只跑 EXTRACT_FILES + PROCESS_MINECRAFT_JAR 两个 processor，
+// 生成 win_args.txt（以 `-classpath <一堆库jar> net.neoforged.fml.startup.Server` 启动），
+// 但**不会**把核心放置为 libraries/net/neoforged/neoforge/{ver}/neoforge-{ver}.jar。
+// FML 的 Server 主类启动时会检查该 jar 是否存在，缺失即报 "The NeoForge jar is missing"。
+// 该 jar 本质是安装器已下载好的同目录 neoforge-{ver}-universal.jar（FML 运行时库 jar），
+// 安装器本应把它复制为 neoforge-{ver}.jar 作为标记。这里在缺失时自动从 universal 补齐：
+// 复制 universal 为 neoforge-{ver}.jar，FML 标记检查即通过，服务器可正常启动。
 void CreateServerController::ensureNeoForgeJar(const QString &dir, std::function<void()> done)
 {
-    // 递归查找 neoforged/neoforge/<version>/ 目录下的 neoforge-{ver}.jar 核心文件
+    // 递归查找 neoforged/neoforge/<version>/ 目录下的 neoforge-{ver}.jar 标记文件
     QString foundBase;   // 形如 .../libraries/net/neoforged/neoforge/26.2.0.41-beta
     QString foundVer;
     {
@@ -1283,7 +1284,7 @@ void CreateServerController::ensureNeoForgeJar(const QString &dir, std::function
             for (const QString &v : vers) {
                 const QString base = parent + QStringLiteral("/") + v;
                 const QString want = base + QStringLiteral("/neoforge-") + v + QStringLiteral(".jar");
-                // 核心 jar 必须存在且非空；缺失/0 字节都视为安装器未生成（即该版本有缺陷）。
+                // 标记 jar 必须存在且非空；缺失/0 字节都视为安装器未放置（新架构常见情况）。
                 bool ok = QFile::exists(want) && QFileInfo(want).size() > 0;
                 if (!ok) {
                     foundBase = base;
@@ -1297,26 +1298,45 @@ void CreateServerController::ensureNeoForgeJar(const QString &dir, std::function
     }
 
     if (foundBase.isEmpty()) {
-        // 核心 jar 已就绪（稳定版安装器生成的真核心），直接收尾
+        // 标记 jar 已就绪（老架构安装器生成的真核心），直接收尾
         if (done)
             done();
         return;
     }
 
-    // 核心缺失：这是 NeoForge 该版本安装器的缺陷（多为 -beta 预发布版），无法下载补齐。
-    // 明确报错并终止收尾，避免产生“能启动却 missing”的半成品服务器。
+    // 标记 jar 缺失：用同目录已下载好的 universal jar 补齐（universal 即 FML 运行时库 jar，
+    // 安装器本应复制它为 neoforge-{ver}.jar）。两者在同一 libraries 子目录下。
     const QString ver = foundVer;
-    qWarning() << "[CreateServer] NeoForge 核心 jar 缺失（安装器未生成）："
-               << foundBase + QStringLiteral("/neoforge-") + ver + QStringLiteral(".jar");
-    // 清理临时构建目录（不残留半成品）
-    QDir(dir).removeRecursively();
-    setBusy(false);
-    setProgress(100);
-    setStageText(QString());
-    setStatus(QStringLiteral("NeoForge 版本 ") + ver
-              + QStringLiteral(" 的安装器未生成可运行核心（neoforge-") + ver
-              + QStringLiteral(".jar），启动会报 “The NeoForge jar is missing”。")
-              + QStringLiteral("请改用稳定版 NeoForge（版本号不含 -beta/-alpha 后缀）后重试创建。"));
+    const QString universal = foundBase + QStringLiteral("/neoforge-") + ver + QStringLiteral("-universal.jar");
+    const QString target   = foundBase + QStringLiteral("/neoforge-") + ver + QStringLiteral(".jar");
+    if (!QFile::exists(universal) || QFileInfo(universal).size() == 0) {
+        // universal 也没下载到（极端网络失败），无法补齐，明确报错。
+        qWarning() << "[CreateServer] NeoForge 标记 jar 缺失且 universal 不可用："
+                   << target << "universal=" << universal;
+        QDir(dir).removeRecursively();
+        setBusy(false);
+        setProgress(100);
+        setStageText(QString());
+        setStatus(QStringLiteral("NeoForge 版本 ") + ver
+                  + QStringLiteral(" 既缺少运行时标记 jar，也未下载到 universal（")
+                  + QStringLiteral("neoforge-") + ver + QStringLiteral("-universal.jar）。")
+                  + QStringLiteral("请检查网络后重试创建。"));
+        return;
+    }
+    QFile::remove(target);
+    if (!QFile::copy(universal, target)) {
+        qWarning() << "[CreateServer] 复制 universal 为标记 jar 失败：" << universal << "->" << target;
+        QDir(dir).removeRecursively();
+        setBusy(false);
+        setProgress(100);
+        setStageText(QString());
+        setStatus(QStringLiteral("无法补齐 NeoForge 运行时标记 jar（") + target
+                  + QStringLiteral("），请重试创建。"));
+        return;
+    }
+    qDebug() << "[CreateServer] 已从 universal 补齐 NeoForge 标记 jar：" << target;
+    if (done)
+        done();
     // 不调用 done()：不要让缺失核心的服务器加入列表。
 }
 
