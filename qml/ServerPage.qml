@@ -176,7 +176,19 @@ Item {
     }
 
     // ================= 数据加载 / 实时读取 =================
+    // 发送服务器指令：先把命令回显到控制台（服务端不会回显经 stdin 写入的指令），再真正发送。
+    function sendCommand(cmd) {
+        cmd = (cmd || "").trim()
+        if (!cmd.length) return
+        consoleModel.append({ line: "> " + cmd })
+        consoleView.positionViewAtEnd()
+        serverController.send(root.serverName, cmd)
+        cmdField.text = ""
+        hintModel.clear()
+    }
+
     function reloadConsole() {
+        pendingLines = []
         const text = serverController.getConsole(root.serverName)
         consoleModel.clear()
         const lines = text.split("\n")
@@ -256,11 +268,32 @@ Item {
         if (root.running) { serverController.send(root.serverName, "reload"); queryWorld() }
     }
 
+    // 高频日志（服务器启动期每秒几十行）若逐行 append 到 ListView 并每次滚动到底，主线程会被
+    // UI 重排/滚动淹没，导致“启动服务器时程序几乎无法操作”。改为先把行累积到 pendingLines，
+    // 由下面的节流 Timer 每 80ms 批量 append 一次，并只在用户停留在底部时滚动一次。
+    property var pendingLines: []
+    function flushConsole() {
+        if (pendingLines.length === 0) return
+        const atBottom = consoleView.visibleArea.yPosition + consoleView.visibleArea.heightRatio >= 0.999
+        for (let i = 0; i < pendingLines.length; ++i)
+            consoleModel.append({ line: pendingLines[i] })
+        pendingLines = []
+        // 仅当此前停在底部才自动跟到底部，避免打断用户向上翻看历史
+        if (atBottom) consoleView.positionViewAtEnd()
+    }
+    Timer {
+        id: consoleFlushTimer
+        interval: 80
+        repeat: true
+        running: true
+        onTriggered: flushConsole()
+    }
+
     Connections {
         target: serverController
         function onConsoleAppended(name, line) {
             if (name !== root.serverName) return
-            consoleModel.append({ line: line })
+            pendingLines.push(line)
             if (worldQueryActive) captureWorldLine(line)
         }
         function onStateChanged(name, running) {
@@ -501,7 +534,6 @@ Item {
                             policy: ScrollBar.AsNeeded
                             width: 8
                         }
-                        onCountChanged: consoleView.positionViewAtEnd()
                     }
                     Label {
                         anchors.centerIn: parent
@@ -556,14 +588,14 @@ Item {
                             palette.placeholderText: Theme.textMuted
                             background: Rectangle { color: Theme.panel; radius: 6; border.color: Theme.border }
                             onTextChanged: updateHints()
-                            onAccepted: { serverController.send(root.serverName, text); text = ""; hintModel.clear() }
+                            onAccepted: { sendCommand(text) }
                         }
                         SubtleButton {
                             text: I18n.t("发送", I18n.lang)
                             Layout.fillWidth: true
                             Layout.minimumWidth: 70
                             enabled: root.running
-                            onClicked: { serverController.send(root.serverName, cmdField.text); cmdField.text = ""; hintModel.clear() }
+                            onClicked: { sendCommand(cmdField.text) }
                         }
                     }
                 }
