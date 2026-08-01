@@ -38,7 +38,7 @@ ApplicationWindow {
             pathError = ""
     }
 
-    // 模组服：根据当前 MC 版本剔除不再兼容的勾选
+    // 模组服：根据当前 MC 版本剔除不再兼容的已选（单选）
     function recomputeLoaders() {
         var kept = []
         for (var i = 0; i < chosenLoaders.length; i++) {
@@ -217,10 +217,10 @@ ApplicationWindow {
                     }
                 }
 
-                // 模组服：勾选要安装的加载器（仅兼容当前版本的可选）
+                // 模组服：选择要安装的加载器（单选，仅兼容当前版本的可选）
                 Label {
                     visible: !importMode && createServer.currentType === "模组服"
-                    text: I18n.t("选择加载器（可多选，仅列出与当前版本兼容的）", I18n.lang)
+                    text: I18n.t("选择加载器（请选择一个）", I18n.lang)
                     color: Theme.textMuted
                     font.pixelSize: 12
                 }
@@ -230,11 +230,11 @@ ApplicationWindow {
                     spacing: 6
                     Repeater {
                         model: createServer.modLoaders()
-                        CheckBox {
+                        RadioButton {
                             Layout.fillWidth: true
                             text: createServer.loaderLabel(modelData)
                             enabled: createServer.loaderCompatible(modelData, createServer.currentVersion)
-                            checked: chosenLoaders.indexOf(modelData) >= 0
+                            checked: chosenLoaders.length === 1 && chosenLoaders[0] === modelData
                             contentItem: Text {
                                 text: parent.text
                                 color: parent.enabled ? Theme.text : Theme.textMuted
@@ -243,12 +243,11 @@ ApplicationWindow {
                                 leftPadding: parent.indicator.width + parent.spacing
                             }
                             onToggled: {
-                                if (checked) {
-                                    if (chosenLoaders.indexOf(modelData) < 0)
-                                        chosenLoaders = chosenLoaders.concat(modelData)
-                                } else {
-                                    chosenLoaders = chosenLoaders.filter(function(x){ return x !== modelData })
-                                }
+                                // 单选语义：选中的放入数组（仅一个），未选中则清空。
+                                if (checked)
+                                    chosenLoaders = [modelData]
+                                else if (chosenLoaders.length === 1 && chosenLoaders[0] === modelData)
+                                    chosenLoaders = []
                                 createServer.selectedLoaders = chosenLoaders
                             }
                         }
@@ -259,7 +258,7 @@ ApplicationWindow {
                     visible: !importMode && createServer.currentType === "模组服"
                     text: {
                         var sel = createServer.selectedLoaders
-                        if (sel.length === 0) return I18n.t("未选择任何加载器，请在下方至少勾选一个。", I18n.lang)
+                        if (sel.length === 0) return I18n.t("未选择任何加载器，请在下方选择一个。", I18n.lang)
                         return I18n.t("已选：", I18n.lang) + sel.map(function(k){ return createServer.loaderLabel(k) }).join("、")
                     }
                     color: Theme.textMuted
