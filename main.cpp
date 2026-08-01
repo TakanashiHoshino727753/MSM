@@ -351,9 +351,13 @@ public slots:
 
     void quitApp()
     {
+        // 注意：托盘菜单（m_trayMenu->popup）是模态的嵌套事件循环。若直接在此调
+        // QApplication::quit()，它只会终止“菜单”这一层嵌套循环并让 popup 返回，而最外层的
+        // app.exec() 主循环仍在运行——表现就是“托盘图标消失但主程序进程不退出”。
+        // 因此先把 quit 延迟（QueuedConnection）到菜单关闭、控制权回到主循环之后再执行。
         if (m_tray)
             m_tray->hide();
-        QApplication::quit();
+        QTimer::singleShot(0, qApp, []() { QApplication::quit(); });
     }
 
 private:
