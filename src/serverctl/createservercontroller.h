@@ -162,6 +162,8 @@ private:
     // 若该 jar 缺失则异步从 BMCLAPI/官方 maven 下载 universal jar 放置为它（win_args.txt 的
     // -classpath 引用的正是这个文件名），下载完成后再执行收尾回调。
     void ensureNeoForgeJar(const QString &dir, std::function<void()> done);
+    // 同步下载文件（阻塞，带超时），用于安装器未产出 universal 时补齐标记 jar。
+    bool downloadFileSync(const QString &url, const QString &destPath);
     // 默认服务器命名：类型 + 版本 +（模组服）加载器类型
     QString defaultName() const;
     void refreshSaveDir();

@@ -566,13 +566,14 @@ void CreateServerController::resolveLoaderUrl(const QString &loader, const QStri
                 else for (auto it = promos.begin(); it != promos.end(); ++it)
                     if (it.key().section(QLatin1Char('-'), 0, 0) == mcver) { build = it.value().toString(); break; }
                 if (build.isEmpty()) { tryForgeMirror(); return; }
-                const QString official = QStringLiteral("https://maven.minecraftforge.net/net/minecraftforge/forge/")
+                // 常态化 BMCLAPI：镜像优先，官方源作为兜底。
+                const QString primary = QStringLiteral("https://bmclapi2.bangbang93.com/maven/net/minecraftforge/forge/")
                    + mcver + QLatin1Char('-') + build + QStringLiteral("/forge-")
                    + mcver + QLatin1Char('-') + build + QStringLiteral("-installer.jar");
-                const QString mirror = QStringLiteral("https://bmclapi2.bangbang93.com/maven/net/minecraftforge/forge/")
+                const QString fallback = QStringLiteral("https://maven.minecraftforge.net/net/minecraftforge/forge/")
                    + mcver + QLatin1Char('-') + build + QStringLiteral("/forge-")
                    + mcver + QLatin1Char('-') + build + QStringLiteral("-installer.jar");
-                cb(official, mirror);
+                cb(primary, fallback);
             },
             [tryForgeMirror](const QString &) { tryForgeMirror(); });
     } else if (loader == QStringLiteral("neoforge")) {
@@ -609,11 +610,12 @@ void CreateServerController::resolveLoaderUrl(const QString &loader, const QStri
                     }
                     const QString chosen = stableBase.isEmpty() ? bestFull : stableFull;
                     if (chosen.isEmpty()) { cb(QString(), QString()); return; }
-                    const QString primary = QStringLiteral("https://maven.neoforged.net/releases/net/neoforged/neoforge/") + chosen
+                    // 常态化 BMCLAPI：镜像优先，官方源作为兜底。
+                    const QString primary = QStringLiteral("https://bmclapi2.bangbang93.com/maven/net/neoforged/neoforge/") + chosen
                        + QStringLiteral("/neoforge-") + chosen + QStringLiteral("-installer.jar");
-                    const QString mirror = QStringLiteral("https://bmclapi2.bangbang93.com/maven/net/neoforged/neoforge/") + chosen
+                    const QString fallback = QStringLiteral("https://maven.neoforged.net/releases/net/neoforged/neoforge/") + chosen
                        + QStringLiteral("/neoforge-") + chosen + QStringLiteral("-installer.jar");
-                    cb(primary, mirror);
+                    cb(primary, fallback);
                 },
                 [this, cb](const QString &e) { setStatus(QStringLiteral("获取 NeoForge 下载地址失败：") + e); cb(QString(), QString()); });
         };
@@ -1261,6 +1263,40 @@ void CreateServerController::finalizeModCreateAfterNeoforge()
               + m_selectedLoaders.join(QStringLiteral("/")) + QStringLiteral("）"));
 }
 
+// 同步下载文件（阻塞直到完成/失败或超时）。用于安装器未产出 universal 时补齐标记 jar。
+bool CreateServerController::downloadFileSync(const QString &url, const QString &destPath)
+{
+    QNetworkRequest req(url);
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    QNetworkReply *reply = m_nam->get(req);
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    timer.start(120000);
+    loop.exec();
+    bool ok = false;
+    if (reply->isFinished() && reply->error() == QNetworkReply::NoError) {
+        QByteArray data = reply->readAll();
+        if (data.size() > 0) {
+            QFile f(destPath);
+            if (f.open(QIODevice::WriteOnly)) {
+                f.write(data);
+                f.close();
+                ok = true;
+            }
+        }
+    } else {
+        qWarning() << "[CreateServer] downloadFileSync 失败：" << url
+                   << "err=" << reply->errorString();
+    }
+    if (timer.isActive())
+        timer.stop();
+    reply->deleteLater();
+    return ok;
+}
+
 // 校验并补齐 NeoForge 安装生成的 FML 标记 jar（neoforge-{ver}.jar）。
 // 背景：NeoForge 26.x+ 的新安装器只跑 EXTRACT_FILES + PROCESS_MINECRAFT_JAR 两个 processor，
 // 生成 win_args.txt（以 `-classpath <一堆库jar> net.neoforged.fml.startup.Server` 启动），
@@ -1304,24 +1340,30 @@ void CreateServerController::ensureNeoForgeJar(const QString &dir, std::function
         return;
     }
 
-    // 标记 jar 缺失：用同目录已下载好的 universal jar 补齐（universal 即 FML 运行时库 jar，
-    // 安装器本应复制它为 neoforge-{ver}.jar）。两者在同一 libraries 子目录下。
+    // 标记 jar 缺失：26.x 安装器本身不放置 neoforge-{ver}.jar，也不把 universal 留在安装产物里，
+    // 因此这里主动从 BMCLAPI 同步下载同版本 universal（FML 运行时库 jar），复制为 neoforge-{ver}.jar
+    // 作为 FML 启动时的标记。universal 与标记 jar 内容一致，复制即可满足 FML 的存在性检查。
     const QString ver = foundVer;
-    const QString universal = foundBase + QStringLiteral("/neoforge-") + ver + QStringLiteral("-universal.jar");
     const QString target   = foundBase + QStringLiteral("/neoforge-") + ver + QStringLiteral(".jar");
+    const QString universal = foundBase + QStringLiteral("/neoforge-") + ver + QStringLiteral("-universal.jar");
+    // 优先复用安装产物里可能残留的 universal；否则同步下载。
     if (!QFile::exists(universal) || QFileInfo(universal).size() == 0) {
-        // universal 也没下载到（极端网络失败），无法补齐，明确报错。
-        qWarning() << "[CreateServer] NeoForge 标记 jar 缺失且 universal 不可用："
-                   << target << "universal=" << universal;
-        QDir(dir).removeRecursively();
-        setBusy(false);
-        setProgress(100);
-        setStageText(QString());
-        setStatus(QStringLiteral("NeoForge 版本 ") + ver
-                  + QStringLiteral(" 既缺少运行时标记 jar，也未下载到 universal（")
-                  + QStringLiteral("neoforge-") + ver + QStringLiteral("-universal.jar）。")
-                  + QStringLiteral("请检查网络后重试创建。"));
-        return;
+        const QString url = QStringLiteral("https://bmclapi2.bangbang93.com/maven/net/neoforged/neoforge/")
+                           + ver + QStringLiteral("/neoforge-") + ver + QStringLiteral("-universal.jar");
+        qDebug() << "[CreateServer] 同步下载 NeoForge universal 以补齐标记 jar：" << url;
+        setStatus(QStringLiteral("正在补齐 NeoForge 运行时标记 jar（下载 universal）…"));
+        if (!downloadFileSync(url, universal)) {
+            qWarning() << "[CreateServer] 下载 NeoForge universal 失败：" << universal;
+            QDir(dir).removeRecursively();
+            setBusy(false);
+            setProgress(100);
+            setStageText(QString());
+            setStatus(QStringLiteral("NeoForge 版本 ") + ver
+                      + QStringLiteral(" 缺少运行时标记 jar，且无法下载 universal（")
+                      + QStringLiteral("neoforge-") + ver + QStringLiteral("-universal.jar）。")
+                      + QStringLiteral("请检查网络后重试创建。"));
+            return;
+        }
     }
     QFile::remove(target);
     if (!QFile::copy(universal, target)) {
@@ -1334,10 +1376,9 @@ void CreateServerController::ensureNeoForgeJar(const QString &dir, std::function
                   + QStringLiteral("），请重试创建。"));
         return;
     }
-    qDebug() << "[CreateServer] 已从 universal 补齐 NeoForge 标记 jar：" << target;
+    qDebug() << "[CreateServer] 已补齐 NeoForge 标记 jar：" << target;
     if (done)
         done();
-    // 不调用 done()：不要让缺失核心的服务器加入列表。
 }
 
 void CreateServerController::cleanupInstallerLeftovers()
@@ -1473,11 +1514,10 @@ void CreateServerController::startInstallerProcess(const QString &java, const QS
     // 取 30 s 兼顾：失败较快暴露，从而触发镜像重试，而不是让用户干等数分钟。
     args << QStringLiteral("-Dsun.net.client.defaultConnectTimeout=30000");
     args << QStringLiteral("-Dsun.net.client.defaultReadTimeout=30000");
-    // 官方源不稳定时的兜底：让安装器把所有 maven 坐标下载（含第三方库 guava、
-    // 以及 libraries.minecraft.net 的 MC 库）重定向到 BMCLAPI 镜像。
-    // 仅镜像重试（useMirror=true）时注入；首次仍优先官方源以保留可观测性。
-    if (useMirror)
-        args << QStringLiteral("-Dforge.mavenMirror=https://bmclapi2.bangbang93.com/maven/");
+    // 常态化 BMCLAPI：让安装器把所有 maven 坐标下载（含第三方库 guava、
+    // 以及 libraries.minecraft.net 的 MC 库）一律重定向到 BMCLAPI 镜像，
+    // 不再依赖官方源（Cloudflare 背后）在部分网络下的不稳定/超时。
+    args << QStringLiteral("-Dforge.mavenMirror=https://bmclapi2.bangbang93.com/maven/");
     args << QStringLiteral("-Djava.awt.headless=true"); // 无显示器下避免 AWT 初始化崩溃
     // installer 与生成的核心都位于纯 ASCII 的模组工作目录 m_modsTemp：
     // 用绝对路径运行，避免 Forge 安装器（LaunchWrapper）在 Linux 上基于 user.dir 解析
