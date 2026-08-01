@@ -35,22 +35,42 @@ public:
 
     // 下载中心默认保存目录：系统“下载”文件夹下的 MSM 子目录（如 %USERPROFILE%\Downloads\MSM）。
     // 用户可在界面更改保存路径；若曾持久化过自定义路径（QSettings path/downloadDir）则优先采用。
+    // Linux：直接固定为 ~/MSM/Downloads，避开 QStandardPaths 在中文 locale 下解析到“下载”等
+    // 含中文的目录导致的问题（且某些环境返回空/根目录无权写入）。
     static QString defaultDownloadDir() {
+#ifdef Q_OS_LINUX
+        QSettings s(QStringLiteral("MSM"), QStringLiteral("MSM"));
+        const QString custom = s.value(QStringLiteral("path/downloadDir")).toString();
+        if (!custom.isEmpty())
+            return custom;
+        return QDir::cleanPath(QDir::homePath() + QStringLiteral("/MSM/Downloads"));
+#else
         QSettings s(QStringLiteral("MSM"), QStringLiteral("MSM"));
         const QString custom = s.value(QStringLiteral("path/downloadDir")).toString();
         if (!custom.isEmpty())
             return custom;
         return QStandardPaths::writableLocation(QStandardPaths::DownloadLocation) + QStringLiteral("/MSM");
+#endif
     }
 
     // 创建服务器默认保存目录：系统“文档”文件夹下的 MSM 子目录（如 %USERPROFILE%\Documents\MSM）。
     // 用户可在界面更改保存路径；若曾持久化过自定义路径（QSettings path/serverDir）则优先采用。
+    // Linux：直接固定为 ~/MSM/Servers，避开 QStandardPaths 在中文 locale 下解析到“文档”等
+    // 含中文的目录导致的问题（且某些环境返回空/根目录无权写入）。
     static QString defaultServerDir() {
+#ifdef Q_OS_LINUX
+        QSettings s(QStringLiteral("MSM"), QStringLiteral("MSM"));
+        const QString custom = s.value(QStringLiteral("path/serverDir")).toString();
+        if (!custom.isEmpty())
+            return custom;
+        return QDir::cleanPath(QDir::homePath() + QStringLiteral("/MSM/Servers"));
+#else
         QSettings s(QStringLiteral("MSM"), QStringLiteral("MSM"));
         const QString custom = s.value(QStringLiteral("path/serverDir")).toString();
         if (!custom.isEmpty())
             return custom;
         return QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + QStringLiteral("/MSM");
+#endif
     }
 
     // 兼容旧调用：泛化的“默认目录”指向下载目录。

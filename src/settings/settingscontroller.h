@@ -3,6 +3,7 @@
 #include <QString>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QDir>
 
 // 控制器（MSM 自身）设置逻辑层（C++）：开机自启（Windows 注册表）、
 // 界面语言、WebUI 开关与端口、QQ 机器人（NapCat / NoneBot）开关与路径、
@@ -108,7 +109,11 @@ public:
         QSettings s(QStringLiteral("MSM"), QStringLiteral("MSM"));
         const QString custom = stripFileUrl(s.value(QStringLiteral("path/serverDir")).toString());
         if (!custom.isEmpty()) return custom;
+#ifdef Q_OS_LINUX
+        return QDir::cleanPath(QDir::homePath() + QStringLiteral("/MSM/Servers"));
+#else
         return QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + QStringLiteral("/MSM");
+#endif
     }
     void setDefaultServerDir(const QString &v) {
         QSettings s(QStringLiteral("MSM"), QStringLiteral("MSM"));

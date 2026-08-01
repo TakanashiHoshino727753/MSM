@@ -763,7 +763,14 @@ void CreateServerController::create()
     if (m_currentVersion.isEmpty()) { setStatus(QStringLiteral("请选择游戏版本")); return; }
 
     if (!m_dm->ensureDir(m_saveDir)) {
-        setStatus(QStringLiteral("无法创建目录：") + m_saveDir);
+        // 输出诊断：把 Qt 报告的错误原因一并带上，便于 Linux 上定位是权限 / 路径 / 编码问题。
+        QDir d;
+        d.mkpath(m_saveDir);   // 再次尝试以获取 error 信息
+        const QString err = d.exists(m_saveDir)
+            ? QStringLiteral("（未知原因）")
+            : QStringLiteral("（请检查路径是否存在、是否有写入权限，或路径含非法字符）");
+        qWarning().noquote() << "[MSM] ensureDir failed:" << m_saveDir << err;
+        setStatus(QStringLiteral("无法创建目录：") + m_saveDir + QStringLiteral(" ") + err);
         return;
     }
 
