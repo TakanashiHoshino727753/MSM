@@ -150,9 +150,18 @@ private:
     void runModInstaller(const QString &loader, bool useMirror = false);
     void onModInstallerFinished(const QString &loader, int exitCode, QProcess::ExitStatus status);
     void finalizeModCreate();
+    // ensureNeoForgeJar 补齐核心 jar 完成后执行的收尾（复制目录、写 eula、加入列表）
+    void finalizeModCreateAfterNeoforge();
     // 安装完成后删除 Forge/NeoForge/Fabric 安装器额外生成的启动脚本/元数据（仅手动双击脚本时用到），
     // MSM 以 `java -jar server.jar` 从目录启动，这些文件无用，移除以让目录呈现为单个 server.jar。
     void cleanupInstallerLeftovers();
+    // 补齐 NeoForge 26.x+ 安装器漏放的核心 jar（neoforge-{ver}.jar）。
+    // 新版（beta 分支）安装器仅跑 EXTRACT_FILES + PROCESS_MINECRAFT_JAR 两个 processor，
+    // 不会把 universal jar 放置为 libraries/net/neoforged/neoforge/{ver}/neoforge-{ver}.jar，
+    // 导致 FML 启动报 "The NeoForge jar is missing"。这里扫描生成的 neoForge 目录，
+    // 若该 jar 缺失则异步从 BMCLAPI/官方 maven 下载 universal jar 放置为它（win_args.txt 的
+    // -classpath 引用的正是这个文件名），下载完成后再执行收尾回调。
+    void ensureNeoForgeJar(const QString &dir, std::function<void()> done);
     // 默认服务器命名：类型 + 版本 +（模组服）加载器类型
     QString defaultName() const;
     void refreshSaveDir();

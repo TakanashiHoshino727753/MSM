@@ -151,11 +151,17 @@ void ServerController::start(const QString &name, const QString &path,
     //   3) forge-*.jar 胖 jar（Forge 1.16-）→ `java -Xms -Xmx -jar forge-X.Y.Z.jar nogui`
     //   4) neoforge-*.jar（兜底）→ 同上
     //   5) server.jar（原版/Vanilla 或纯核心）→ `java -Xms -Xmx -jar server.jar nogui`
-    const bool hasArgs = QFile::exists(path + QStringLiteral("/unix_args.txt"))
-                      || QFile::exists(path + QStringLiteral("/win_args.txt"));
+    // NeoForge / Forge 1.17+ 的 args 文件位置有两种可能：
+    //   · 旧版（Forge 1.17-1.20.x）放在服务端根目录（unix_args.txt / win_args.txt）
+    //   · 新版（NeoForge 21.x+、Forge 1.21+）放在 libraries/net/neoforged/neoforge/{version}/
+    //     下（如 libraries/net/neoforged/neoforge/26.2.0.41-beta/win_args.txt）。
+    // 这里优先根目录，否则递归搜索 libraries/ 找到 args 文件，返回相对工作目录的路径（供 @ 引用）。
+    const QString argsFile = findArgsFile(path);
+    const bool hasArgs = !argsFile.isEmpty();
     if (hasArgs) {
         // NeoForge / Forge 1.17+：把 UI 内存设置写入 user_jvm_args.txt（替换已有 -Xms/-Xmx 行），
         // 再 @引用参数文件（nogui 已在参数文件内，无需追加）。user_jvm_args.txt 若不存在则兜底创建。
+        // 注意：user_jvm_args.txt 一律在根目录（安装器始终在此生成），与 args 文件位置无关。
         const QString ujvm = path + QStringLiteral("/user_jvm_args.txt");
         QFile uf(ujvm);
         QStringList ulines;
@@ -173,11 +179,8 @@ void ServerController::start(const QString &name, const QString &path,
             uf.close();
         }
         args << QStringLiteral("@user_jvm_args.txt");
-#ifdef Q_OS_WIN
-        args << QStringLiteral("@win_args.txt");
-#else
-        args << QStringLiteral("@unix_args.txt");
-#endif
+        // args 文件可能是根目录（win_args.txt）或 libraries 下的深层路径——统一用相对工作目录的引用。
+        args << (QStringLiteral("@") + argsFile);
     } else {
         // 探测实际启动 jar
         static const QStringList installerExclude = {
@@ -663,6 +666,49 @@ QString ServerController::findLaunchJar(const QString &dir, const QString &prefi
             continue;
         if (name.startsWith(prefix, Qt::CaseInsensitive))
             return fi.absoluteFilePath();
+    }
+    return QString();
+}
+
+// 在 dir 下查找 NeoForge / Forge 1.17+ 的参数文件（win_args.txt / unix_args.txt），
+// 返回相对于 dir 的路径（供 java @ 引用）。优先根目录，否则递归扫描 libraries/
+// （NeoForge 21.x+、Forge 1.21+ 把 args 文件放在 libraries/net/neoforged/neoforge/{version}/ 下）。
+// 找不到返回空串。
+QString ServerController::findArgsFile(const QString &dir)
+{
+    const QStringList names = { QStringLiteral("win_args.txt"), QStringLiteral("unix_args.txt") };
+#ifdef Q_OS_WIN
+    const QString wanted = QStringLiteral("win_args.txt");
+#else
+    const QString wanted = QStringLiteral("unix_args.txt");
+#endif
+    QDir d(dir);
+    if (d.exists()) {
+        // 1) 根目录优先
+        for (const QString &n : names) {
+            if (QFile::exists(dir + QStringLiteral("/") + n))
+                return n;
+        }
+    }
+    // 2) libraries/ 递归扫描（NeoForge 实际产物位置）
+    const QString libDir = dir + QStringLiteral("/libraries");
+    if (QFileInfo::exists(libDir)) {
+        QDirIterator it(libDir, QStringList() << QStringLiteral("*.txt"),
+                        QDir::Files, QDirIterator::Subdirectories);
+        QStringList found;
+        while (it.hasNext()) {
+            const QString abs = it.next();
+            const QString base = QFileInfo(abs).fileName();
+            if (names.contains(base, Qt::CaseInsensitive))
+                found << d.relativeFilePath(abs);  // 形如 libraries/.../win_args.txt
+        }
+        if (!found.isEmpty()) {
+            // 优先匹配当前平台对应的 args 文件（win/unix），否则任意匹配的 args 文件
+            for (const QString &f : found)
+                if (QFileInfo(f).fileName().compare(wanted, Qt::CaseInsensitive) == 0)
+                    return f;
+            return found.first();
+        }
     }
     return QString();
 }

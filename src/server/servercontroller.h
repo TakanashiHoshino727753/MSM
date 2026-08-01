@@ -106,6 +106,9 @@ private:
     // （exclude 用于剔除 installer/日志等，如 "*-installer*.jar"）。找不到返回空串。
     static QString findLaunchJar(const QString &dir, const QString &prefix,
                                  const QStringList &exclude);
+    // 查找 NeoForge/Forge 1.17+ 的参数文件（win_args.txt/unix_args.txt），返回相对 dir 的路径；
+    // 优先根目录，否则递归扫描 libraries/（NeoForge 21.x+ 把 args 放在 libraries 深层）。找不到返回空串。
+    static QString findArgsFile(const QString &dir);
     // 读取并解析进程的标准输出/错误，逐行发出 consoleAppended 并提取玩家名单
     void handleOutput(const QString &name);
     // 进程结束回调：清理资源、发出 stateChanged(false)，保留控制台缓存

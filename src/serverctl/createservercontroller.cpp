@@ -620,17 +620,28 @@ void CreateServerController::resolveLoaderUrl(const QString &loader, const QStri
 
         fetchJson(QStringLiteral("https://bmclapi2.bangbang93.com/neoforge/list/") + mcver,
             [this, mcver, cb, resolveByMetadata](const QJsonDocument &d) {
-                // 取 version 最高的一项，直接用其 installerPath 拼接 BMCLAPI 下载地址；兜底回官方 installer
-                QString best, bestPath;
+                // 选版本：优先稳定版（不含 -beta/-alpha/-rc 等预发布后缀），其次才退到最高预发布版。
+                // 背景：NeoForge 某些 beta 安装器（如 26.2.0.41-beta）只跑 EXTRACT_FILES+
+                // PROCESS_MINECRAFT_JAR 两个 processor，不生成 FML 运行时需要的 neoforge-{ver}.jar
+                // 核心，导致启动报 "The NeoForge jar is missing"。盲目选最高版本号会选中这类缺陷版。
+                QString bestStable, bestStablePath;
+                QString bestAny, bestAnyPath;
                 for (const auto &e : d.array()) {
                     const QJsonObject o = e.toObject();
                     const QString v = o.value(QStringLiteral("version")).toString();
                     if (v.isEmpty()) continue;
-                    if (best.isEmpty() || QVersionNumber::fromString(v) > QVersionNumber::fromString(best)) {
-                        best = v;
-                        bestPath = o.value(QStringLiteral("installerPath")).toString();
+                    const QString path = o.value(QStringLiteral("installerPath")).toString();
+                    const bool pre = v.contains(QLatin1Char('-'));   // 含 - 视为预发布（beta/alpha/rc）
+                    if (bestAny.isEmpty() || QVersionNumber::fromString(v) > QVersionNumber::fromString(bestAny)) {
+                        bestAny = v; bestAnyPath = path;
+                    }
+                    if (!pre && (bestStable.isEmpty()
+                                 || QVersionNumber::fromString(v) > QVersionNumber::fromString(bestStable))) {
+                        bestStable = v; bestStablePath = path;
                     }
                 }
+                const QString best = bestStable.isEmpty() ? bestAny : bestStable;
+                const QString bestPath = bestStable.isEmpty() ? bestAnyPath : bestStablePath;
                 if (bestPath.isEmpty()) { resolveByMetadata(); return; }
                 const QString primary = QStringLiteral("https://bmclapi2.bangbang93.com") + bestPath;
                 const QString mirror = QStringLiteral("https://maven.neoforged.net/releases/net/neoforged/neoforge/") + best
@@ -1210,6 +1221,15 @@ void CreateServerController::finalizeModCreate()
         QFile::remove(m_modsTemp + QStringLiteral("/") + serverJar);
     }
     cleanupInstallerLeftovers();   // 仅删手动启动脚本与安装器残留，保留 args 文件/libraries/version.json
+
+    // NeoForge 26.x+ 安装器可能漏放核心 jar（neoforge-{ver}.jar），补齐后再收尾复制。
+    ensureNeoForgeJar(m_modsTemp, [this]() {
+        finalizeModCreateAfterNeoforge();
+    });
+}
+
+void CreateServerController::finalizeModCreateAfterNeoforge()
+{
     // 记录本服务器使用的 Java：与普通服务器一致，m_resolvedJava 已是 saveDir/jvm-{feature}/bin/java
     m_dm->writeTextFile(m_modsTemp + QStringLiteral("/eula.txt"),
                         QStringLiteral("eula=true\n# 由 MSM 创建服务器时自动生成（已同意 Minecraft EULA）\n"));
@@ -1239,6 +1259,65 @@ void CreateServerController::finalizeModCreate()
     setDone(true);
     setStatus(QStringLiteral("安装完成，已加入服务器列表（加载器：")
               + m_selectedLoaders.join(QStringLiteral("/")) + QStringLiteral("）"));
+}
+
+// 校验 NeoForge 安装是否生成了 FML 运行时需要的核心 jar（neoforge-{ver}.jar）。
+// 背景：NeoForge 某些版本（尤其 -beta 预发布）的安装器只跑 EXTRACT_FILES +
+// PROCESS_MINECRAFT_JAR 两个 processor，不生成 libraries/net/neoforged/neoforge/{ver}/
+// neoforge-{ver}.jar 核心文件，导致 FML 启动报 "The NeoForge jar is missing"。
+// 该核心 jar 在 maven 上没有独立 artifact（仅 neoforge-{ver}-universal.jar 库 jar，非核心），
+// 无法靠下载补齐。因此这里的职责是“校验并暴露真实问题”：核心缺失则明确报错，
+// 引导用户改用稳定版 NeoForge（版本号不含 -beta/-alpha 后缀）。
+void CreateServerController::ensureNeoForgeJar(const QString &dir, std::function<void()> done)
+{
+    // 递归查找 neoforged/neoforge/<version>/ 目录下的 neoforge-{ver}.jar 核心文件
+    QString foundBase;   // 形如 .../libraries/net/neoforged/neoforge/26.2.0.41-beta
+    QString foundVer;
+    {
+        QDirIterator it(dir, QStringList() << QStringLiteral("neoforge"),
+                        QDir::Dirs | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+        while (it.hasNext()) {
+            const QString parent = it.next();           // .../neoforge
+            QDir pd(parent);
+            const QStringList vers = pd.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+            for (const QString &v : vers) {
+                const QString base = parent + QStringLiteral("/") + v;
+                const QString want = base + QStringLiteral("/neoforge-") + v + QStringLiteral(".jar");
+                // 核心 jar 必须存在且非空；缺失/0 字节都视为安装器未生成（即该版本有缺陷）。
+                bool ok = QFile::exists(want) && QFileInfo(want).size() > 0;
+                if (!ok) {
+                    foundBase = base;
+                    foundVer = v;
+                    break;
+                }
+            }
+            if (!foundBase.isEmpty())
+                break;
+        }
+    }
+
+    if (foundBase.isEmpty()) {
+        // 核心 jar 已就绪（稳定版安装器生成的真核心），直接收尾
+        if (done)
+            done();
+        return;
+    }
+
+    // 核心缺失：这是 NeoForge 该版本安装器的缺陷（多为 -beta 预发布版），无法下载补齐。
+    // 明确报错并终止收尾，避免产生“能启动却 missing”的半成品服务器。
+    const QString ver = foundVer;
+    qWarning() << "[CreateServer] NeoForge 核心 jar 缺失（安装器未生成）："
+               << foundBase + QStringLiteral("/neoforge-") + ver + QStringLiteral(".jar");
+    // 清理临时构建目录（不残留半成品）
+    QDir(dir).removeRecursively();
+    setBusy(false);
+    setProgress(100);
+    setStageText(QString());
+    setStatus(QStringLiteral("NeoForge 版本 ") + ver
+              + QStringLiteral(" 的安装器未生成可运行核心（neoforge-") + ver
+              + QStringLiteral(".jar），启动会报 “The NeoForge jar is missing”。")
+              + QStringLiteral("请改用稳定版 NeoForge（版本号不含 -beta/-alpha 后缀）后重试创建。"));
+    // 不调用 done()：不要让缺失核心的服务器加入列表。
 }
 
 void CreateServerController::cleanupInstallerLeftovers()
