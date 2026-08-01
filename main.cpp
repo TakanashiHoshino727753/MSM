@@ -363,6 +363,7 @@ public slots:
         // 只会终止“菜单”这一层嵌套循环，最外层 app.exec() 主循环仍在运行——表现就是托盘
         // 图标消失但主程序进程不退出。正确做法：标记退出请求，关闭菜单；菜单 aboutToHide
         // 在其嵌套循环已退出、控制权回到主循环后才发出，那时再 QApplication::quit() 即退出主循环。
+        // 另加一个较长延时（>菜单关闭耗时）的兜底 quit，确保即便 aboutToHide 未触发也能退出主循环。
         m_quitRequested = true;
         if (m_trayMenu && m_trayMenu->isVisible())
             m_trayMenu->close();
@@ -370,6 +371,7 @@ public slots:
             QApplication::quit();
         if (m_tray)
             m_tray->hide();
+        QTimer::singleShot(500, qApp, []() { QApplication::quit(); });
     }
 
 private:

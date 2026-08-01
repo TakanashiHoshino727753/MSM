@@ -567,14 +567,17 @@ Item {
                             delegate: Item {
                                 width: ListView.view.width
                                 height: 26
+                                // modelData 在 clear()/append() 竞态中可能短暂为 undefined，直接访问会
+                                // 刷大量 TypeError 并拖垮输入响应，故加守卫。
+                                visible: modelData !== undefined && modelData !== null
                                 RowLayout {
                                     anchors.fill: parent
                                     anchors.leftMargin: 8; anchors.rightMargin: 8
                                     spacing: 10
-                                    Label { text: modelData.cmd; color: Theme.text; font.family: "Consolas, monospace"; Layout.fillWidth: true }
-                                    Label { text: modelData.desc; color: Theme.textMuted; font.pixelSize: 11 }
+                                    Label { text: modelData ? modelData.cmd : ""; color: Theme.text; font.family: "Consolas, monospace"; Layout.fillWidth: true }
+                                    Label { text: modelData ? modelData.desc : ""; color: Theme.textMuted; font.pixelSize: 11 }
                                 }
-                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: applyCommand(modelData.cmd) }
+                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: applyCommand(modelData ? modelData.cmd : "") }
                             }
                         }
                     }
