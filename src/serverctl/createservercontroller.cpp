@@ -1176,14 +1176,29 @@ void CreateServerController::finalizeModCreate()
         setStatus(QStringLiteral("安装完成但未找到任何加载器生成的服务端核心，请检查目录：") + m_modsTemp);
         return;
     }
-    // NeoForge / Forge 1.17+ 安装器生成 unix_args.txt/win_args.txt/user_jvm_args.txt，启动必须用
-    // `java @user_jvm_args.txt @unix_args.txt`（含 -jar 与 libraries 路径），且依赖 libraries/ 内
-    // 原样的 <loader>-server.jar —— 因此不能复制成 server.jar，也不能删除原 jar 或这些参数文件，
-    // 否则 java -jar server.jar 找不到主类/libraries 而无法启动。仅 Fabric / Forge 1.16- 生成可
-    // 独立运行的胖 jar，复制成 server.jar 更简洁。
-    const bool useArgs = QFile::exists(m_modsTemp + QStringLiteral("/unix_args.txt"))
+    // 保留安装器生成的原始目录结构，启动逻辑（ServerController::start）会自适应探测实际核心：
+    //   - NeoForge / Forge 1.17+：unix_args.txt/win_args.txt（依赖 libraries/ 内原样 jar）
+    //   - Fabric：fabric-server-launch.jar 才是启动器（server.jar 只是原版核心备份，须保留）
+    //   - Forge 1.16-：forge-*.jar 胖 jar
+    // 因此不能把任意 "serverJar" 改名成 server.jar 再删除原件——那会毁掉 fabric-server-launch.jar
+    // 或 forge-*.jar 等真正启动入口，导致创建后无法启动。仅当目录里完全没有任何可识别核心时，
+    // 才把 serverJar 复制为 server.jar 作为兜底（极少数无 args 文件、无 fabric/forge jar 的情况）。
+    const bool hasArgs = QFile::exists(m_modsTemp + QStringLiteral("/unix_args.txt"))
                       || QFile::exists(m_modsTemp + QStringLiteral("/win_args.txt"));
-    if (!useArgs) {
+    bool hasLaunch = hasArgs
+        || QFile::exists(m_modsTemp + QStringLiteral("/fabric-server-launch.jar"));
+    if (!hasLaunch) {
+        QDir dt(m_modsTemp);
+        for (const QString &n : dt.entryList(QDir::Files)) {
+            const QString lname = n.toLower();
+            if (lname.startsWith(QStringLiteral("forge-")) && !lname.contains(QStringLiteral("installer")))
+                { hasLaunch = true; break; }
+            if (lname.startsWith(QStringLiteral("neoforge-")) && !lname.contains(QStringLiteral("installer")))
+                { hasLaunch = true; break; }
+            if (lname == QStringLiteral("server.jar")) { hasLaunch = true; break; }
+        }
+    }
+    if (!hasLaunch && !serverJar.isEmpty()) {
         const QString dst = m_modsTemp + QStringLiteral("/server.jar");
         QFile::remove(dst);
         if (!QFile::copy(m_modsTemp + QStringLiteral("/") + serverJar, dst)) {
@@ -1192,8 +1207,6 @@ void CreateServerController::finalizeModCreate()
             setStatus(QStringLiteral("无法复制生成的服务端核心到 server.jar：") + m_modsTemp);
             return;
         }
-        // 原加载器胖 jar（fabric-server-launch.jar / forge-*.jar）已复制为 server.jar，删除冗余原件。
-        // 注意：libraries/ 与 minecraft_server-*.jar 必须保留（运行期依赖）。
         QFile::remove(m_modsTemp + QStringLiteral("/") + serverJar);
     }
     cleanupInstallerLeftovers();   // 仅删手动启动脚本与安装器残留，保留 args 文件/libraries/version.json
@@ -1411,11 +1424,23 @@ void CreateServerController::startInstallerProcess(const QString &java, const QS
     connect(m_installer, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, &CreateServerController::onInstallerFinished);
     m_installer->start(java, args);
-    if (!m_installer->waitForStarted(10000)) {
+    // 首个等待延长到 30s：Java 刚下载到 jvm-{feature}/bin 的 java.exe 在 Windows 上可能被
+    // Defender 首次扫描拦截、或磁盘 IO 缓冲较慢，10s 内起不来会误判“启动安装器失败”，
+    // 而此时安装器其实能跑（用户重试即成功）。延长超时避免这种首次必败的误报。
+    if (!m_installer->waitForStarted(30000)) {
+        const QProcess::ProcessError err = m_installer->error();
         m_installer->deleteLater();
         m_installer = nullptr;
-        setBusy(false);
-        setStatus(QStringLiteral("启动安装器失败：") + java);
+        if (err == QProcess::Timedout) {
+            setBusy(false);
+            setStatus(QStringLiteral("启动安装器超时（30s 未能执行 ")
+                      + java + QStringLiteral("），可能是杀毒软件首次扫描该 java.exe 或磁盘过慢。"
+                      "请稍候重试（再次点击通常可成功）。"));
+        } else {
+            setBusy(false);
+            setStatus(QStringLiteral("启动安装器失败（") + QString::number((int)err)
+                      + QStringLiteral("）：") + java + QStringLiteral("。请确认 Java 已正确安装。"));
+        }
     }
 }
 

@@ -102,6 +102,10 @@ signals:
     void backoffSecChanged();
 
 private:
+    // 在 dir 根目录（不含子目录）查找首个文件名以 prefix 开头、且不在 exclude 列表中的文件
+    // （exclude 用于剔除 installer/日志等，如 "*-installer*.jar"）。找不到返回空串。
+    static QString findLaunchJar(const QString &dir, const QString &prefix,
+                                 const QStringList &exclude);
     // 读取并解析进程的标准输出/错误，逐行发出 consoleAppended 并提取玩家名单
     void handleOutput(const QString &name);
     // 进程结束回调：清理资源、发出 stateChanged(false)，保留控制台缓存

@@ -145,13 +145,19 @@ void ServerController::start(const QString &name, const QString &path,
             this, [this, name](int code, QProcess::ExitStatus s) { onFinished(name, code, s); });
 
     QStringList args;
-    // NeoForge / Forge 1.17+ 用安装器生成的参数文件启动（unix_args.txt/win_args.txt 内已含
-    // -jar 与 libraries 路径，不可裸 java -jar server.jar——那样找不到主类/libraries）。先把 UI 的
-    // 内存设置写入 user_jvm_args.txt（替换已有 -Xms/-Xmx 行）让设置生效，再 @引用参数文件
-    // （nogui 已在参数文件内，无需追加）。
-    const bool useArgs = QFile::exists(path + QStringLiteral("/unix_args.txt"))
+    // 自适应探测启动方式：不同加载器（NeoForge/Forge 1.17+、Fabric、Forge 1.16-）的安装产物结构
+    // 各不相同，不能硬编码成 `java -jar server.jar`。探测顺序（args 文件优先，因其内含 libraries
+    // 路径与 -jar 目标，裸 jar 启动会找不到主类）：
+    //   1) unix_args.txt/win_args.txt（NeoForge、Forge 1.17+）→ `java @user_jvm_args.txt @win_args.txt`
+    //   2) fabric-server-launch.jar（Fabric）→ `java -Xms -Xmx -jar fabric-server-launch.jar nogui`
+    //   3) forge-*.jar 胖 jar（Forge 1.16-）→ `java -Xms -Xmx -jar forge-X.Y.Z.jar nogui`
+    //   4) neoforge-*.jar（兜底）→ 同上
+    //   5) server.jar（原版/Vanilla 或纯核心）→ `java -Xms -Xmx -jar server.jar nogui`
+    const bool hasArgs = QFile::exists(path + QStringLiteral("/unix_args.txt"))
                       || QFile::exists(path + QStringLiteral("/win_args.txt"));
-    if (useArgs) {
+    if (hasArgs) {
+        // NeoForge / Forge 1.17+：把 UI 内存设置写入 user_jvm_args.txt（替换已有 -Xms/-Xmx 行），
+        // 再 @引用参数文件（nogui 已在参数文件内，无需追加）。user_jvm_args.txt 若不存在则兜底创建。
         const QString ujvm = path + QStringLiteral("/user_jvm_args.txt");
         QFile uf(ujvm);
         QStringList ulines;
@@ -175,9 +181,38 @@ void ServerController::start(const QString &name, const QString &path,
         args << QStringLiteral("@unix_args.txt");
 #endif
     } else {
+        // 探测实际启动 jar
+        static const QStringList installerExclude = {
+            QStringLiteral("*-installer*.jar"), QStringLiteral("installer*.jar.log") };
+        QString launch;
+        // Fabric 优先：fabric-server-launch.jar 才是真正的模组服启动器（server.jar 只是原版核心备份）
+        const QString fabricJar = findLaunchJar(path, QStringLiteral("fabric-server-launch.jar"),
+                                                installerExclude);
+        if (!fabricJar.isEmpty()) {
+            launch = fabricJar;
+        } else {
+            const QString forgeJar = findLaunchJar(path, QStringLiteral("forge-"), installerExclude);
+            if (!forgeJar.isEmpty()) {
+                launch = forgeJar;
+            } else {
+                const QString neoJar = findLaunchJar(path, QStringLiteral("neoforge-"),
+                                                     installerExclude);
+                if (!neoJar.isEmpty())
+                    launch = neoJar;
+            }
+        }
+        if (launch.isEmpty() && QFile::exists(path + QStringLiteral("/server.jar")))
+            launch = QDir(path).absoluteFilePath(QStringLiteral("server.jar"));
+        if (launch.isEmpty()) {
+            emit consoleAppended(name, QStringLiteral("[MSM] 启动失败：未找到任何可识别的服务端核心"
+                "（server.jar / fabric-server-launch.jar / forge-*.jar / neoforge-*.jar / args 文件）。"
+                "请重新创建服务器。"));
+            p.proc->deleteLater();
+            return;
+        }
         args << QStringLiteral("-Xms%1M").arg(minMem)
              << QStringLiteral("-Xmx%1M").arg(maxMem)
-             << QStringLiteral("-jar") << QDir(path).absoluteFilePath(QStringLiteral("server.jar"))
+             << QStringLiteral("-jar") << launch
              << QStringLiteral("nogui");
     }
     p.proc->start(effectiveJava, args);
@@ -603,4 +638,33 @@ void ServerController::setServerJavaPath(const QString &path, const QString &jav
     if (!javaPath.isEmpty())
         f.write("\n");
     f.close();
+}
+
+// 在 dir 根目录查找首个文件名匹配 prefix（前缀）且不在 exclude glob 列表中的文件。
+// exclude 用于剔除安装器 jar / 日志（如 "*-installer*.jar"）。仅扫描根目录（不递归），
+// 因为服务端核心 jar 一律位于服务端根目录。找不到返回空串。
+QString ServerController::findLaunchJar(const QString &dir, const QString &prefix,
+                                        const QStringList &exclude)
+{
+    QDir d(dir);
+    if (!d.exists())
+        return QString();
+    const QFileInfoList files = d.entryInfoList(QDir::Files | QDir::NoDotAndDotDot);
+    for (const QFileInfo &fi : files) {
+        const QString name = fi.fileName();
+        // 满足 exclude 之一则跳过（如 neoforge-X-installer.jar）
+        bool skipped = false;
+        for (const QString &ex : exclude) {
+            // ex 形如 "*-installer*.jar"，转成正则：*→[^/]*，?→.，其余按字面（含 . 转义）
+            QString pattern = QRegularExpression::anchoredPattern(
+                QRegularExpression::wildcardToRegularExpression(ex));
+            QRegularExpression re(pattern, QRegularExpression::CaseInsensitiveOption);
+            if (re.match(name).hasMatch()) { skipped = true; break; }
+        }
+        if (skipped)
+            continue;
+        if (name.startsWith(prefix, Qt::CaseInsensitive))
+            return fi.absoluteFilePath();
+    }
+    return QString();
 }
