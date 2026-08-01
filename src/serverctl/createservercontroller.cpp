@@ -1098,10 +1098,21 @@ void CreateServerController::runModInstaller(const QString &loader, bool useMirr
     qDebug() << "[MSM] runModInstaller loader=" << loader << "useMirror=" << useMirror;
     const QString installer = loader + QStringLiteral("-installer.jar");
     const QString installerPath = m_modsTemp + QStringLiteral("/") + installer;
-    if (!QFile::exists(installerPath)) {
-        setStatus(QStringLiteral("安装器缺失，跳过 ") + loaderLabel(loader) + QStringLiteral("：") + installerPath);
-        m_loaderDone++;
-        processNextLoader();
+    // 校验安装器真实可用：文件必须存在、非空，且为合法的 ZIP（jar 即 zip，魔数为 "PK"）。
+    // 下载可能因超时被 DownloadManager 误报 finished 但只落下残损/空文件，若仅凭 exists()
+    // 判断会拿坏 jar 去跑 java，造成“装到一半失败”的鬼打墙。此处直接按下载失败处理并清理。
+    QFile instChk(installerPath);
+    bool installerOk = QFile::exists(installerPath)
+                       && instChk.size() > 0
+                       && instChk.open(QIODevice::ReadOnly)
+                       && instChk.read(2) == QByteArray("PK");
+    instChk.close();
+    if (!installerOk) {
+        setStatus(QStringLiteral("安装器下载不完整或已损坏，无法执行 ") + loaderLabel(loader)
+                  + QStringLiteral("：") + installerPath);
+        QDir(m_modsTemp).removeRecursively();
+        m_activeLoader.clear();
+        setBusy(false);
         return;
     }
     // 重试计数：首次（useMirror=false）清 0，镜像重试时累加到 1；用于限制最多一次镜像重试，
