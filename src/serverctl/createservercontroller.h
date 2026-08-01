@@ -72,6 +72,10 @@ public:
     // 安装/Java 策略与普通创建服务器完全一致（Java 装到 saveDir/jvm-{feature}/）。
     void setSkipAddList(bool b) { m_listServer = b; }
 
+    // 下载中心“模组服直接打包”时使用：服务端生成完成后打成 {saveDir}.tar.gz 压缩包，
+    // 并删除原目录（最终产物为单个压缩包，不进服务器列表）。与 setSkipAddList 配合。
+    void setPackaged(bool b) { m_packaged = b; }
+
     // 判断保存目录是否已存在且非空（含任意文件/子目录），用于创建前校验，
     // 避免覆盖已有内容/已存在的服务器目录。
     Q_INVOKABLE bool dirOccupied(const QString &path) const {
@@ -156,6 +160,14 @@ private:
     void finalizeModCreate();
     // ensureNeoForgeJar 补齐核心 jar 完成后执行的收尾（复制目录、写 eula、加入列表）
     void finalizeModCreateAfterNeoforge();
+    // 模组服统一收尾：按 m_packaged / m_listServer 决定“打包压缩包 / 加入列表 / 仅完成”。
+    // eula.txt 已在 finalizeModCreateAfterNeoforge 写入并随复制进入 saveDir，此处不再写。
+    void finishModServer();
+    // 把 saveDir 打包为 {saveDir}.tar.gz（跨平台用 tar），成功后删除原目录，再调用 done 回调。
+    void packageSaveDir(std::function<void()> done);
+    // 等待 Java 可执行文件真正在文件夹里落盘（Windows 还要可执行）后再回调，
+    // 避免“刚下载完成、文件尚不可见”导致首次运行 .jar 报找不到 Java。
+    void waitForJavaReady(const QString &path, std::function<void(const QString &)> cb);
     // 安装完成后删除 Forge/NeoForge/Fabric 安装器额外生成的启动脚本/元数据（仅手动双击脚本时用到），
     // MSM 以 `java -jar server.jar` 从目录启动，这些文件无用，移除以让目录呈现为单个 server.jar。
     void cleanupInstallerLeftovers();
@@ -251,4 +263,5 @@ private:
     QString m_installerLog;               // 安装器 stdout/stderr 累积（失败时取末尾展示）
     int m_installAttempt = 0;              // 当前加载器安装重试次数（0=首次不使用镜像，>=1=已切 BMCLAPI 镜像重试）
     bool m_listServer = true;              // 完成时是否加入服务器列表（下载中心“仅准备目录”时为 false）
+    bool m_packaged = false;                // 完成时是否打包为压缩包（下载中心“模组服直接打包”时为 true）
 };

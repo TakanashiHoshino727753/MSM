@@ -709,7 +709,8 @@ public:
         ctrl->setName(name);
         ctrl->setSaveDir(dir);
         ctrl->setEulaAccepted(true);
-        ctrl->setSkipAddList(true);   // 仅准备服务端目录到下载文件夹，不加入服务器列表、不打包
+        ctrl->setSkipAddList(true);   // 不加入服务器列表
+        ctrl->setPackaged(true);      // 下载中心：模组服直接打包为压缩包
         ctrl->setSelectedLoaders(QStringList() << loader);
         ctrl->create();
     }

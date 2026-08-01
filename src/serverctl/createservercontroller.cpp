@@ -1266,24 +1266,124 @@ void CreateServerController::finalizeModCreateAfterNeoforge()
     m_dm->writeTextFile(m_modsTemp + QStringLiteral("/.msm/loaders.txt"),
                         lines.join(QStringLiteral("\n")) + QStringLiteral("\n"));
 
-    // 把临时构建目录整体复制到运行目录 saveDir（用 Qt 复制，不受 JVM locale 影响），并加入服务器列表。
+    // 把临时构建目录整体复制到运行目录 saveDir（用 Qt 复制，不受 JVM locale 影响）。
     if (!copyDirRecursive(m_modsTemp, m_saveDir)) {
         setBusy(false);
         setStatus(QStringLiteral("无法将生成的服务端文件复制到保存目录（磁盘空间不足或权限不足）：") + m_saveDir);
         return;
     }
-    if (m_sm && m_listServer)
-        m_sm->addServer(m_name, m_currentVersion, typeKey(), m_saveDir);
 
     // 配置完成：清理临时构建目录（不删 saveDir 下已装好的 jvm-{feature}/ Java）。
     QDir(m_modsTemp).removeRecursively();
     m_modsTemp.clear();
     setProgress(100);
     setStageText(QString());
-    setBusy(false);
-    setDone(true);
-    setStatus(QStringLiteral("安装完成，已加入服务器列表（加载器：")
-              + m_selectedLoaders.join(QStringLiteral("/")) + QStringLiteral("）"));
+
+    // 统一收尾：按 m_packaged / m_listServer 决定“打包 / 进列表 / 仅完成”。
+    finishModServer();
+}
+
+void CreateServerController::finishModServer()
+{
+    // eula.txt / java.txt / loaders.txt 已由 finalizeModCreateAfterNeoforge 写入并随复制进入 saveDir。
+    const auto complete = [this]() {
+        setBusy(false);
+        if (m_packaged) {
+            setStatus(tr("模组服已打包完成：%1").arg(m_saveDir + QStringLiteral(".tar.gz")));
+        } else if (m_listServer) {
+            setStatus(tr("安装完成，已加入服务器列表（加载器：")
+                      + m_selectedLoaders.join(QStringLiteral("/")) + QStringLiteral("）"));
+        } else {
+            setStatus(tr("模组服已准备完成，未加入服务器列表。"));
+        }
+        setDone(true);
+    };
+
+    if (m_packaged) {
+        // 下载中心：打成单个压缩包，最终产物不再是目录。
+        packageSaveDir(complete);
+        return;
+    }
+    if (m_listServer && m_sm)
+        m_sm->addServer(m_name, m_currentVersion, typeKey(), m_saveDir);
+    complete();
+}
+
+void CreateServerController::packageSaveDir(std::function<void()> done)
+{
+    const QFileInfo fi(m_saveDir);
+    const QString parent = fi.dir().absolutePath();
+    const QString base = fi.fileName();
+    const QString archive = m_saveDir + QStringLiteral(".tar.gz");
+    if (QFile::exists(archive))
+        QFile::remove(archive);
+
+    auto *proc = new QProcess(this);
+    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, [this, proc, archive, done](int code, QProcess::ExitStatus) {
+        proc->deleteLater();
+        if (code == 0 && QFile::exists(archive)) {
+            // 打包成功：删除原目录，仅保留压缩包（下载中心最终产物为单个压缩包）。
+            QDir(m_saveDir).removeRecursively();
+        } else {
+            setStatus(tr("打包失败（退出码 %1），服务端目录已保留：%2").arg(code).arg(m_saveDir));
+        }
+        if (done)
+            done();
+    });
+    setStatus(tr("服务端已生成，正在打包为压缩包…"));
+    proc->start(QStringLiteral("tar"),
+                QStringList() << QStringLiteral("-czf") << archive
+                              << QStringLiteral("-C") << parent << base);
+    if (!proc->waitForStarted(5000)) {
+        proc->deleteLater();
+        setStatus(tr("无法启动打包工具 tar，服务端目录已保留：%1").arg(m_saveDir));
+        if (done)
+            done();
+    }
+}
+
+void CreateServerController::waitForJavaReady(const QString &path, std::function<void(const QString &)> cb)
+{
+    const auto ready = [path]() -> bool {
+        QFile f(path);
+        if (!f.exists())
+            return false;
+#ifdef Q_OS_WIN
+        return f.permissions().testFlag(QFile::ExeUser)
+            || f.permissions().testFlag(QFile::ExeGroup)
+            || f.permissions().testFlag(QFile::ExeOther);
+#else
+        return f.permissions().testFlag(QFile::ExeUser);
+#endif
+    };
+    if (ready()) {
+        cb(path);
+        return;
+    }
+    // 轮询等待，最多约 60 秒（250ms * 240），避免“刚下载完成、文件尚不可见”导致首次运行失败。
+    int *tries = new int(0);
+    auto *timer = new QTimer(this);
+    timer->setInterval(250);
+    connect(timer, &QTimer::timeout, this, [this, path, timer, tries, ready, cb]() {
+        if (ready()) {
+            timer->stop();
+            timer->deleteLater();
+            delete tries;
+            cb(path);
+            return;
+        }
+        if (++(*tries) > 240) {
+            timer->stop();
+            timer->deleteLater();
+            delete tries;
+            setStatus(tr("Java 已下载但可执行文件迟迟未就绪：%1").arg(path));
+            setBusy(false);
+            return;
+        }
+        setStatus(tr("正在等待 Java 就绪…（%1）").arg(path));
+    });
+    timer->start();
 }
 
 // 同步下载文件（阻塞直到完成/失败或超时）。用于安装器未产出 universal 时补齐标记 jar。
@@ -1510,7 +1610,9 @@ void CreateServerController::resolveJava(std::function<void(const QString &)> cb
                           + QStringLiteral("。可手动安装 JRE 后重试。"));
                 return;
             }
-            cb(path);
+            // 等文件夹里真找得到 Java 可执行文件了再去运行 .jar，
+            // 避免“下载刚完成、文件/依赖尚不可见”导致首次运行报找不到 Java。
+            waitForJavaReady(path, cb);
         });
         return;
     }

@@ -93,9 +93,10 @@ WebUIServer::WebUIServer(ServerManager *sm, ServerController *sc, DownloadManage
         builder->setCurrentType(QStringLiteral("Mod"));
         builder->setCurrentVersion(m_webCatalog->modVersion());
         builder->setSelectedLoaders(m_webCatalog->selectedLoaders());
-        builder->setEulaAccepted(true);
-        builder->setSkipAddList(true);
-        builder->setSaveDir(dest);
+    builder->setEulaAccepted(true);
+    builder->setSkipAddList(true);   // 不加入服务器列表
+    builder->setPackaged(true);      // 下载中心：模组服直接打包为压缩包
+    builder->setSaveDir(dest);
         connect(builder, &CreateServerController::statusTextChanged, m_webCatalog, [this, builder]() {
             m_webCatalog->setStatus(builder->status());
         });
