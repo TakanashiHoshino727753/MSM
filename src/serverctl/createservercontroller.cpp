@@ -36,6 +36,9 @@
 #include <QDebug>
 #include <QStandardPaths>
 
+// 加载器安装（含网络库拉取失败、启动安装器超时）的最大自动重试次数
+static const int kMaxInstallRetries = 5;
+
 CreateServerController::CreateServerController(DownloadManager *dm, ServerManager *sm,
                                                JavaManager *java, QObject *parent)
     : QObject(parent), m_dm(dm), m_sm(sm), m_java(java)
@@ -1052,11 +1055,9 @@ void CreateServerController::runModInstaller(const QString &loader, bool useMirr
         setBusy(false);
         return;
     }
-    // 重试计数：首次（useMirror=false）清 0，镜像重试时累加到 1；用于限制最多一次镜像重试，
-    // 避免无限循环。镜像重试仅当安装器因网络下载失败（超时 / 库拉取失败）时由 onModInstallerFinished 触发。
-    if (useMirror)
-        ++m_installAttempt;
-    else
+    // 重试计数与 useMirror 解耦：本函数只负责"首次/新加载器清零"，
+    // 累加（++）一律由触发重试的 onModInstallerFinished 显式完成，避免计数语义分散、漏加。
+    if (!useMirror)
         m_installAttempt = 0;
 
     m_activeLoader = loader;
@@ -1090,13 +1091,14 @@ void CreateServerController::onModInstallerFinished(const QString &loader, int e
         // -Dforge.mavenMirror 重跑改用 BMCLAPI 镜像；由于失败会保留已下载/校验过的库（m_modsTemp
         // 不清除），重试会在同一目录继续、跳过已完成的库，逐步推进直至全部就绪。
         // 网络完全不通时无限重试无意义，故限制最大重试次数（默认 5 次）；仍失败才如实报错。
-        static const int kMaxInstallRetries = 5;
         if (installerFailedByNetwork() && m_installAttempt < kMaxInstallRetries) {
+            // 每次重试在此显式累加，确保计数器如实推进（不会卡在 1/5）
+            ++m_installAttempt;
             qWarning() << "[Create] installer" << loader
-                       << "failed by network, retrying (" << (m_installAttempt + 1) << "/"
+                       << "failed by network, retrying (" << m_installAttempt << "/"
                        << kMaxInstallRetries << ") with BMCLAPI mirror. exitCode=" << exitCode;
             setStageText(tr("安装因网络超时失败，正在改用 BMCLAPI 镜像重试（%1/%2）…")
-                         .arg(m_installAttempt + 1).arg(kMaxInstallRetries));
+                         .arg(m_installAttempt).arg(kMaxInstallRetries));
             runModInstaller(loader, true);
             return;
         }
@@ -1637,6 +1639,17 @@ void CreateServerController::startInstallerProcess(const QString &java, const QS
         const QProcess::ProcessError err = m_installer->error();
         m_installer->deleteLater();
         m_installer = nullptr;
+        // 启动超时（Defender 首次扫描 java.exe 等）属于“首次必败”类，可自动重试并计入
+        // m_installAttempt；达到上限仍失败才如实报错，避免每次都让用户手动重建（计数器归零）。
+        if (err == QProcess::Timedout && m_installAttempt < kMaxInstallRetries) {
+            ++m_installAttempt;
+            qWarning() << "[Create] installer start timed out, retrying (" << m_installAttempt
+                       << "/" << kMaxInstallRetries << ")";
+            setStageText(tr("启动安装器超时，正在重试（%1/%2）…")
+                         .arg(m_installAttempt).arg(kMaxInstallRetries));
+            runModInstaller(loader, useMirror);
+            return;
+        }
         if (err == QProcess::Timedout) {
             setBusy(false);
             setStatus(QStringLiteral("启动安装器超时（30s 未能执行 ")
