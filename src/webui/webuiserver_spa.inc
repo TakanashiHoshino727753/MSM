@@ -778,7 +778,9 @@ function pollDl(){
     if(ic)ic.style.display=(d.currentKey==='server'&&d.serverType==='mod')?'block':'none';
     if(d.currentKey==='server'&&d.serverType==='mod')fillInstallSelects(d);
     const anyDl=(d.items||[]).some(i=>i.downloading);
-    const finished = !d.loading && d.currentKey===dlWant.key && !anyDl;
+    // 加载完成且无活动下载即可停止轮询；不要求 currentKey 严格匹配（避免切换分类时
+    // loading 期间 d.currentKey 仍指向旧值导致轮询跑满 25 次才停）。
+    const finished = !d.loading && !anyDl;
     if(finished || dlTries++>25){ if(dlTimer){clearInterval(dlTimer);dlTimer=null;} }
   }).catch(()=>{ if(dlTimer){clearInterval(dlTimer);dlTimer=null;} });
 }

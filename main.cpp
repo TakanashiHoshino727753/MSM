@@ -91,6 +91,8 @@ static QString msmLogDir()
     return dir + QStringLiteral("/logs");
 }
 static QFile g_logFile;
+// 单文件上限：超过则轮转为 msm.log.1（保留一份历史），避免日志无限增长占满磁盘。
+static constexpr qint64 kMsmLogMaxBytes = 5 * 1024 * 1024;
 // 确保日志文件已打开（首次调用时创建 logs 子目录并打开 msm.log）
 static void msmEnsureLogFile()
 {
@@ -100,15 +102,24 @@ static void msmEnsureLogFile()
     g_logFile.setFileName(msmLogDir() + QStringLiteral("/msm.log"));
     (void)g_logFile.open(QIODevice::Append | QIODevice::Text);
 }
-// 把一行（不含换行）追加到日志文件
+// 把一行（不含换行）追加到日志文件；写入前检查体积，超阈值则轮转（仅保留最近一份备份）。
 static void msmAppendLog(const QByteArray &line)
 {
     msmEnsureLogFile();
-    if (g_logFile.isOpen()) {
-        g_logFile.write(line);
-        g_logFile.write("\n");
-        g_logFile.flush();
+    if (!g_logFile.isOpen())
+        return;
+    if (g_logFile.size() + line.size() + 1 > kMsmLogMaxBytes) {
+        g_logFile.close();
+        const QString path = g_logFile.fileName();
+        QFile::remove(path + QStringLiteral(".1"));          // 丢弃上一轮备份
+        g_logFile.rename(path + QStringLiteral(".1"));        // 当前日志转为 .1
+        (void)g_logFile.open(QIODevice::Append | QIODevice::Text);
+        if (!g_logFile.isOpen())
+            return;
     }
+    g_logFile.write(line);
+    g_logFile.write("\n");
+    g_logFile.flush();
 }
 static void msmMessageOutput(QtMsgType type, const QMessageLogContext &ctx, const QString &msg)
 {
