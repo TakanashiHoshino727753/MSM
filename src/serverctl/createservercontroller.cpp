@@ -17,6 +17,7 @@
 #include <QPair>
 #include <QNetworkReply>
 #include <QNetworkProxy>
+#include <QPointer>
 #include <QStandardPaths>
 #include <QEventLoop>
 #include <algorithm>
@@ -1317,18 +1318,29 @@ void CreateServerController::waitForJavaReady(const QString &path, std::function
 }
 
 // 同步下载文件（阻塞直到完成/失败或超时）。用于安装器未产出 universal 时补齐标记 jar。
+// 注意：QEventLoop::exec() 会重入事件循环（期间其他 controller 回调仍触发），故用 QPointer
+// 守卫——若 this 在此期间被析构（用户取消/关窗），恢复后立即返回 false，避免悬垂访问。
 bool CreateServerController::downloadFileSync(const QString &url, const QString &destPath)
 {
     QNetworkRequest req(url);
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
     QNetworkReply *reply = m_nam->get(req);
+    QPointer<QNetworkReply> guardReply(reply);   // reply 守卫（QNetworkReply 完整类型）
     QEventLoop loop;
     QTimer timer;
     timer.setSingleShot(true);
+    bool destroyed = false;
+    // 重入事件循环期间 this 可能被析构（用户取消/关窗）：destroyed 时立即结束循环并放弃。
+    QObject::connect(this, &QObject::destroyed, &loop, [&destroyed, &loop]() {
+        destroyed = true;
+        loop.quit();
+    });
     QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     timer.start(120000);
     loop.exec();
+    if (destroyed || !guardReply)
+        return false;   // this 已被析构，reply 已随对象清理，直接放弃
     bool ok = false;
     if (reply->isFinished() && reply->error() == QNetworkReply::NoError) {
         QByteArray data = reply->readAll();

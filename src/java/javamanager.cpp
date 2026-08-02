@@ -1395,6 +1395,7 @@ void JavaManager::fetchInstaller(int feature, const QUrl &url, const QString &li
             guard->setSingleShot(true);
             guard->setInterval(10 * 60 * 1000);
             connect(guard, &QTimer::timeout, self.data(), [self, ps, guard, program, feature, cb]() {
+                guard->stop();
                 if (!self) { guard->deleteLater(); ps->kill(); return; }
                 guard->deleteLater();
                 ps->kill();
@@ -1403,9 +1404,11 @@ void JavaManager::fetchInstaller(int feature, const QUrl &url, const QString &li
                                  .arg(feature).arg(program));
                 cb(false, QString());
             });
+            guard->start();   // 必须启动：否则解压卡死时此保护不生效（界面永久"一动不动"）
             connect(ps, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
                     self.data(), [self, ps, guard, tmp, nativeDest, dest, program, feature, cb](int code, QProcess::ExitStatus) {
-                if (!self) { guard->deleteLater(); ps->deleteLater(); return; }
+                if (!self) { guard->stop(); guard->deleteLater(); ps->deleteLater(); return; }
+                guard->stop();
                 guard->deleteLater();
                 const QByteArray out = ps->readAllStandardOutput();
                 ps->deleteLater();
@@ -1577,76 +1580,75 @@ void JavaManager::downloadToTemp(const QString &url, const QString &dest, std::f
     }
 }
 
-void JavaManager::extractZip(const QString &zip, const QString &dest, std::function<void(bool)> cb)
+// 解压统一入口：按魔数分流 + 封装 QProcess + waitForStarted 兜底。
+// zip（PK 头）：Windows 用 PowerShell Expand-Archive，非 Windows 用 unzip；
+// 其余（tar 系列）：统一 tar -xf（libarchive 自动识别压缩格式）。
+// 回调 (ok, program) —— program 为实际使用的可执行名，便于错误提示。
+void JavaManager::extractArchive(const QString &archive, const QString &dest,
+                                 std::function<void(bool, const QString &)> cb)
 {
     QDir().mkpath(dest);
-    QPointer<JavaManager> self(this);
-#ifdef Q_OS_WIN
-    // Windows：PowerShell Expand-Archive 纯解压（不安装、不动注册表）
-    const QString scriptPath = QDir::cleanPath(dest + QStringLiteral("/../__msm_extract__.ps1"));
-    {
-        QFile sf(scriptPath);
-        if (!sf.open(QIODevice::WriteOnly | QIODevice::Text)) { cb(false); return; }
-        QTextStream ts(&sf);
-        // 路径经单引号转义写入脚本（单引号字符串中 ' 转义为 ''），避免路径含特殊字符导致命令注入
-        const QString zipN = QDir::toNativeSeparators(zip).replace(QLatin1Char('\''), QStringLiteral("''"));
-        const QString destN = QDir::toNativeSeparators(dest).replace(QLatin1Char('\''), QStringLiteral("''"));
-        ts << "Expand-Archive -Force -LiteralPath '" << zipN
-           << "' -DestinationPath '" << destN << "'\n";
-        sf.close();
-    }
-    auto *p = new QProcess(this);
-    connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), p,
-            [p, cb, scriptPath]() {
-                QFile::remove(scriptPath);
-                const bool ok = (p->exitCode() == 0);
-                p->deleteLater();
-                cb(ok);
-            });
-    p->start(QStringLiteral("powershell"),
-             QStringList() << QStringLiteral("-NoProfile") << QStringLiteral("-ExecutionPolicy")
-                           << QStringLiteral("Bypass") << QStringLiteral("-File") << scriptPath);
-    if (!p->waitForStarted(5000)) {
-        QFile::remove(scriptPath);
-        p->deleteLater();
-        cb(false);
-    }
-#else
-    // 非 Windows（Linux/macOS）：按文件魔数选择 tar（gzip/tar.gz）或 unzip（zip），
-    // 不依赖 PowerShell。
+    QString nativeArchive = QDir::toNativeSeparators(archive);
+    QString nativeDest = QDir::toNativeSeparators(dest);
     QByteArray head;
-    {
-        QFile f(zip);
-        if (f.open(QIODevice::ReadOnly)) { head = f.read(4); f.close(); }
-    }
+    { QFile f(archive); if (f.open(QIODevice::ReadOnly)) { head = f.read(4); f.close(); } }
+    const bool isZip = (head.size() >= 2 && head.at(0) == 'P' && head.at(1) == 'K');
+
     QString program;
     QStringList args;
-    const QString nativeZip = QDir::toNativeSeparators(zip);
-    const QString nativeDest = QDir::toNativeSeparators(dest);
-    // zip 家族（PK 头）用 unzip；其余按 tar 系列（gzip/xz/bz2/zstd 等）处理，
-    // 统一用 tar -xf（libarchive 自动识别压缩格式），不再按魔数分流，从而兼容新发布的 .tar.xz。
-    const bool isZip = (head.size() >= 2 && head.at(0) == 'P' && head.at(1) == 'K');
     if (isZip) {
+#ifdef Q_OS_WIN
+        // Windows：PowerShell Expand-Archive（默认无 unzip）。路径经单引号转义避免命令注入。
+        const QString scriptPath = QDir::cleanPath(dest + QStringLiteral("/../__msm_extract__.ps1"));
+        {
+            QFile sf(scriptPath);
+            if (!sf.open(QIODevice::WriteOnly | QIODevice::Text)) { cb(false, QString()); return; }
+            QTextStream ts(&sf);
+            const QString aN = nativeArchive.replace(QLatin1Char('\''), QStringLiteral("''"));
+            const QString dN = nativeDest.replace(QLatin1Char('\''), QStringLiteral("''"));
+            ts << "Expand-Archive -Force -LiteralPath '" << aN
+               << "' -DestinationPath '" << dN << "'\n";
+            sf.close();
+        }
+        program = QStringLiteral("powershell");
+        args << QStringLiteral("-NoProfile") << QStringLiteral("-ExecutionPolicy") << QStringLiteral("Bypass")
+             << QStringLiteral("-File") << scriptPath;
+        auto *p = new QProcess(this);
+        connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), p,
+                [p, cb, scriptPath]() {
+                    QFile::remove(scriptPath);
+                    const bool ok = (p->exitCode() == 0);
+                    p->deleteLater();
+                    cb(ok, QStringLiteral("powershell"));
+                });
+        p->start(program, args);
+        if (!p->waitForStarted(5000)) { QFile::remove(scriptPath); p->deleteLater(); cb(false, program); }
+        return;
+#else
         program = QStandardPaths::findExecutable(QStringLiteral("unzip"));
-        if (program.isEmpty()) { cb(false); return; }
-        args << QStringLiteral("-o") << nativeZip << QStringLiteral("-d") << nativeDest;
+        if (program.isEmpty()) { cb(false, QString()); return; }
+        args << QStringLiteral("-o") << nativeArchive << QStringLiteral("-d") << nativeDest;
+#endif
     } else {
         program = QStandardPaths::findExecutable(QStringLiteral("tar"));
-        if (program.isEmpty()) { cb(false); return; }
-        args << QStringLiteral("-xf") << nativeZip << QStringLiteral("-C") << nativeDest;
+        if (program.isEmpty()) { cb(false, QString()); return; }
+        args << QStringLiteral("-xf") << nativeArchive << QStringLiteral("-C") << nativeDest;
     }
     auto *p = new QProcess(this);
+    p->setProcessChannelMode(QProcess::MergedChannels);
     connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), p,
-            [p, cb](int code, QProcess::ExitStatus) {
+            [p, cb, program](int code, QProcess::ExitStatus) {
                 p->deleteLater();
-                cb(code == 0);
+                cb(code == 0, program);
             });
     p->start(program, args);
-    if (!p->waitForStarted(5000)) {
-        p->deleteLater();
-        cb(false);
-    }
-#endif
+    if (!p->waitForStarted(5000)) { p->deleteLater(); cb(false, program); }
+}
+
+void JavaManager::extractZip(const QString &zip, const QString &dest, std::function<void(bool)> cb)
+{
+    QPointer<JavaManager> self(this);
+    extractArchive(zip, dest, [self, cb](bool ok, const QString &) { Q_UNUSED(self); cb(ok); });
 }
 
 // 将已下载到本地的 Java 压缩包（tar.gz/tar.xz/zip）解压到托管目录并登记为可移植 JDK，
@@ -1657,42 +1659,20 @@ void JavaManager::installManagedArchive(const QString &archivePath, int feature,
     // 解压到 MSM/jvm-{feature}（如 MSM/jvm-25），与 installedJava() 的预期一致（带 jvm- 前缀）。
     const QString dest = managedDir() + QStringLiteral("/jvm-") + QString::number(feature);
     QDir().mkpath(dest);
-    const QString nativeArchive = QDir::toNativeSeparators(archivePath);
-    const QString nativeDest = QDir::toNativeSeparators(dest);
-    QByteArray head;
-    { QFile f(archivePath); if (f.open(QIODevice::ReadOnly)) { head = f.read(4); f.close(); } }
-    const bool isZip = (head.size() >= 2 && head.at(0) == 'P' && head.at(1) == 'K');
-    QString program; QStringList args;
-    if (!isZip) {
-        // gzip/xz/bz2/zstd 等 tarball：tar -xf 自动识别压缩格式
-        program = QStandardPaths::findExecutable(QStringLiteral("tar"));
-        if (program.isEmpty()) { cb(false, QString()); return; }
-        args << QStringLiteral("-xf") << nativeArchive << QStringLiteral("-C") << nativeDest;
-    } else {
-        program = QStandardPaths::findExecutable(QStringLiteral("unzip"));
-        if (program.isEmpty()) { cb(false, QString()); return; }
-        args << QStringLiteral("-o") << nativeArchive << QStringLiteral("-d") << nativeDest;
-    }
-    auto *ps = new QProcess(this);
-    ps->setProcessChannelMode(QProcess::MergedChannels);
-    connect(ps, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), ps,
-            [this, ps, archivePath, nativeDest, dest, feature, cb](int code, QProcess::ExitStatus) {
-                ps->deleteLater();
-                if (code != 0) { cb(false, QString()); return; }
-                // 展平单层顶层目录（如 jdk-21.0.x+xx/ → 内容上移到 dest 根），保证 java 落在
-                // jvm-{feature}/bin/java(.exe)，杜绝 jvm-25/jdk-25.0.4+7/ 这种多余一层。
-                flattenSingleTopLevel(dest);
-                const QString java = javaPathFor(feature);
-                QFile::remove(archivePath);   // 解压成功后删除原压缩包，避免重复占用空间
-                if (java.isEmpty()) { cb(false, QString()); return; }
-                QSettings s;
-                s.setValue(QStringLiteral("java/installed/%1").arg(feature),
-                           QDir::fromNativeSeparators(QFileInfo(java).absolutePath()));
-                s.setValue(QStringLiteral("java/installedArch/%1").arg(feature), hostArchitecture());
-                cb(true, java);
-            });
-    ps->start(program, args);
-    if (!ps->waitForStarted(5000)) { ps->deleteLater(); cb(false, QString()); }
+    extractArchive(archivePath, dest, [this, archivePath, dest, feature, cb](bool ok, const QString &program) {
+        if (!ok) { cb(false, QString()); return; }
+        // 展平单层顶层目录（如 jdk-21.0.x+xx/ → 内容上移到 dest 根），保证 java 落在
+        // jvm-{feature}/bin/java(.exe)，杜绝 jvm-25/jdk-25.0.4+7/ 这种多余一层。
+        flattenSingleTopLevel(dest);
+        const QString java = javaPathFor(feature);
+        QFile::remove(archivePath);   // 解压成功后删除原压缩包，避免重复占用空间
+        if (java.isEmpty()) { cb(false, QString()); return; }
+        QSettings s;
+        s.setValue(QStringLiteral("java/installed/%1").arg(feature),
+                   QDir::fromNativeSeparators(QFileInfo(java).absolutePath()));
+        s.setValue(QStringLiteral("java/installedArch/%1").arg(feature), hostArchitecture());
+        cb(true, java);
+    });
 }
 
 void JavaManager::ensureTemp(int feature, std::function<void(bool, QString)> cb)

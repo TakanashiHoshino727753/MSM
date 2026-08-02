@@ -14,6 +14,7 @@
 #include <QSettings>
 #include <QDebug>
 #include "downloadlistmodel.h"
+#include "httpclient.h"
 
 // 通用下载管理器：每个任务独立、可并行下载；通过 downloadList 暴露全局下载列表。
 // 任务ID为短UUID；下载进度通过 progress 信号与 downloadList 模型双向反映。
@@ -290,7 +291,7 @@ private:
         QNetworkRequest req(url);
         req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
         req.setTransferTimeout(90000);   // 文件下载：90s 无数据传输则报错，避免无限卡死
-        req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("MinecraftServerManager/1.0"));
+        req.setHeader(QNetworkRequest::UserAgentHeader, HttpClient::kUserAgent);
         if (offset > 0)
             req.setRawHeader("Range", "bytes=" + QByteArray::number(offset) + "-");
 

@@ -193,7 +193,12 @@ private:
     QString m_installBase;
     // 递归查找目录下 java[.exe]
     QString findExtractedJava(const QString &dir) const;
-    // 解压 zip 到目标目录（通过 PowerShell Expand-Archive，纯解压、不安装）
+    // 解压 zip/zip 系列/tar 系列压缩包到目标目录（纯解压、不安装、不登记）。
+    // 内部按文件头魔数分流：zip（PK 头）用 unzip / PowerShell，其余走 tar -xf
+    // （libarchive 自动识别 gzip/xz/bz2/zstd）。含 waitForStarted 兜底。供 extractZip /
+    // installManagedArchive / fetchInstaller 复用，消除重复的解压封装。
+    void extractArchive(const QString &archive, const QString &dest, std::function<void(bool, const QString &)> cb);
+    // 解压 zip 到目标目录（通过 extractArchive，纯解压、不安装）
     void extractZip(const QString &zip, const QString &dest, std::function<void(bool)> cb);
     // 下载文件到本地临时路径（跟随重定向），回调 (ok, error)。
     // extraHeaders：可选的额外请求头（如甲骨文直链所需的 Referer/Cookie）。

@@ -5,6 +5,12 @@ project(MinecraftServerManager VERSION 1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# 未显式指定构建类型时默认 Release（开启编译器优化，并关闭 QT_DEBUG 控制台回显，
+# 避免日志噪声与运行开销）。可在首次 configure 前用 -DCMAKE_BUILD_TYPE=MinSizeRel 覆盖。
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "默认构建类型" FORCE)
+endif()
+
 # Qt 元对象系统（moc/rcc/uic）全局开启，子目录的静态库同样受益
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)

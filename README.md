@@ -85,8 +85,8 @@ Minecraft 服务器可视化管理工具（Qt 6 C++ / Windows）。提供本地�
 # 临时加入工具链 PATH（按需调整 Qt 安装路径）
 $env:PATH = "D:\Developer\Qt\Tools\CMake_64\bin;D:\Developer\Qt\Tools\mingw1310_64\bin;" + $env:PATH
 
-# 配置并构建
-cmake -S . -B build -G "MinGW Makefiles"
+# 配置并构建（未指定构建类型时默认 Release：开启编译器优化并关闭 DEBUG 控制台日志）
+cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
 cmake --build build --target MinecraftServerManager -j 8
 
 # 部署（复制 exe + qml / i18n / qqbot 源码目录，并执行 windeployqt 部署 Qt 运行时与 QML 插件）

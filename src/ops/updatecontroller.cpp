@@ -4,6 +4,7 @@
  * Vanilla: https://launchermeta.mojang.com/mc/game/version_manifest.json
  */
 #include "updatecontroller.h"
+#include "httpclient.h"
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QUrl>
@@ -50,15 +51,17 @@ void UpdateController::resolvePaper(Pending p)
 {
     const QString url = QStringLiteral("https://api.papermc.io/v2/projects/paper/versions/%1/builds").arg(p.version);
     QNetworkRequest req(url);
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("MSM/1.0"));
+    req.setHeader(QNetworkRequest::UserAgentHeader, HttpClient::kUserAgent);
     QNetworkReply *r = m_net->get(req);
     m_pending.insert(r, p);
     connect(r, &QNetworkReply::finished, this, [this, r]() {
         Pending p = m_pending.take(r);
         const QByteArray data = r->readAll();
+        const bool ok = (r->error() == QNetworkReply::NoError);
+        const QString errStr = r->errorString();
         r->deleteLater();
-        if (r->error() != QNetworkReply::NoError) {
-            const QString msg = QStringLiteral("检测更新失败：") + r->errorString();
+        if (!ok) {
+            const QString msg = QStringLiteral("检测更新失败：") + errStr;
             if (p.checkOnly) emit updateAvailable(p.name, p.version, p.version, msg);
             else emit updateFinished(p.name, false, msg, p.version);
             return;
@@ -97,15 +100,17 @@ void UpdateController::resolveVanilla(Pending p)
 {
     const QString manifestUrl = QStringLiteral("https://launchermeta.mojang.com/mc/game/version_manifest.json");
     QNetworkRequest req{QUrl(manifestUrl)};
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("MSM/1.0"));
+    req.setHeader(QNetworkRequest::UserAgentHeader, HttpClient::kUserAgent);
     QNetworkReply *r = m_net->get(req);
     m_pending.insert(r, p);
     connect(r, &QNetworkReply::finished, this, [this, r]() {
         Pending p = m_pending.take(r);
         const QByteArray data = r->readAll();
+        const bool ok = (r->error() == QNetworkReply::NoError);
+        const QString errStr = r->errorString();
         r->deleteLater();
-        if (r->error() != QNetworkReply::NoError) {
-            const QString msg = QStringLiteral("检测更新失败：") + r->errorString();
+        if (!ok) {
+            const QString msg = QStringLiteral("检测更新失败：") + errStr;
             if (p.checkOnly) emit updateAvailable(p.name, p.version, p.version, msg);
             else emit updateFinished(p.name, false, msg, p.version);
             return;
@@ -132,9 +137,11 @@ void UpdateController::resolveVanilla(Pending p)
         connect(r2, &QNetworkReply::finished, this, [this, r2]() {
             Pending p = m_pending.take(r2);
             const QByteArray d2 = r2->readAll();
+            const bool ok2 = (r2->error() == QNetworkReply::NoError);
+            const QString errStr2 = r2->errorString();
             r2->deleteLater();
-            if (r2->error() != QNetworkReply::NoError) {
-                const QString msg = QStringLiteral("检测更新失败：") + r2->errorString();
+            if (!ok2) {
+                const QString msg = QStringLiteral("检测更新失败：") + errStr2;
                 if (p.checkOnly) emit updateAvailable(p.name, p.version, p.version, msg);
                 else emit updateFinished(p.name, false, msg, p.version);
                 return;
@@ -171,15 +178,17 @@ void UpdateController::download(const Pending &p)
         return;
     }
     QNetworkRequest req(QUrl(p.url));
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("MSM/1.0"));
+    req.setHeader(QNetworkRequest::UserAgentHeader, HttpClient::kUserAgent);
     QNetworkReply *r = m_net->get(req);
     m_pending.insert(r, p);
     connect(r, &QNetworkReply::finished, this, [this, r, jar]() {
         Pending p = m_pending.take(r);
         const QByteArray data = r->readAll();
+        const bool ok = (r->error() == QNetworkReply::NoError);
+        const QString errStr = r->errorString();
         r->deleteLater();
-        if (r->error() != QNetworkReply::NoError || data.size() < 1024 * 1024) {
-            const QString msg = QStringLiteral("下载失败：") + r->errorString();
+        if (!ok || data.size() < 1024 * 1024) {
+            const QString msg = QStringLiteral("下载失败：") + errStr;
             emit updateFinished(p.name, false, msg, p.version);
             return;
         }

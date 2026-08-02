@@ -89,7 +89,7 @@ add_library(msm_ops STATIC
     ops/portmapper.h
     ops/portmapper.cpp
 )
-target_link_libraries(msm_ops PUBLIC Qt6::Core Qt6::Network msm_server)
+target_link_libraries(msm_ops PUBLIC Qt6::Core Qt6::Network msm_core msm_server)
 target_include_directories(msm_ops PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/ops
                                    ${CMAKE_CURRENT_SOURCE_DIR}/server)
 

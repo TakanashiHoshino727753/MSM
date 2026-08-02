@@ -4,6 +4,7 @@
  *       → SOAP AddPortMapping / DeletePortMapping / GetExternalIPAddress
  */
 #include "portmapper.h"
+#include "httpclient.h"
 
 #include <QUdpSocket>
 #include <QHostAddress>
@@ -118,7 +119,7 @@ void PortMapper::fetchDescription(const QUrl &location)
 {
     setStatus(QStringLiteral("已发现网关，正在获取设备描述…"));
     QNetworkRequest req{location};
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("MSM/1.0"));
+    req.setHeader(QNetworkRequest::UserAgentHeader, HttpClient::kUserAgent);
     QNetworkReply *rep = m_nam.get(req);
     connect(rep, &QNetworkReply::finished, this, [this, rep, location]() {
         rep->deleteLater();
