@@ -355,6 +355,20 @@ static bool generateSelfSignedCertFiles(const QString &certPath, const QString &
 {
     const QString openssl = findOpenSsl();
     QProcess proc;
+    // OpenSSL 启动时会去硬编码路径找 openssl.cnf（如 Git 版相对运行位置的 etc/ssl/，
+    // 部署目录下并不存在），找不到会直接失败。设 OPENSSL_CONF 指向空设备即可，
+    // req 自签不需要完整配置。Windows 用 NUL，类 Unix 用 /dev/null。
+    proc.setProcessEnvironment([&]() {
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert(QStringLiteral("OPENSSL_CONF"),
+#ifdef Q_OS_WIN
+                   QStringLiteral("NUL")
+#else
+                   QStringLiteral("/dev/null")
+#endif
+        );
+        return env;
+    }());
     proc.setProgram(openssl);
     proc.setArguments({
         QStringLiteral("req"), QStringLiteral("-x509"),
