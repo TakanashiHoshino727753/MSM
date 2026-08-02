@@ -221,17 +221,8 @@ void ProxyController::fetchJson(const QString &url,
                                 std::function<void(const QJsonDocument &)> ok,
                                 std::function<void(const QString &)> fail)
 {
-    QNetworkRequest req{QUrl(url)};
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("MSM/1.0"));
-    QNetworkReply *rep = m_nam.get(req);
-    connect(rep, &QNetworkReply::finished, this, [rep, ok, fail]() {
-        rep->deleteLater();
-        if (rep->error() != QNetworkReply::NoError) {
-            fail(rep->errorString());
-            return;
-        }
-        ok(QJsonDocument::fromJson(rep->readAll()));
-    });
+    // 统一经由 HttpClient（含总超时兜底，避免被墙域名令 m_busy 永久锁死）。
+    HttpClient::getJson(&m_nam, url, std::move(ok), std::move(fail));
 }
 
 void ProxyController::install()
@@ -296,8 +287,7 @@ void ProxyController::install()
 void ProxyController::downloadJar(const QString &url)
 {
     QDir().mkpath(baseDir());
-    QNetworkRequest req{QUrl(url)};
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("MSM/1.0"));
+    QNetworkRequest req = HttpClient::makeRequest(url);
     QNetworkReply *rep = m_nam.get(req);
     connect(rep, &QNetworkReply::downloadProgress, this, [this](qint64 recv, qint64 total) {
         if (total > 0) {

@@ -33,7 +33,7 @@ static bool ulinesContains(const QStringList &lines, const QString &prefix)
 
 ServerController::ServerController(QObject *parent) : QObject(parent)
 {
-    QSettings s(QStringLiteral("MSM"), QStringLiteral("MSM"));
+    QSettings s;
     m_autoRestart = s.value(QStringLiteral("server/autoRestart"), true).toBool();
     m_maxRetries = s.value(QStringLiteral("server/maxRetries"), 5).toInt();
     m_backoffSec = s.value(QStringLiteral("server/backoffSec"), 5).toInt();
@@ -44,7 +44,7 @@ void ServerController::setAutoRestart(bool v)
     if (v == m_autoRestart)
         return;
     m_autoRestart = v;
-    QSettings(QStringLiteral("MSM"), QStringLiteral("MSM")).setValue(QStringLiteral("server/autoRestart"), v);
+    QSettings().setValue(QStringLiteral("server/autoRestart"), v);
     emit autoRestartChanged();
 }
 
@@ -53,7 +53,7 @@ void ServerController::setMaxRetries(int v)
     if (v == m_maxRetries)
         return;
     m_maxRetries = v;
-    QSettings(QStringLiteral("MSM"), QStringLiteral("MSM")).setValue(QStringLiteral("server/maxRetries"), v);
+    QSettings().setValue(QStringLiteral("server/maxRetries"), v);
     emit maxRetriesChanged();
 }
 
@@ -62,7 +62,7 @@ void ServerController::setBackoffSec(int v)
     if (v == m_backoffSec)
         return;
     m_backoffSec = v;
-    QSettings(QStringLiteral("MSM"), QStringLiteral("MSM")).setValue(QStringLiteral("server/backoffSec"), v);
+    QSettings().setValue(QStringLiteral("server/backoffSec"), v);
     emit backoffSecChanged();
 }
 
@@ -715,26 +715,6 @@ int ServerController::assignFreePort(const QString &path)
         return p;
     }
     return -1;
-}
-
-QString ServerController::readServerJavaPath(const QString &path) const
-{
-    QFile f(path + QStringLiteral("/.msm/java.txt"));
-    if (!f.open(QIODevice::ReadOnly))
-        return QString();
-    return QString::fromUtf8(f.readAll()).trimmed();
-}
-
-void ServerController::setServerJavaPath(const QString &path, const QString &javaPath)
-{
-    QDir().mkpath(path + QStringLiteral("/.msm"));
-    QFile f(path + QStringLiteral("/.msm/java.txt"));
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
-        return;
-    f.write(javaPath.toUtf8());
-    if (!javaPath.isEmpty())
-        f.write("\n");
-    f.close();
 }
 
 // 在 dir 根目录查找首个文件名匹配 prefix（前缀）且不在 exclude glob 列表中的文件。

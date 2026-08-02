@@ -21,6 +21,7 @@ class SettingsController;
 class SystemMonitor;
 class JavaManager;
 class BotController;
+class InstallCoordinator;
 
 // 本地 WebUI 服务：在 0.0.0.0:端口 监听 HTTP，提供与本地端功能/设计一致的单页管理面板。
 // 除“关闭 WebUI”这类有害设置外，其余功能与本地端保持一致；弹窗（创建/导入）改为标签页切换。
@@ -58,6 +59,9 @@ public:
 
     // 接入本地机器人控制器，使 WebUI 可控制/查看本地插件（QQ 机器人）状态
     void setBotController(BotController *bot);
+
+    // 接入安装协调器（服务器类型+版本+加载器，支持多任务并发），供 WebUI 提交安装任务
+    void setInstallCoordinator(InstallCoordinator *c) { m_install = c; }
 
 signals:
     void runningChanged();
@@ -107,6 +111,7 @@ private:
     JavaManager *m_java = nullptr;
     DownloadManager *m_dm = nullptr;   // 底层下载管理器，供 WebUI 暴露统一的“下载任务”列表
     BotController *m_bot = nullptr;     // 本地机器人控制器（本地插件），用于 WebUI 控制/状态展示
+    InstallCoordinator *m_install = nullptr;   // 安装协调器（多任务并发安装）
 
     int m_port = 25575;
     bool m_enabled = false;

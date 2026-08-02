@@ -106,7 +106,7 @@ public:
         return path;
     }
     QString defaultServerDir() const {
-        QSettings s(QStringLiteral("MSM"), QStringLiteral("MSM"));
+        QSettings s;
         const QString custom = stripFileUrl(s.value(QStringLiteral("path/serverDir")).toString());
         if (!custom.isEmpty()) return custom;
 #ifdef Q_OS_LINUX
@@ -116,7 +116,7 @@ public:
 #endif
     }
     void setDefaultServerDir(const QString &v) {
-        QSettings s(QStringLiteral("MSM"), QStringLiteral("MSM"));
+        QSettings s;
         s.setValue(QStringLiteral("path/serverDir"), stripFileUrl(v));
         emit defaultServerDirChanged();
     }

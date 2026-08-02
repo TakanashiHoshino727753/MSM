@@ -376,92 +376,15 @@ void CreateServerController::fetchJson(const QString &url,
                                        std::function<void(const QJsonDocument &)> onOk,
                                        std::function<void(const QString &)> onErr)
 {
-    QNetworkRequest req{QUrl(url)};
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("MinecraftServerManager/1.0 (https://github.com/MinecraftServerManager; contact: msm@example.com)"));
-    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                     QNetworkRequest::NoLessSafeRedirectPolicy);
-    req.setTransferTimeout(20000);   // 解析阶段：避免慢/不稳网络下长时间无响应卡死
-    QNetworkReply *reply = m_nam->get(req);
-    qDebug() << "[MSM] fetchJson GET" << url;
-    // 硬兜底：Qt 的 TransferTimeout 仅覆盖“已连接但无数据”阶段，不覆盖“握手阶段被墙”的卡死
-    // （被墙域名 SYN 黑洞会令 finished 永不触发，界面永远停在“解析下载地址”）。
-    // 关键：兜底计时器到时【直接调用 onErr】，不依赖 abort() 后 finished 一定触发——
-    // 否则在 Qt6+MinGW 下 TLS 握手阶段 abort() 有可能不发出 finished，造成永久卡死。
-    // 用 std::shared_ptr<bool> 作“只回调一次”的闸门，finished 与计时器谁先到都安全。
-    auto done = std::make_shared<bool>(false);
-    auto finish = [done, onOk, onErr](bool ok, const QByteArray &data, const QString &err) {
-        if (*done) return;
-        *done = true;
-        if (ok) {
-            QJsonParseError pe;
-            const QJsonDocument doc = QJsonDocument::fromJson(data, &pe);
-            if (doc.isNull()) { onErr(QStringLiteral("JSON 解析失败: ") + pe.errorString()); return; }
-            onOk(doc);
-        } else {
-            onErr(err);
-        }
-    };
-    QTimer *guard = new QTimer(reply);
-    guard->setSingleShot(true);
-    guard->setInterval(20000);
-    QObject::connect(guard, &QTimer::timeout, reply, [reply, done, finish]() {
-        if (*done) return;
-        qDebug() << "[MSM] fetch TIMEOUT" << reply->url().toString();
-        if (reply->isRunning()) reply->abort();
-        finish(false, QByteArray(), QStringLiteral("请求超时（20s 无响应）"));
-    });
-    guard->start();
-    connect(reply, &QNetworkReply::finished, reply, [reply, finish]() {
-        const QByteArray data = reply->readAll();
-        const bool ok = reply->error() == QNetworkReply::NoError;
-        const QString err = reply->errorString();
-        qDebug() << "[MSM] fetch finished ok=" << ok << "err=" << err.left(120)
-                 << "bytes=" << data.size();
-        reply->deleteLater();
-        finish(ok, data, err);
-    });
+    // 统一经由 HttpClient（超时兜底 + 只回调一次闸门）。
+    HttpClient::getJson(m_nam, url, std::move(onOk), std::move(onErr));
 }
 
 void CreateServerController::fetchText(const QString &url,
                                        std::function<void(const QString &)> onOk,
                                        std::function<void(const QString &)> onErr)
 {
-    QNetworkRequest req{QUrl(url)};
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("MinecraftServerManager/1.0 (https://github.com/MinecraftServerManager; contact: msm@example.com)"));
-    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                     QNetworkRequest::NoLessSafeRedirectPolicy);
-    req.setTransferTimeout(20000);   // 解析阶段：避免慢/不稳网络下长时间无响应卡死
-    QNetworkReply *reply = m_nam->get(req);
-    qDebug() << "[MSM] fetchText GET" << url;
-    // 同上：硬兜底，计时器到时直接回调 onErr，不依赖 abort()->finished。
-    auto done = std::make_shared<bool>(false);
-    auto finish = [done, onOk, onErr](bool ok, const QByteArray &data, const QString &err) {
-        if (*done) return;
-        *done = true;
-        if (ok)
-            onOk(QString::fromUtf8(data));
-        else
-            onErr(err);
-    };
-    QTimer *guard = new QTimer(reply);
-    guard->setSingleShot(true);
-    guard->setInterval(20000);
-    QObject::connect(guard, &QTimer::timeout, reply, [reply, done, finish]() {
-        if (*done) return;
-        qDebug() << "[MSM] fetch TIMEOUT" << reply->url().toString();
-        if (reply->isRunning()) reply->abort();
-        finish(false, QByteArray(), QStringLiteral("请求超时（20s 无响应）"));
-    });
-    guard->start();
-    connect(reply, &QNetworkReply::finished, reply, [reply, finish]() {
-        const QByteArray data = reply->readAll();
-        const bool ok = reply->error() == QNetworkReply::NoError;
-        const QString err = reply->errorString();
-        qDebug() << "[MSM] fetch finished ok=" << ok << "err=" << err.left(120)
-                 << "bytes=" << data.size();
-        reply->deleteLater();
-        finish(ok, data, err);
-    });
+    HttpClient::getText(m_nam, url, std::move(onOk), std::move(onErr));
 }
 
 void CreateServerController::fetchPaper()
@@ -923,6 +846,12 @@ void CreateServerController::onDownloadProgress(const QString &id, qreal percent
                           + QStringLiteral(" 安装器… ")
                           + QString::number(int(percent)) + QStringLiteral("%"));
             setStageProgress(percent * 0.7);
+        } else if (m_useStages) {
+            // 准备 Java 阶段（阶段 0，权重 1）：把 Java 下载进度映射到该阶段内部，
+            // 避免整体进度在 Java 下载完成时直接跳到 100%。
+            setStageText(QStringLiteral("正在下载 Java 运行环境… ")
+                          + QString::number(int(percent)) + QStringLiteral("%"));
+            setStageProgress(percent);
         } else {
             setProgress(percent);
         }
@@ -1349,10 +1278,12 @@ void CreateServerController::waitForJavaReady(const QString &path, std::function
         QFile f(path);
         if (!f.exists())
             return false;
+        // Windows 上 java 来自 zip 解压（Expand-Archive/tar），NTFS 权限位 ExeUser/ExeGroup
+        // 经常不被 Qt 识别为可执行，导致此处永远 false、轮询 60s 超时、安装器永不被触发
+        // （表现为“解压正常但找不到 java.exe”）。NTFS 下 .exe 本身即“可执行”，故只要文件
+        // 存在且后缀为 .exe 即视为就绪，不再依赖不可靠的权限位。
 #ifdef Q_OS_WIN
-        return f.permissions().testFlag(QFile::ExeUser)
-            || f.permissions().testFlag(QFile::ExeGroup)
-            || f.permissions().testFlag(QFile::ExeOther);
+        return path.endsWith(QStringLiteral(".exe"), Qt::CaseInsensitive);
 #else
         return f.permissions().testFlag(QFile::ExeUser);
 #endif
@@ -1362,21 +1293,20 @@ void CreateServerController::waitForJavaReady(const QString &path, std::function
         return;
     }
     // 轮询等待，最多约 60 秒（250ms * 240），避免“刚下载完成、文件尚不可见”导致首次运行失败。
-    int *tries = new int(0);
+    // tries 按值捕获（int），避免堆分配泄漏；timer 由 this 托管，对象析构时自动停止。
+    int tries = 0;
     auto *timer = new QTimer(this);
     timer->setInterval(250);
-    connect(timer, &QTimer::timeout, this, [this, path, timer, tries, ready, cb]() {
+    connect(timer, &QTimer::timeout, this, [this, path, timer, tries, ready, cb]() mutable {
         if (ready()) {
             timer->stop();
             timer->deleteLater();
-            delete tries;
             cb(path);
             return;
         }
-        if (++(*tries) > 240) {
+        if (++tries > 240) {
             timer->stop();
             timer->deleteLater();
-            delete tries;
             setStatus(tr("Java 已下载但可执行文件迟迟未就绪：%1").arg(path));
             setBusy(false);
             return;
@@ -1855,15 +1785,23 @@ void CreateServerController::onDownloadError(const QString &id, const QString &m
 //    （applicationDirPath 会带回中文）；JVM 在系统无 UTF-8 locale 时（日志常见
 //    “Detected locale "C" … not UTF-8”）会把中文路径解码成 '?'，导致
 //    “unexpected error occurred while trying to open file …/forge-installer.jar”。
-// ② 把安装/打包的所有临时文件都收在 TempLocation/MSM/ 下，安装产物（Forge 生成的服务端）
-//    也在此处；最终打包只读取这个目录，再复制到“下载目录”，绝不读取用户可能设在程序
-//    目录的 saveDir，从根本上避免把 exe/logs 误打进压缩包。
+// ② 把安装/打包的所有临时文件都收在系统临时目录（仅 Windows；见下）或下载目录下的临时
+//    子目录（Linux/其它）里，安装产物（Forge 生成的服务端）也在此处；最终打包只读取这个目录，
+//    再复制到保存目录，绝不读取用户可能设在程序目录的 saveDir，从根本上避免把 exe/logs 误打进压缩包。
 // 标识用时间戳+随机，确保纯 ASCII 且不同创建任务/重试不冲突（不依赖可能含中文的服务器名）。
+// 目录策略“仅限 Windows 端”：Windows 用系统临时目录（%TEMP%/MSM/），Linux 等用下载目录下的
+// .tmp-build/ 子目录（~/MSM/Downloads/.tmp-build/），不污染系统临时目录、便于同一体系内清理。
 QString CreateServerController::modsTempDir() const
 {
+#ifdef Q_OS_WIN
     const QString base = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
     const QString msmRoot = QDir::cleanPath(base + QStringLiteral("/MSM"));
-    QDir().mkpath(msmRoot); // 确保 MSM 子文件夹存在
+#else
+    const QString msmRoot = QDir::cleanPath(m_dm ? m_dm->defaultDownloadDir()
+                                                 : QStringLiteral("~/MSM/Downloads"))
+                            + QStringLiteral("/.tmp-build");
+#endif
+    QDir().mkpath(msmRoot); // 确保临时根文件夹存在
     const QString stamp = QStringLiteral("msm-build-%1-%2")
         .arg(QDateTime::currentMSecsSinceEpoch())
         .arg((qulonglong)QRandomGenerator::global()->generate64(), 0, 36);

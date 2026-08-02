@@ -180,17 +180,12 @@ int JavaManager::requiredFeature(const QString &mcVersion)
 
 QString JavaManager::managedDir() const
 {
-    // 与下载目录同级：<downloadDir 的父目录>/jvm
-    // 使用 QFileInfo::absolutePath() 取到父目录再用 cleanPath，避免路径里残留 ".."
-    // 导致 mkpath / Expand-Archive / java.exe 查找在某些环境下失败。
-    QSettings s;
-    QString base = s.value(QStringLiteral("app/downloadDir"),
-                           QStandardPaths::writableLocation(QStandardPaths::DownloadLocation)
-                           + QStringLiteral("/MinecraftServerManager")).toString();
-    QFileInfo fi(base);
-    QDir parentDir(fi.absolutePath());
-    parentDir.mkpath(QStringLiteral("jvm"));
-    return QDir::cleanPath(parentDir.absoluteFilePath(QStringLiteral("jvm")));
+    // 与下载中心产物同根：直接使用下载根目录（如 %USERPROFILE%\Downloads\MSM）。
+    // Java 落在其下的 jvm-{feature}/（如 MSM/jvm-25/bin/java.exe），jvm-{feature} 直接
+    // 位于 MSM 根目录下，绝不额外嵌套 /jvm/ 层、也不许出现 jdk-25.0.4+7 这种内层。
+    // 复用 DownloadManager::defaultDownloadDir() 保证与“下载中心/创建服务器”的目录完全一致，
+    // 且不引入独立的 QSettings 作用域（避免 app/downloadDir 与 path/downloadDir 分裂）。
+    return DownloadManager::defaultDownloadDir();
 }
 
 QString JavaManager::installBase() const
@@ -229,30 +224,25 @@ QString JavaManager::installedJava(int feature) const
         }
     }
     // 当显式调用 setInstallBase 设置了覆盖路径时，installBase() 返回的已是完整目标目录
-    // （如 {path}/jvm-21/），不再追加 /{feature} 层。
-    // 未设置覆盖时回退到默认 managedDir + /{feature}（Downloads/jvm/{feature}）。
+    // （如 {path}/jvm-21/），不再追加 jvm- 前缀层。
+    // 未设置覆盖时回退到默认 managedDir + /jvm-{feature}（如 Downloads/MSM/jvm-21），
+    // jvm-{feature} 直接位于 MSM 根目录下，bin 再直接落在 jvm-{feature} 里。
     const QString root = m_installBase.isEmpty()
-        ? (installBase() + QStringLiteral("/") + QString::number(feature))
+        ? (installBase() + QStringLiteral("/jvm-") + QString::number(feature))
         : installBase();
     QDir dir(root);
     if (!dir.exists())
         return QString();
-    // 递归查找 java.exe
-    QFileInfoList stack;
-    stack << QDir::drives(); // 占位，实际用 stack 方式
-    QList<QDir> dirs; dirs << dir;
-    while (!dirs.isEmpty()) {
-        QDir d = dirs.takeFirst();
-        const QFileInfoList entries = d.entryInfoList(QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot);
-        for (const QFileInfo &fi : entries) {
-            if (fi.isDir()) {
-                dirs.append(QDir(fi.absoluteFilePath()));
-            } else if (fi.fileName().compare(QStringLiteral("java.exe"), Qt::CaseInsensitive) == 0
-                       || fi.fileName().compare(QStringLiteral("java"), Qt::CaseInsensitive) == 0) {
-                return fi.absoluteFilePath();
-            }
-        }
-    }
+    // 锁死识别路径：JDK 必须位于 root/bin/java(.exe)。root = installBase 或
+    // 托管目录下的 jvm-{feature}/，feature 由 MC 版本推导（1.21→21，1.26+→25），
+    // 数字随 Java 版本自动变化。仅当锁死路径存在时返回，不做递归兜底。
+#ifdef Q_OS_WIN
+    const QString locked = root + QStringLiteral("/bin/java.exe");
+#else
+    const QString locked = root + QStringLiteral("/bin/java");
+#endif
+    if (QFile::exists(locked))
+        return QDir::toNativeSeparators(locked);
     return QString();
 }
 
@@ -272,11 +262,37 @@ void JavaManager::setManualJavaHome(const QString &dir)
 
     namespace {
     // 平台相关的 Java 可执行文件名：Windows 为 java.exe，其它平台为 java（无扩展名）
-#ifdef Q_OS_WIN
+    #ifdef Q_OS_WIN
     const char *javaBinName() { return "java.exe"; }
-#else
+    #else
     const char *javaBinName() { return "java"; }
-#endif
+    #endif
+
+    // 解压后若 dir 顶层只有一个子目录（如 jdk-25.0.4+7/）且该子目录直接含有 bin/，
+    // 则把其内容整体上移到 dir 根，再删除空的 jdk-xxx 壳目录。
+    // 目的：保证最终 java 落在 <dir>/bin/java(.exe)，绝不出现 <dir>/jdk-25.0.4+7/ 这层。
+    inline void flattenSingleTopLevel(const QString &dir)
+    {
+        QDir d(dir);
+        if (!d.exists())
+            return;
+        const QFileInfoList entries = d.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
+        if (entries.size() != 1)
+            return; // 只允许唯一子目录，避免误伤（如已正确展平的目录）
+        QDir sub(entries.first().absoluteFilePath());
+        const QString binName = QString::fromLatin1(javaBinName());
+        // 仅当该子目录下 bin/java(.exe) 确实存在时才展平
+        if (!QFile::exists(sub.absoluteFilePath(QStringLiteral("bin")) + QLatin1Char('/') + binName))
+            return;
+        const QFileInfoList subEntries = sub.entryInfoList(QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot);
+        for (const QFileInfo &fi : subEntries) {
+            const QString target = d.absoluteFilePath(fi.fileName());
+            if (QFile::exists(target))
+                QFile::remove(target);
+            QFile::rename(fi.absoluteFilePath(), target);
+        }
+        sub.removeRecursively();
+    }
     }
 
 void JavaManager::detectJava(int feature, std::function<void(const QString &)> cb)
@@ -956,7 +972,9 @@ void JavaManager::launchInstaller(int feature, const QString &msiPath, std::func
     // 已经装过则直接成功
     if (!javaPathFor(QString::number(feature)).isEmpty()) { done(true); return; }
 
-    const QString target = QDir::toNativeSeparators(managedDir() + QStringLiteral("/") + QString::number(feature));
+    // Java 安装到 MSM 根下的 jvm-{feature}/（如 MSM/jvm-25），bin 直接落在 jvm-{feature} 里，
+    // 不嵌套 jdk-25.0.4+7 之类的内层目录。
+    const QString target = QDir::toNativeSeparators(managedDir() + QStringLiteral("/jvm-") + QString::number(feature));
     QDir().mkpath(target);
     const QString native = QDir::toNativeSeparators(msiPath);
 
@@ -1337,9 +1355,10 @@ void JavaManager::fetchInstaller(int feature, const QUrl &url, const QString &li
             // 压缩包（官方 green/portable JDK）解压到管理目录，无需安装、无需管理员权限
             self->setStatus(QStringLiteral("正在解压 Java %1…").arg(feature));
             // 如果 setInstallBase 已设了覆盖路径（如 {path}/jvm-21），就直接解压到那里，
-            // 不再追加 /{feature} 子层（与 installedJava() 的判断保持一致）。
+            // 不再追加 jvm- 前缀层（与 installedJava() 的判断保持一致）。
+            // 否则解压到 MSM/jvm-{feature}（如 MSM/jvm-25），bin 直接落在 jvm-{feature} 里。
             const QString dest = self->installBase().isEmpty()
-                ? (root + QStringLiteral("/%1").arg(feature))
+                ? (root + QStringLiteral("/jvm-") + QString::number(feature))
                 : root;
             QDir().mkpath(dest);
             const QString nativeTmp = QDir::toNativeSeparators(tmp);
@@ -1385,7 +1404,7 @@ void JavaManager::fetchInstaller(int feature, const QUrl &url, const QString &li
                 cb(false, QString());
             });
             connect(ps, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-                    self.data(), [self, ps, guard, tmp, nativeDest, program, feature, cb](int code, QProcess::ExitStatus) {
+                    self.data(), [self, ps, guard, tmp, nativeDest, dest, program, feature, cb](int code, QProcess::ExitStatus) {
                 if (!self) { guard->deleteLater(); ps->deleteLater(); return; }
                 guard->deleteLater();
                 const QByteArray out = ps->readAllStandardOutput();
@@ -1393,32 +1412,10 @@ void JavaManager::fetchInstaller(int feature, const QUrl &url, const QString &li
                 // 即使 tar 返回非零（如权限/已存在），若 java.exe 真的被解出来了，就视为成功。
                 // 很多 Windows tar 对某些 zip 会警告但仍然完成提取——用户的目录里看到了
                 // jdk-21.0.11+10/bin/java.exe，但 code != 0，按原逻辑直接报错太激进。
+                // 解压后展平：把唯一的内层 jdk-xxx 目录内容上移到 dest 根（如 jvm-25/bin/java.exe），
+                // 杜绝 jvm-25/jdk-25.0.4+7/ 这种多余一层。
+                flattenSingleTopLevel(dest);
                 QString java = self->javaPathFor(QString::number(feature));
-
-                // 某些 JDK zip 顶层是 jdk-21.0.11+10/，解压后是 jvm/21/jdk-21.0.11+10/bin/java.exe。
-                // 上移一层：把唯一的子目录里的内容平铺到 jvm/21/，得到 jvm/21/bin/java.exe。
-                if (java.isEmpty() || java.contains(QStringLiteral("/jdk-"))) {
-                    self->setStatus(QStringLiteral("正在展平 Java %1 目录…").arg(feature));
-                    QDir d(nativeDest);
-                    const QStringList subdirs = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
-                    if (subdirs.size() == 1) {
-                        const QString inner = nativeDest + QLatin1Char('/') + subdirs.first();
-                        QDir id(inner);
-                        const QStringList items = id.entryList(QDir::AllEntries | QDir::NoDotAndDotDot);
-                        for (const QString &item : items) {
-                            const QString src = inner + QLatin1Char('/') + item;
-                            const QString dst = nativeDest + QLatin1Char('/') + item;
-                            if (QFile::exists(dst)) QFile::remove(dst);
-                            if (!QFile::rename(src, dst)) {
-                                // rename 失败（跨设备/被占用）用 copy+delete 兜底
-                                QFile::remove(dst);
-                                if (QFile::copy(src, dst)) QFile::remove(src);
-                            }
-                        }
-                        id.rmdir(QStringLiteral("."));
-                    }
-                    java = self->javaPathFor(QString::number(feature));
-                }
 
                 QFile::remove(tmp);
                 if (java.isEmpty()) {
@@ -1657,7 +1654,8 @@ void JavaManager::extractZip(const QString &zip, const QString &dest, std::funct
 void JavaManager::installManagedArchive(const QString &archivePath, int feature, std::function<void(bool, QString)> cb)
 {
     if (archivePath.isEmpty() || !QFile::exists(archivePath)) { cb(false, QString()); return; }
-    const QString dest = managedDir() + QStringLiteral("/%1").arg(feature);
+    // 解压到 MSM/jvm-{feature}（如 MSM/jvm-25），与 installedJava() 的预期一致（带 jvm- 前缀）。
+    const QString dest = managedDir() + QStringLiteral("/jvm-") + QString::number(feature);
     QDir().mkpath(dest);
     const QString nativeArchive = QDir::toNativeSeparators(archivePath);
     const QString nativeDest = QDir::toNativeSeparators(dest);
@@ -1678,27 +1676,12 @@ void JavaManager::installManagedArchive(const QString &archivePath, int feature,
     auto *ps = new QProcess(this);
     ps->setProcessChannelMode(QProcess::MergedChannels);
     connect(ps, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), ps,
-            [this, ps, archivePath, nativeDest, feature, cb](int code, QProcess::ExitStatus) {
+            [this, ps, archivePath, nativeDest, dest, feature, cb](int code, QProcess::ExitStatus) {
                 ps->deleteLater();
                 if (code != 0) { cb(false, QString()); return; }
-                // 展平单层顶层目录（如 jdk-21.0.x+xx/ → 内容上移到 dest 根，便于 javaPathFor 直接定位）
-                {
-                    QDir d(nativeDest);
-                    const QStringList sub = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
-                    if (sub.size() == 1) {
-                        QDir subDir(d.filePath(sub.first()));
-                        if (QFile::exists(subDir.filePath(QStringLiteral("bin")))) {
-                            const QStringList inner = subDir.entryList(QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot);
-                            for (const QString &name : inner) {
-                                const QString from = subDir.filePath(name);
-                                const QString to = d.filePath(name);
-                                if (QFile::exists(to)) QFile::remove(to);
-                                QDir().rename(from, to);
-                            }
-                            subDir.removeRecursively();
-                        }
-                    }
-                }
+                // 展平单层顶层目录（如 jdk-21.0.x+xx/ → 内容上移到 dest 根），保证 java 落在
+                // jvm-{feature}/bin/java(.exe)，杜绝 jvm-25/jdk-25.0.4+7/ 这种多余一层。
+                flattenSingleTopLevel(dest);
                 const QString java = javaPathFor(feature);
                 QFile::remove(archivePath);   // 解压成功后删除原压缩包，避免重复占用空间
                 if (java.isEmpty()) { cb(false, QString()); return; }
@@ -1715,8 +1698,15 @@ void JavaManager::installManagedArchive(const QString &archivePath, int feature,
 void JavaManager::ensureTemp(int feature, std::function<void(bool, QString)> cb)
 {
     if (!m_dm) { setStatus(QStringLiteral("下载管理器未初始化，无法准备临时 Java")); qDebug() << "[MSM][ensureTemp] 下载管理器未初始化"; return; }
+    // 临时 Java 目录策略“仅限 Windows 端”：Windows 用系统临时目录（%TEMP%/msm-jdk-temp-feature），
+    // Linux 等用托管根目录（下载目录）下的 .tmp-jdk-feature/ 子目录（~/MSM/Downloads/.tmp-jdk-25），
+    // 不污染系统临时目录、便于同一体系内清理。
+#ifdef Q_OS_WIN
     const QString base = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
     const QString dir = QDir::cleanPath(base + QStringLiteral("/msm-jdk-temp-") + QString::number(feature));
+#else
+    const QString dir = QDir::cleanPath(managedDir() + QStringLiteral("/.tmp-jdk-") + QString::number(feature));
+#endif
     QDir().mkpath(dir);
 
     QPointer<JavaManager> self(this);

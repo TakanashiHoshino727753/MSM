@@ -5,8 +5,9 @@
 # ---- 低层：下载任务列表模型（无外部依赖，被 download / java 等共用，打破循环依赖）----
 add_library(msm_core STATIC
     core/downloadlistmodel.h
+    core/httpclient.h
 )
-target_link_libraries(msm_core PUBLIC Qt6::Core)
+target_link_libraries(msm_core PUBLIC Qt6::Core Qt6::Network)
 target_include_directories(msm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core)
 
 # ---- Java 运行环境管理（按 MC 版本选择 / 下载 / 安装 JDK）----
@@ -54,8 +55,11 @@ add_library(msm_serverctl STATIC
     serverctl/createservercontroller.cpp
     serverctl/modpackimporter.h
     serverctl/modpackimporter.cpp
+    serverctl/installtask.h
+    serverctl/installcoordinator.h
+    serverctl/installcoordinator.cpp
 )
-target_link_libraries(msm_serverctl PUBLIC Qt6::Core Qt6::Network msm_download msm_server msm_java)
+target_link_libraries(msm_serverctl PUBLIC Qt6::Core Qt6::Network msm_core msm_download msm_server msm_java)
 target_include_directories(msm_serverctl PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/serverctl)
 
 # ---- 设置管理 ----
@@ -63,7 +67,7 @@ add_library(msm_settings STATIC
     settings/settingscontroller.h
     settings/settingscontroller.cpp
 )
-target_link_libraries(msm_settings PUBLIC Qt6::Core)
+target_link_libraries(msm_settings PUBLIC Qt6::Core msm_core)
 target_include_directories(msm_settings PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/settings)
 
 # ---- Webhook 通知（崩溃 / 启停 / 玩家进服推送）----
@@ -96,7 +100,7 @@ add_library(msm_proxy STATIC
     proxy/proxymanager.h
     proxy/proxymanager.cpp
 )
-target_link_libraries(msm_proxy PUBLIC Qt6::Core Qt6::Network msm_server)
+target_link_libraries(msm_proxy PUBLIC Qt6::Core Qt6::Network msm_core msm_server)
 target_include_directories(msm_proxy PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/proxy)
 
 # ---- QQ 机器人控制（独立管理 NapCat / NoneBot 外部进程，与 WebUI 解耦）----
@@ -104,7 +108,7 @@ add_library(msm_bot STATIC
     bot/botcontroller.h
     bot/botcontroller.cpp
 )
-target_link_libraries(msm_bot PUBLIC Qt6::Core Qt6::Network Qt6::HttpServer msm_server msm_settings msm_download)
+target_link_libraries(msm_bot PUBLIC Qt6::Core Qt6::Network Qt6::HttpServer msm_core msm_server msm_settings msm_download msm_serverctl)
 target_include_directories(msm_bot PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/bot)
 
 # ---- Web 管理界面（汇总所有模块）----

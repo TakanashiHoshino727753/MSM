@@ -33,7 +33,8 @@ static QString generateWebuiToken()
 
 SettingsController::SettingsController(QObject *parent) : QObject(parent)
 {
-    QSettings s(QStringLiteral("MSM"), QStringLiteral("MSM"));
+    // 统一经由默认 QSettings()（作用域由 main 设为 MSM/MinecraftServerManager）。
+    QSettings s;
     m_language = s.value(QStringLiteral("app/language"), QStringLiteral("简体中文")).toString();
     m_webui = s.value(QStringLiteral("app/webui"), false).toBool();
     m_webuiPort = s.value(QStringLiteral("app/webuiPort"), 25575).toInt();
@@ -58,13 +59,6 @@ SettingsController::SettingsController(QObject *parent) : QObject(parent)
     m_webhookCrash = s.value(QStringLiteral("app/webhookCrash"), true).toBool();
     m_webhookState = s.value(QStringLiteral("app/webhookState"), true).toBool();
     m_webhookPlayer = s.value(QStringLiteral("app/webhookPlayer"), false).toBool();
-
-    qDebug() << "[SET] raw botLinkedStart=" << s.value(QStringLiteral("app/botLinkedStart"))
-             << "toBool=" << m_botLinkedStart
-             << "botEnabled=" << s.value(QStringLiteral("app/botEnabled"))
-             << "toBool=" << m_bot
-             << "napcat=" << s.value(QStringLiteral("app/napcat")) << "toBool=" << m_napcat
-             << "nonebot=" << s.value(QStringLiteral("app/nonebot")) << "toBool=" << m_nonebot;
 
     loadAutoStart();
 }
@@ -245,28 +239,30 @@ void SettingsController::setBotEnabled(bool v)
 
 void SettingsController::apply()
 {
-    QSettings s(QStringLiteral("MSM"), QStringLiteral("MSM"));
-    s.setValue(QStringLiteral("app/language"), m_language);
-    s.setValue(QStringLiteral("app/webui"), m_webui);
-    s.setValue(QStringLiteral("app/webuiPort"), m_webuiPort);
-    s.setValue(QStringLiteral("app/webuiToken"), m_webuiToken);
-    s.setValue(QStringLiteral("app/webuiExposeLan"), m_webuiExposeLan);
-    s.setValue(QStringLiteral("app/webuiCertPath"), m_webuiCertPath);
-    s.setValue(QStringLiteral("app/webuiKeyPath"), m_webuiKeyPath);
-    s.setValue(QStringLiteral("app/showOnStartup"), m_showOnStartup);
-    s.setValue(QStringLiteral("app/napcat"), m_napcat);
-    s.setValue(QStringLiteral("app/napcatPath"), m_napcatPath);
-    s.setValue(QStringLiteral("app/nonebot"), m_nonebot);
-    s.setValue(QStringLiteral("app/nonebotDir"), m_nonebotDir);
-    s.setValue(QStringLiteral("app/botUsageInterval"), m_botUsageInterval);
-    s.setValue(QStringLiteral("app/botLinkedStart"), m_botLinkedStart);
-    s.setValue(QStringLiteral("app/botEnabled"), m_bot);
-    s.setValue(QStringLiteral("app/webhookUrl"), m_webhookUrl);
-    s.setValue(QStringLiteral("app/webhookType"), m_webhookType);
-    s.setValue(QStringLiteral("app/webhookEnabled"), m_webhookEnabled);
-    s.setValue(QStringLiteral("app/webhookCrash"), m_webhookCrash);
-    s.setValue(QStringLiteral("app/webhookState"), m_webhookState);
-    s.setValue(QStringLiteral("app/webhookPlayer"), m_webhookPlayer);
+    // 统一经由默认 QSettings()；表驱动写入，消除样板。
+    QSettings s;
+    // 顺序不重要，仅用于保证写入顺序稳定可读。
+    static const char *const keys[] = {
+        "app/language", "app/webui", "app/webuiPort", "app/webuiToken",
+        "app/webuiExposeLan", "app/webuiCertPath", "app/webuiKeyPath",
+        "app/showOnStartup", "app/napcat", "app/napcatPath", "app/nonebot",
+        "app/nonebotDir", "app/botUsageInterval", "app/botLinkedStart",
+        "app/botEnabled", "app/webhookUrl", "app/webhookType",
+        "app/webhookEnabled", "app/webhookCrash", "app/webhookState",
+        "app/webhookPlayer",
+    };
+    const QVariant vals[] = {
+        m_language, m_webui, m_webuiPort, m_webuiToken, m_webuiExposeLan,
+        m_webuiCertPath, m_webuiKeyPath, m_showOnStartup, m_napcat, m_napcatPath,
+        m_nonebot, m_nonebotDir, m_botUsageInterval, m_botLinkedStart, m_bot,
+        m_webhookUrl, m_webhookType, m_webhookEnabled, m_webhookCrash,
+        m_webhookState, m_webhookPlayer,
+    };
+    static_assert(sizeof(keys) / sizeof(*keys) == sizeof(vals) / sizeof(*vals),
+                  "settings key/value count mismatch");
+    const int n = static_cast<int>(sizeof(keys) / sizeof(*keys));
+    for (int i = 0; i < n; ++i)
+        s.setValue(QString::fromLatin1(keys[i]), vals[i]);
 
     s.sync();
     saveAutoStart();

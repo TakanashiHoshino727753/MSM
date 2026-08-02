@@ -16,7 +16,7 @@
 
 BackupController::BackupController(QObject *parent) : QObject(parent)
 {
-    QSettings s(QStringLiteral("MSM"), QStringLiteral("MSM"));
+    QSettings s;
     m_enabled = s.value(QStringLiteral("backup/enabled"), false).toBool();
     m_intervalHours = s.value(QStringLiteral("backup/intervalHours"), 6).toInt();
     m_retain = s.value(QStringLiteral("backup/retain"), 5).toInt();
@@ -52,7 +52,7 @@ void BackupController::setEnabled(bool v)
     if (v == m_enabled)
         return;
     m_enabled = v;
-    QSettings(QStringLiteral("MSM"), QStringLiteral("MSM")).setValue(QStringLiteral("backup/enabled"), v);
+    QSettings().setValue(QStringLiteral("backup/enabled"), v);
     emit enabledChanged();
 }
 
@@ -61,7 +61,7 @@ void BackupController::setIntervalHours(int v)
     if (v == m_intervalHours)
         return;
     m_intervalHours = v;
-    QSettings(QStringLiteral("MSM"), QStringLiteral("MSM")).setValue(QStringLiteral("backup/intervalHours"), v);
+    QSettings().setValue(QStringLiteral("backup/intervalHours"), v);
     m_nextAuto = QDateTime::currentMSecsSinceEpoch() + v * 3600LL * 1000LL;
     emit intervalHoursChanged();
 }
@@ -71,7 +71,7 @@ void BackupController::setRetain(int v)
     if (v == m_retain)
         return;
     m_retain = v;
-    QSettings(QStringLiteral("MSM"), QStringLiteral("MSM")).setValue(QStringLiteral("backup/retain"), v);
+    QSettings().setValue(QStringLiteral("backup/retain"), v);
     emit retainChanged();
 }
 
@@ -80,7 +80,7 @@ void BackupController::setOnStart(bool v)
     if (v == m_onStart)
         return;
     m_onStart = v;
-    QSettings(QStringLiteral("MSM"), QStringLiteral("MSM")).setValue(QStringLiteral("backup/onStart"), v);
+    QSettings().setValue(QStringLiteral("backup/onStart"), v);
     emit onStartChanged();
 }
 
@@ -118,8 +118,8 @@ void BackupController::doBackup(const QString &name, const QString &path, bool f
                     : QString::number(sz / 1024) + QStringLiteral(" KB"));
             m_lastResult = QStringLiteral("[%1] %2").arg(QDateTime::currentDateTime().toString(QStringLiteral("MM-dd HH:mm"))).arg(msg);
             m_lastBackup = QDateTime::currentMSecsSinceEpoch();
-            QSettings(QStringLiteral("MSM"), QStringLiteral("MSM")).setValue(QStringLiteral("backup/lastBackup"), m_lastBackup);
-            QSettings(QStringLiteral("MSM"), QStringLiteral("MSM")).setValue(QStringLiteral("backup/lastResult"), m_lastResult);
+            QSettings().setValue(QStringLiteral("backup/lastBackup"), m_lastBackup);
+            QSettings().setValue(QStringLiteral("backup/lastResult"), m_lastResult);
             emit lastResultChanged();
             emit lastBackupChanged();
             applyRetention(name);

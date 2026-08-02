@@ -16,6 +16,8 @@
 #include "settingscontroller.h"
 #include "javamanager.h"
 #include "botcontroller.h"
+#include "installcoordinator.h"
+#include "httpclient.h"
 
 #include <QTcpSocket>
 #include <QJsonDocument>
@@ -41,27 +43,7 @@
 #endif
 
 // ---------------- HTTP 工具 ----------------
-
-static QString urlDecode(const QString &s)
-{
-    QByteArray b = s.toUtf8();
-    return QUrl::fromPercentEncoding(b);
-}
-
-static QMap<QString, QString> parseQuery(const QString &q)
-{
-    QMap<QString, QString> out;
-    if (q.isEmpty()) return out;
-    const QStringList parts = q.split(QLatin1Char('&'), Qt::SkipEmptyParts);
-    for (const QString &p : parts) {
-        const int eq = p.indexOf(QLatin1Char('='));
-        if (eq < 0)
-            out[urlDecode(p)] = QString();
-        else
-            out[urlDecode(p.left(eq))] = urlDecode(p.mid(eq + 1));
-    }
-    return out;
-}
+// urlDecode / parseQuery 统一复用 core/httpclient.h（HttpClient::urlDecode / HttpClient::parseQuery）。
 
 // ---------------- 构造 / 生命周期 ----------------
 
@@ -622,13 +604,13 @@ void WebUIServer::dispatch(const QString &method, const QString &path, const QSt
     if (!path.startsWith(QStringLiteral("/api/"))) { sendStatus(sock, 404, QStringLiteral("Not Found")); return; }
 
     // 令牌校验：所有 /api/* 必须携带正确令牌，否则 401（SPA 与远程调用皆同）
-    if (!checkToken(hdr, parseQuery(query))) {
+    if (!checkToken(hdr, HttpClient::parseQuery(query))) {
         sendStatus(sock, 401, QStringLiteral("Unauthorized"));
         return;
     }
 
     // query 已从 path 剥离，由 onReadyRead 解析后传入，避免参数被丢弃
-    const QMap<QString, QString> q = parseQuery(query);
+    const QMap<QString, QString> q = HttpClient::parseQuery(query);
 
     QJsonObject bodyJson;
     if (!body.isEmpty()) {
@@ -648,7 +630,7 @@ void WebUIServer::dispatch(const QString &method, const QString &path, const QSt
     if (api.startsWith(QStringLiteral("/servers/"))) {
         QString rest = api.mid(9);
         const int slash = rest.indexOf(QLatin1Char('/'));
-        const QString name = urlDecode(slash < 0 ? rest : rest.left(slash));
+        const QString name = HttpClient::urlDecode(slash < 0 ? rest : rest.left(slash));
         const QString action = slash < 0 ? QString() : rest.mid(slash + 1);
         Server *srv = m_sm->serverByName(name);
         if (!srv) { sendStatus(sock, 404, QStringLiteral("server not found")); return; }
@@ -807,6 +789,42 @@ void WebUIServer::dispatch(const QString &method, const QString &path, const QSt
     }
     if (api == QStringLiteral("/catalog/cleantempjava") && method == QStringLiteral("GET")) {
         m_webCatalog->cleanupTempJava();
+        sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
+        return;
+    }
+
+    // 统一安装 API：服务器类型 + 版本 + 加载器，可多个任务并发（供 WebUI / 机器人调用）。
+    // POST 体：{"type":"paper|vanilla|mod","version":"1.21.1","loaders":["forge"],"label":"xxx","addToList":true}
+    // 返回：{"taskId":"<uuid>"}
+    if (api == QStringLiteral("/installserver") && method == QStringLiteral("POST")) {
+        if (!m_install) { sendStatus(sock, 503, QStringLiteral("install coordinator not ready")); return; }
+        const QString type = bodyJson.value(QStringLiteral("type")).toString();
+        const QString version = bodyJson.value(QStringLiteral("version")).toString();
+        const QString label = bodyJson.value(QStringLiteral("label")).toString();
+        const bool addToList = bodyJson.value(QStringLiteral("addToList")).toBool(true);
+        QStringList loaders;
+        const QJsonValue lv = bodyJson.value(QStringLiteral("loaders"));
+        if (lv.isArray()) {
+            for (const QJsonValue &v : lv.toArray()) loaders.append(v.toString());
+        }
+        const QString id = m_install->installServer(type, version, loaders, label, addToList);
+        if (id.isEmpty()) {
+            sendStatus(sock, 400, QStringLiteral("invalid type/version"));
+            return;
+        }
+        sendJson(sock, QJsonObject{{QStringLiteral("taskId"), id}});
+        return;
+    }
+    // 安装任务进度查询（轮询快照）
+    if (api == QStringLiteral("/installtasks") && method == QStringLiteral("GET")) {
+        if (!m_install) { sendStatus(sock, 503, QStringLiteral("install coordinator not ready")); return; }
+        sendJson(sock, QJsonObject{{QStringLiteral("tasks"), m_install->tasks()}});
+        return;
+    }
+    // 清除已完成的安装任务（DELETE /api/installtasks）
+    if (api == QStringLiteral("/installtasks") && method == QStringLiteral("DELETE")) {
+        if (!m_install) { sendStatus(sock, 503, QStringLiteral("install coordinator not ready")); return; }
+        m_install->clearFinished();
         sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
         return;
     }

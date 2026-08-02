@@ -5,6 +5,7 @@
 #include <QVariantList>
 #include <QNetworkAccessManager>
 #include <functional>
+#include "httpclient.h"
 
 class QJsonDocument;
 class ServerManager;

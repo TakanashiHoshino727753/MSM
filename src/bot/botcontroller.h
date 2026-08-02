@@ -17,6 +17,7 @@ class ServerManager;
 class ServerController;
 class SettingsController;
 class DownloadManager;
+class InstallCoordinator;
 
 // QQ 机器人控制：独立管理 NapCat / NoneBot 两个外部进程，并内置一个
 // 与 WebUI 完全解耦的本地 HTTP 控制通道（默认端口 25585）。
@@ -72,6 +73,9 @@ public:
     void setUsageInterval(int v);
     void setBotLinkedStart(bool v);
     void setBotEnabled(bool v);
+
+    // 统一安装协调器（服务器类型+版本+加载器，支持多任务并发）。由主程序注入。
+    void setInstallCoordinator(InstallCoordinator *c) { m_install = c; }
 
     // ---- 自动搜索候选（设置页下拉用，后续会接入"安装"功能）----
     Q_INVOKABLE QStringList detectNonebotDirs() const;
@@ -201,6 +205,7 @@ private:
     ServerController *m_sc = nullptr;
     SettingsController *m_settings = nullptr;
     DownloadManager *m_dm = nullptr;
+    InstallCoordinator *m_install = nullptr;
 
     QProcess *m_napcatProc = nullptr;
     QProcess *m_nonebotProc = nullptr;

@@ -284,45 +284,23 @@ void DownloadCatalog::fetchJson(const QString &url,
                                 std::function<void(const QJsonDocument &)> onOk,
                                 std::function<void(const QString &)> onErr)
 {
-    QNetworkRequest req{QUrl(url)};
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("MinecraftServerManager/1.0 (https://github.com/MinecraftServerManager; contact: msm@example.com)"));
-    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                     QNetworkRequest::NoLessSafeRedirectPolicy);
-    req.setTransferTimeout(45000); // 卡死（无数据）时 45s 后失败，避免 WebUI 列表永久“加载中”
-    QNetworkReply *reply = m_nam->get(req);
-    // 总超时兜底：Qt 的 TransferTimeout 不覆盖“连接建立阶段”卡死（被墙域名），用 QTimer 强制结束。
-    QTimer *guard = new QTimer(reply);
-    guard->setSingleShot(true);
-    guard->setInterval(30000);
-    QObject::connect(guard, &QTimer::timeout, reply, [reply]() {
-        if (reply->isRunning()) reply->abort();
-    });
-    guard->start();
+    // 统一经由 HttpClient（超时兜底 + 只回调一次闸门）。保留 loading 计数：
+    // onOk/onErr 必触发一次（含超时），故 m_inflight 不会泄漏。子请求会让计数先增后减，避免 loading 闪烁。
     ++m_inflight;
     setLoading(m_inflight > 0);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, onOk, onErr]() {
-        const QByteArray data = reply->readAll();
-        const bool ok = reply->error() == QNetworkReply::NoError;
-        const QString err = reply->errorString();
-        reply->deleteLater();
-        if (!ok) {
-            onErr(err);
-            --m_inflight;
-            setLoading(m_inflight > 0);
-            return;
-        }
-        QJsonParseError pe;
-        const QJsonDocument doc = QJsonDocument::fromJson(data, &pe);
-        if (doc.isNull()) {
-            onErr(ts("JSON 解析失败: %1").arg(pe.errorString()));
-            --m_inflight;
-            setLoading(m_inflight > 0);
-            return;
-        }
-        onOk(doc);   // 回调中可能再次发起 fetchJson（子请求会让计数先增后减，避免 loading 闪烁）
+    auto dec = [this]() {
         --m_inflight;
         setLoading(m_inflight > 0);
-    });
+    };
+    HttpClient::getJson(m_nam, url,
+                        [this, dec, onOk](const QJsonDocument &doc) {
+                            dec();
+                            onOk(doc);
+                        },
+                        [this, dec, onErr](const QString &err) {
+                            dec();
+                            onErr(err);
+                        });
 }
 
 QStringList DownloadCatalog::modrinthBases()
@@ -992,21 +970,6 @@ void DownloadCatalog::onDownloadFinished(const QString &id, const QString &path)
         }
     }
     setStatus(ts("下载完成"));
-}
-
-void DownloadCatalog::openFile(int index)
-{
-    if (index < 0 || index >= m_items.size())
-        return;
-    const DownloadItem *it = m_items.at(index);
-    QString path = it->filePath();
-    if (path.isEmpty() && it->modrinthId().isEmpty() && !it->url().startsWith(QStringLiteral("java://")))
-        path = QDir(m_saveDir).filePath(it->filename());
-    if (path.isEmpty() || !QFile::exists(path)) {
-        setStatus(ts("没有可打开的文件"));
-        return;
-    }
-    QDesktopServices::openUrl(QUrl::fromLocalFile(path));
 }
 
 void DownloadCatalog::onDownloadError(const QString &id, const QString &message)

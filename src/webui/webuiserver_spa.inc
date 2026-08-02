@@ -710,7 +710,6 @@ async function renderDownloads(){
   el.innerHTML=`<h2>${T('下载中心')}</h2>
     <div class="cat" id="catrow"></div>
     <div class="cat" id="typrow"></div>
-    <div id="modpanel" style="display:none"></div>
     <div class="row" style="margin:8px 0">
       <input id="search" placeholder="${T('搜索…')}" style="flex:1"/>
       <button onclick="dlSearch()">${T('搜索')}</button>
@@ -723,6 +722,19 @@ async function renderDownloads(){
       <button onclick="dlSetDir()">${T('设置')}</button>
     </div>
     <div id="dlist"></div><div class="msg" id="dstatus"></div>
+    <div class="card" id="instCard" style="margin-top:14px;display:none">
+      <h3>生成服务端（打包下载）</h3>
+      <p class="sub">一次请求触发完整流程：下载 &rarr; 解析 &rarr; 打包成 .tar.gz 到下载目录（Java 直接落在 jvm-xx/bin，无多余内层）。</p>
+      <div class="row"><span>版本</span><select id="iver" onchange="fillInstallLoaders()"></select></div>
+      <div class="row"><span>加载器</span><select id="iloaders"></select></div>
+      <div class="row"><span>标签</span><input id="ilabel" placeholder="可选，自定义服务端名" /></div>
+      <div class="row"><label class="ck"><input type="checkbox" id="iaddtolist" checked /> 完成后加入服务器列表</label></div>
+      <div class="row"><button class="primary" onclick="doInstallServer()">生成并打包</button>
+        <button onclick="installTasksClear()">清除已完成</button></div>
+      <div class="msg" id="iprog"></div>
+      <div class="prog" style="margin-top:8px"><i id="ibar" style="width:0%"></i></div>
+      <div id="itasks" class="tasks"></div>
+    </div>
     <div id="dlpop">
       <div class="modal">
         <div class="modal-h"><b>${T('下载任务')}</b><button onclick="closeDlPop()">✕</button></div>
@@ -760,8 +772,11 @@ function pollDl(){
     document.getElementById('typrow').style.display=(d.currentKey==='server')?'flex':'none';
     markOn('catrow',d.currentKey);markOn('typrow',d.serverType);
     renderDlItems(d);
-    renderModPanel(d);
     const cj=document.getElementById('cleanjava'); if(cj)cj.style.display=(d.currentKey==='java')?'inline-block':'none';
+    // “生成服务端（打包下载）”卡片仅在「服务端-模组服」分类下出现
+    const ic=document.getElementById('instCard');
+    if(ic)ic.style.display=(d.currentKey==='server'&&d.serverType==='mod')?'block':'none';
+    if(d.currentKey==='server'&&d.serverType==='mod')fillInstallSelects(d);
     const anyDl=(d.items||[]).some(i=>i.downloading);
     const finished = !d.loading && d.currentKey===dlWant.key && !anyDl;
     if(finished || dlTries++>25){ if(dlTimer){clearInterval(dlTimer);dlTimer=null;} }
@@ -826,21 +841,129 @@ function loaderCompatible(l,v){
   if(l==='neoforge'){ if(v<'1.20.1')return false; if(v==='1.20')return false; return true; }
   return false;
 }
-function renderModPanel(d){
-  const p=document.getElementById('modpanel');
-  if(!(d.currentKey==='server'&&d.serverType==='mod')){ p.style.display='none'; p.innerHTML=''; return; }
-  p.style.display='block';
-  const vers=d.mcReleases||[], loaders=d.modLoaders||[], sel=d.selectedLoaders||[];
-  p.innerHTML=`<div class="row" style="margin:8px 0"><span class="muted">${T('版本')}</span>
-      <select id="mver">${vers.map(v=>`<option ${v===(d.modVersion||'')?'selected':''}>${esc(v)}</option>`).join('')}</select></div>
-    <div class="row" style="flex-wrap:wrap;gap:14px;margin:8px 0">${loaders.map(l=>`<label class="ck"><input type="checkbox" data-l="${l}" ${sel.indexOf(l)>=0?'checked':''} ${loaderCompatible(l,d.modVersion||'')?'':'disabled'}/> ${l}</label>`).join('')}</div>
-    <div class="row"><button class="primary" onclick="dlDownloadSelected()">${T('下载并打包选中加载器')}</button><button onclick="dlDownloadLoader()">${T('下载安装器')}</button><span class="muted">${T('已选')} ${sel.length} 个</span></div>`;
-  const mv=document.getElementById('mver');
-  if(mv)mv.onchange=e=>api('/api/catalog/modversion?version='+encodeURIComponent(e.target.value)).then(pollDl).catch(()=>{});
-  p.querySelectorAll('input[data-l]').forEach(cb=>cb.onchange=()=>api('/api/catalog/modloader?loader='+encodeURIComponent(cb.dataset.l)).then(pollDl).catch(()=>{}));
+
+/* ===== 生成服务端（打包下载）面板：一次 API 触发完整流程，同页显示进度 ===== */
+var installTimer = null;     // 进度轮询定时器
+var installIds = [];         // 当前关注的任务 id 列表
+var _instFillKey = '';        // 上次填充的选项指纹，避免高频轮询重复重建下拉
+
+function fillInstallSelects(d) {
+  const v = document.getElementById('iver');
+  const l = document.getElementById('iloaders');
+  if (!v || !l) return;
+  // 选项集合未变化则跳过重建，保留用户当前选择（pollDl 每 400ms 一次，重建会打断选择）。
+  const key = (d.mcReleases || []).join('|') + '#' + (d.modLoaders || []).join('|');
+  if (key === _instFillKey) return;
+  _instFillKey = key;
+  const curVer = v.value, curLd = l.value;
+  v.innerHTML = '';
+  (d.mcReleases || []).forEach(function (r) {
+    const o = document.createElement('option');
+    o.value = r; o.textContent = r;
+    v.appendChild(o);
+  });
+  if (curVer) v.value = curVer; else if (d.modVersion) v.value = d.modVersion;
+  fillInstallLoaders(d);
+  if (curLd) l.value = curLd;
 }
-function dlDownloadSelected(){api('/api/catalog/downloadselected').then(()=>toast(T('已开始下载并打包选中加载器'))).catch(e=>toast(T('失败:')+e.message));}
-function dlDownloadLoader(){const cb=document.querySelector('#loaderList input.lc:checked');if(!cb){toast(T('请先勾选一个加载器'));return;}api('/api/catalog/downloadloader?loader='+encodeURIComponent(cb.dataset.loader)).then(()=>toast(T('已开始下载安装器'))).catch(e=>toast(T('失败:')+e.message));}
+function fillInstallLoaders(d) {
+  const v = document.getElementById('iver');
+  const l = document.getElementById('iloaders');
+  if (!v || !l) return;
+  const ver = v.value, ld = d.modLoaders || [];
+  const cur = l.value;
+  l.innerHTML = '';
+  ld.forEach(function (o) {
+    const op = document.createElement('option');
+    op.value = o; op.textContent = o;
+    if (!loaderCompatible(o, ver)) { op.disabled = true; op.textContent += '（该版本不支持）'; }
+    l.appendChild(op);
+  });
+  if (cur && loaderCompatible(cur, ver)) l.value = cur;
+}
+
+function doInstallServer() {
+  const type = 'mod'; // 此卡片仅在模组服分类下显示，类型固定为 mod
+  const version = document.getElementById('iver').value.trim();
+  const label = document.getElementById('ilabel').value.trim();
+  const addToList = document.getElementById('iaddtolist').checked;
+  let loaders = [];
+  const ldv = document.getElementById('iloaders').value;
+  if (ldv) loaders = [ldv];
+  if (!version) { installMsg('请选择版本', true); return; }
+  if (!loaders.length) { installMsg('请选择加载器（forge / fabric / neoforge）', true); return; }
+  installMsg('提交中…');
+  api('/api/installserver', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type, version, loaders, label, addToList })
+  })
+    .then(r => {
+      const id = r && r.taskId ? r.taskId : null;
+      if (!id) { installMsg('未返回任务 ID：' + JSON.stringify(r), true); return; }
+      if (installIds.indexOf(id) < 0) installIds.push(id);
+      installMsg('已提交任务 ' + id + '，开始打包…');
+      if (!installTimer) installTimer = setInterval(pollInstallTasks, 1000);
+      pollInstallTasks();
+    })
+    .catch(e => installMsg('提交失败：' + (e && e.message ? e.message : e), true));
+}
+
+function installMsg(m, bad) {
+  const el = document.getElementById('iprog');
+  el.textContent = m || '';
+  el.className = 'msg' + (bad ? ' err' : '');
+}
+
+function pollInstallTasks() {
+  api('/api/installtasks').then(res => {
+    const arr = (res && res.tasks) ? res.tasks : (Array.isArray(res) ? res : []);
+    const tasks = arr.filter(t => installIds.indexOf(t.id) >= 0);
+    renderInstallTasks(tasks);
+    // 所有关注任务均已完成：停止轮询并清理关注列表，避免持续轮询历史任务
+    if (tasks.length === installIds.length && tasks.every(t => t.finished)) {
+      clearInterval(installTimer); installTimer = null;
+      for (const t of tasks) { const i = installIds.indexOf(t.id); if (i >= 0) installIds.splice(i, 1); }
+    }
+  }).catch(() => {});
+}
+
+function renderInstallTasks(tasks) {
+  const box = document.getElementById('itasks');
+  if (!tasks.length) { box.innerHTML = ''; return; }
+  box.innerHTML = tasks.map(t => {
+    const pct = Math.max(0, Math.min(100, Math.round((t.progress || 0) * 100)));
+    const cls = t.finished ? (t.ok ? 'ok' : 'err') : '';
+    const head = (t.label ? esc(t.label) + ' ' : '') + '<span class="muted">' + esc(t.type) + ' ' + esc(t.version) + (t.loaders && t.loaders.length ? ' ' + esc(t.loaders.join(',')) : '') + '</span>';
+    const stage = t.stage ? esc(t.stage) + (t.stageProgress ? ' ' + Math.round(t.stageProgress * 100) + '%' : '') : '';
+    const status = esc(t.status || '');
+    const msg = t.message ? '<div class="muted">' + esc(t.message) + '</div>' : '';
+    return '<div class="task ' + cls + '"><div class="task-h">' + head +
+      (t.finished ? '<span class="badge">' + (t.ok ? '完成' : '失败') + '</span>' : '<span class="badge run">进行中</span>') +
+      '</div>' +
+      '<div class="prog"><i style="width:' + pct + '%"></i></div>' +
+      (stage ? '<div class="muted">' + stage + '</div>' : '') +
+      (status ? '<div class="muted">' + status + '</div>' : '') + msg +
+      '</div>';
+  }).join('');
+  // 用列表中第一个未完成任务刷新顶部总进度条
+  const cur = tasks.find(t => !t.finished) || tasks[tasks.length - 1];
+  if (cur) {
+    const pct = Math.max(0, Math.min(100, Math.round((cur.progress || 0) * 100)));
+    document.getElementById('ibar').style.width = pct + '%';
+    if (!cur.finished) installMsg(cur.label ? (cur.label + '：' + (cur.stage || cur.status || '处理中') + ' ' + pct + '%') : ('进度 ' + pct + '%'));
+  }
+}
+
+function installTasksClear() {
+  api('/api/installtasks').then(res => {
+    const arr = (res && res.tasks) ? res.tasks : (Array.isArray(res) ? res : []);
+    arr.forEach(t => { if (t.finished && installIds.indexOf(t.id) >= 0) installIds.splice(installIds.indexOf(t.id), 1); });
+    const ids = arr.filter(t => t.finished).map(t => t.id);
+    if (ids.length) api('/api/installtasks?clear=1', { method: 'DELETE' }).then(() => { document.getElementById('itasks').innerHTML=''; document.getElementById('ibar').style.width='0%'; }).catch(()=>{});
+  }).catch(()=>{});
+}
+
 function dlCleanJava(){api('/api/catalog/cleantempjava').then(()=>toast(T('已清理临时 Java'))).catch(e=>toast(T('失败:')+e.message));}
 function dlSetDir(){const v=document.getElementById('savedir').value;api('/api/catalog/savedir?dir='+encodeURIComponent(v)).then(dlRefresh).catch(e=>toast(T('失败:')+e.message));}
 

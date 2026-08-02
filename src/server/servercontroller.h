@@ -69,10 +69,6 @@ public:
     Q_INVOKABLE QVariantMap readProperties(const QString &path);
     // 将键值映射写回 server.properties（仅覆盖提供过的键，保留其余原值）
     Q_INVOKABLE void writeProperties(const QString &path, const QVariantMap &map);
-    // 读取服务端目录中保存的、专用于该服务器的 Java 路径（可为空=用系统默认）
-    Q_INVOKABLE QString readServerJavaPath(const QString &path) const;
-    // 为该服务器单独设置/清空 Java 路径（写入 eula/启动配置或单独记录文件）
-    Q_INVOKABLE void setServerJavaPath(const QString &path, const QString &javaPath);
     // 运行中服务器的资源占用快照（CPU%/内存MB/在线人数/运行时长）
     Q_INVOKABLE QVariantList runningServerUsages() const;
 

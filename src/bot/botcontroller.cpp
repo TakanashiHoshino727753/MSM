@@ -16,6 +16,8 @@
 #include "settingscontroller.h"
 #include "downloadmanager.h"
 #include "downloadlistmodel.h"
+#include "installcoordinator.h"
+#include "httpclient.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -1378,22 +1380,12 @@ void BotController::onApiReadyRead()
 
 QString BotController::urlDecode(const QString &s)
 {
-    return QUrl::fromPercentEncoding(s.toUtf8());
+    return HttpClient::urlDecode(s);
 }
 
 QMap<QString, QString> BotController::parseQuery(const QString &q)
 {
-    QMap<QString, QString> out;
-    if (q.isEmpty())
-        return out;
-    for (const QString &p : q.split(QLatin1Char('&'), Qt::SkipEmptyParts)) {
-        const int eq = p.indexOf(QLatin1Char('='));
-        if (eq < 0)
-            out[urlDecode(p)] = QString();
-        else
-            out[urlDecode(p.left(eq))] = urlDecode(p.mid(eq + 1));
-    }
-    return out;
+    return HttpClient::parseQuery(q);
 }
 
 // 控制通道鉴权：本机(loopback)客户端直接放行；非本机必须携带正确令牌。
@@ -1618,6 +1610,34 @@ void BotController::dispatchApi(const QString &method, const QString &path,
                 sendStatus(sock, 400, QStringLiteral("未知目标")); return;
             }
             sendJson(sock, QJsonObject{{QStringLiteral("success"), true}, {QStringLiteral("target"), target}, {QStringLiteral("enabled"), en}});
+            return;
+        }
+        // 统一安装 API：服务器类型 + 版本 + 加载器（可多任务并发）。
+        // POST {"type":"paper|vanilla|mod","version":"1.21.1","loaders":["forge"],"label":"x","addToList":true}
+        // 返回 {"success":true,"taskId":"<uuid>"}
+        if (path == QStringLiteral("/api/installserver")) {
+            if (!m_install) { sendStatus(sock, 503, QStringLiteral("install coordinator not ready")); return; }
+            const QString type = bodyJson.value(QStringLiteral("type")).toString();
+            const QString version = bodyJson.value(QStringLiteral("version")).toString();
+            const QString label = bodyJson.value(QStringLiteral("label")).toString();
+            const bool addToList = bodyJson.value(QStringLiteral("addToList")).toBool(true);
+            QStringList loaders;
+            const QJsonValue lv = bodyJson.value(QStringLiteral("loaders"));
+            if (lv.isArray()) {
+                for (const QJsonValue &v : lv.toArray()) loaders.append(v.toString());
+            }
+            const QString id = m_install->installServer(type, version, loaders, label, addToList);
+            if (id.isEmpty()) {
+                sendStatus(sock, 400, QStringLiteral("invalid type/version"));
+                return;
+            }
+            sendJson(sock, QJsonObject{{QStringLiteral("success"), true}, {QStringLiteral("taskId"), id}});
+            return;
+        }
+        // 安装任务进度查询（轮询快照）
+        if (path == QStringLiteral("/api/installtasks")) {
+            if (!m_install) { sendStatus(sock, 503, QStringLiteral("install coordinator not ready")); return; }
+            sendJson(sock, QJsonObject{{QStringLiteral("tasks"), m_install->tasks()}});
             return;
         }
     }

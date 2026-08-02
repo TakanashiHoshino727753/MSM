@@ -110,7 +110,7 @@ QString SchedulerController::dayKey(const QString &server, const QString &action
 
 void SchedulerController::load()
 {
-    QSettings s(QStringLiteral("MSM"), QStringLiteral("MSM"));
+    QSettings s;
     const QByteArray raw = s.value(QStringLiteral("sched/tasks")).toByteArray();
     if (raw.isEmpty())
         return;
@@ -121,6 +121,6 @@ void SchedulerController::load()
 
 void SchedulerController::save()
 {
-    QSettings s(QStringLiteral("MSM"), QStringLiteral("MSM"));
+    QSettings s;
     s.setValue(QStringLiteral("sched/tasks"), QJsonDocument(QJsonArray::fromVariantList(m_tasks)).toJson(QJsonDocument::Compact));
 }

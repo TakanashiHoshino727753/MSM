@@ -152,6 +152,7 @@ HELP = (
     "强关/forcestop [名称] 强制结束进程\n"
     "删除/delete <名称> 删除服务器（仅管理员）\n"
     "下载/downloads 当前下载任务\n"
+    "安装/install <类型> <版本> [加载器...] 安装服务器（类型省略默认 mod 模组服）\n"
     "重启/restart [名称] 重启服务器\n"
     "广播/broadcast <消息> 全服广播\n"
     "白名单/whitelist add|remove|list|on|off <玩家> 管理白名单\n"
@@ -161,7 +162,8 @@ HELP = (
 
 PRIVILEGED = {"命令", "启动", "停止", "强关", "删除", "webui", "napcat", "nonebot",
               "cmd", "start", "stop", "forcestop", "delete",
-              "重启", "restart", "广播", "broadcast", "白名单", "whitelist"}
+              "重启", "restart", "广播", "broadcast", "白名单", "whitelist",
+              "安装", "install"}
 
 
 async def _send(bot: Bot, event: MessageEvent, text: str):
@@ -353,6 +355,45 @@ async def h_downloads(bot, event, rest):
     await _send(bot, event, "下载：\n" + "\n".join(lines))
 
 
+_INSTALL_TYPES = {"paper", "vanilla", "mod", "模组", "模组服", "forge", "fabric", "neoforge"}
+
+
+async def h_install(bot, event, rest):
+    """安装服务器：安装 <类型> <版本> [加载器...]；类型可省略（默认 mod 模组服）。
+
+    例：
+      安装 1.21.1 forge            -> 模组服 1.21.1 + forge
+      安装 paper 1.21.1            -> Paper 1.21.1
+      安装 vanilla 1.20.4          -> 原版 1.20.4
+      安装 mod 1.26.2 forge fabric -> 模组服 1.26.2 + forge/fabric 两个加载器
+    """
+    toks = rest.split()
+    if len(toks) < 2:
+        await _send(bot, event, "用法：安装 <类型> <版本> [加载器...]（类型省略时默认 mod 模组服）")
+        return
+    first = toks[0].lower()
+    if first in _INSTALL_TYPES:
+        itype = "mod" if first in ("mod", "模组", "模组服") else first
+        version = toks[1]
+        loaders = toks[2:]
+    else:
+        itype = "mod"
+        version = toks[0]
+        loaders = toks[1:]
+    # forge/fabric/neoforge 这类纯加载器 token 直接作为 loaders；其余当作版本补全
+    if itype != "mod" and loaders:
+        await _send(bot, event, f"类型 {itype} 不支持加载器，已忽略：{loaders}")
+        loaders = []
+    data = await asyncio.to_thread(
+        _api, "POST", "/api/installserver",
+        json={"type": itype, "version": version, "loaders": loaders, "addToList": True},
+    )
+    if data.get("success"):
+        await _send(bot, event, f"已提交安装任务：{itype} {version} {(' '.join(loaders) or '')}\n任务ID：{data.get('taskId')}")
+    else:
+        await _send(bot, event, "安装提交失败：" + str(data.get("message", data)))
+
+
 async def h_usage(bot, event, rest):
     data = _api("GET", "/api/usage")
     arr = data.get("servers", [])
@@ -411,6 +452,7 @@ ALIAS = {
     "白名单": h_whitelist, "whitelist": h_whitelist,
     "删除": h_delete, "delete": h_delete,
     "下载": h_downloads, "downloads": h_downloads,
+    "安装": h_install, "install": h_install,
     "webui": h_control, "napcat": h_control, "nonebot": h_control,
 }
 

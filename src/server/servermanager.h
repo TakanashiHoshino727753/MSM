@@ -169,14 +169,14 @@ public:
         emit serversChanged();
     }
 
-    // 扫描"默认服务器目录"文件夹，自动发现 Minecraft 服务端并加入列表
-    Q_INVOKABLE void scanServers() {
-        // 只扫描“默认服务器目录”（文档/MSM 或用户自定义目录）下的服务器，不递归整个文档目录，
-        // 避免把文档里其它含 server.properties 的目录误判为服务器。
-        const QString docDir = QStandardPaths::writableLocation(
-            QStandardPaths::DocumentsLocation);
-        QStringList roots = { m_scanRoot.isEmpty() ? (docDir + QStringLiteral("/MSM"))
-                                                    : m_scanRoot };
+        // 扫描"默认服务器目录"文件夹，自动发现 Minecraft 服务端并加入列表
+        Q_INVOKABLE void scanServers() {
+            // 只扫描“默认服务器目录”（文档/MSM 或用户自定义目录）下的服务器，不递归整个文档目录，
+            // 避免把文档里其它含 server.properties 的目录误判为服务器。
+            const QString docDir = QStandardPaths::writableLocation(
+                QStandardPaths::DocumentsLocation);
+            QStringList roots = { m_scanRoot.isEmpty() ? (docDir + QStringLiteral("/MSM"))
+                                                        : m_scanRoot };
         // 刷新时以自己当前的列表为基准，逐个检查其登记路径在磁盘上是否仍是有效的
         // 服务器目录（目录存在且含 server.properties），且仍位于“默认服务器目录”树内。
         // 失效（被删除/目录残留无服务端文件）或已不在默认目录下的条目从列表移除，

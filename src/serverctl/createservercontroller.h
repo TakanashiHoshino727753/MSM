@@ -10,6 +10,7 @@
 #include <QStandardPaths>
 #include <QVector>
 #include <QTimer>
+#include "httpclient.h"
 
 class DownloadManager;
 class ServerManager;

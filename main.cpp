@@ -58,6 +58,7 @@
 #include "settingscontroller.h"
 #include "webuiserver.h"
 #include "botcontroller.h"
+#include "installcoordinator.h"
 #include "proxycontroller.h"
 #include "proxymanager.h"
 #include "notifier.h"
@@ -621,135 +622,8 @@ private:
 
 // 下载引擎定义见 downloadmanager.h（基于 QNetworkAccessManager 的真实 HTTP 文件下载）。
 
-// 安装协调器：在应用层（可依赖所有模块）为"下载中心"的每个加载器
-// 新建独立 CreateServerController 实例，复用已验证的单加载器安装流程，
-// 每个加载器生成独立服务端目录并加入服务器列表。放在应用层可避免
-// download 模块反向依赖 serverctl 模块（保持单向无环的分层约束）。
-class InstallCoordinator : public QObject
-{
-    Q_OBJECT
-    Q_PROPERTY(qreal progress READ progress NOTIFY progressChanged)
-    Q_PROPERTY(qreal stageProgress READ stageProgress NOTIFY stageProgressChanged)
-    Q_PROPERTY(QString stageText READ stageText NOTIFY stageTextChanged)
-    Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
-public:
-    InstallCoordinator(DownloadManager *dm, ServerManager *sm, JavaManager *java, QObject *parent = nullptr)
-        : QObject(parent), m_dm(dm), m_sm(sm), m_java(java) {}
-
-    qreal progress() const { return m_progress; }
-    qreal stageProgress() const { return m_stageProgress; }
-    QString stageText() const { return m_stageText; }
-    bool busy() const { return m_busy; }
-
-    Q_INVOKABLE void install(const QString &loader,
-                             const QString &version,
-                             const QString &label)
-    {
-        if (!m_sm || !m_dm) {
-            emit status(QStringLiteral("服务器管理器未初始化，无法安装到服务端"));
-            return;
-        }
-        if (version.isEmpty()) {
-            emit status(QStringLiteral("请先选择 Minecraft 版本"));
-            return;
-        }
-        if (m_busy) {
-            emit status(QStringLiteral("已有打包任务进行中，请稍候…"));
-            return;
-        }
-        setBusy(true);
-        setProgress(0);
-        setStageProgress(0);
-        setStageText(QString());
-
-        // "下载中心 - 模组服"复用与创建服务器完全相同的安装逻辑（同样的临时目录构建 +
-        // 与普通服务器一致的 Java 安装策略），只准备服务端目录、不加入服务器列表、
-        // 不打包：产物直接落在下载目录/<名称> 下（含 jvm-{feature}/ 的 Java）。
-        const QString name = label + QStringLiteral(" ") + version;
-        const QString safe = name.toLower().replace(QLatin1Char(' '), QStringLiteral("_"));
-        const QString dir = QDir::cleanPath(QDir::fromNativeSeparators(m_dm->defaultDownloadDir())
-                                            + QStringLiteral("/") + safe);
-
-        // 每次新建独立控制器，复用已验证的安装逻辑，互不污染、各自删除
-        auto *ctrl = new CreateServerController(m_dm, m_sm, m_java, this);
-        connect(ctrl, &CreateServerController::statusTextChanged, this, [this, ctrl]() {
-            emit status(ctrl->statusText());
-        });
-        // 转发安装进度到协调器（供下载中心进度条显示）
-        connect(ctrl, &CreateServerController::progressChanged, this, [this, ctrl]() {
-            setProgress(ctrl->progress());
-        });
-        // 转发当前阶段子进度与阶段文案
-        connect(ctrl, &CreateServerController::stageProgressChanged, this, [this, ctrl]() {
-            setStageProgress(ctrl->stageProgress());
-        });
-        connect(ctrl, &CreateServerController::stageTextChanged, this, [this, ctrl]() {
-            setStageText(ctrl->stageText());
-        });
-        // 安装中途失败：busy 变 false 且未 done（deleteLater 延后删除，不影响后续 done 信号）
-        connect(ctrl, &CreateServerController::busyChanged, this, [this, ctrl]() {
-            if (!ctrl->busy() && !ctrl->done()) {
-                setBusy(false);
-                ctrl->deleteLater();
-            }
-        });
-        connect(ctrl, &CreateServerController::doneChanged, this, [this, ctrl, name]() {
-            if (ctrl->done()) {
-                setProgress(100);
-                setStageProgress(100);
-                setStageText(QString());
-                setBusy(false);
-                emit status(name + QStringLiteral(" 安装完成（未加入服务器列表，已生成到下载文件夹）"));
-                ctrl->deleteLater();
-            }
-        });
-
-        ctrl->setCurrentType(QStringLiteral("模组服"));   // 内部 key 解析为 "mod"
-        ctrl->setCurrentVersion(version);
-        ctrl->setName(name);
-        ctrl->setSaveDir(dir);
-        ctrl->setEulaAccepted(true);
-        ctrl->setSkipAddList(true);   // 不加入服务器列表
-        ctrl->setPackaged(true);      // 下载中心：模组服直接打包为压缩包
-        ctrl->setSelectedLoaders(QStringList() << loader);
-        ctrl->create();
-    }
-
-signals:
-    void status(const QString &text);
-    void progressChanged();
-    void stageProgressChanged();
-    void stageTextChanged();
-    void busyChanged();
-
-private:
-    void setProgress(qreal p) {
-        if (qAbs(p - m_progress) < 0.001) return;
-        m_progress = p;
-        emit progressChanged();
-    }
-    void setStageProgress(qreal p) {
-        if (qAbs(p - m_stageProgress) < 0.001) return;
-        m_stageProgress = p;
-        emit stageProgressChanged();
-    }
-    void setStageText(const QString &t) {
-        if (m_stageText != t) { m_stageText = t; emit stageTextChanged(); }
-    }
-    void setBusy(bool b) {
-        if (m_busy == b) return;
-        m_busy = b;
-        emit busyChanged();
-    }
-
-    DownloadManager *m_dm = nullptr;
-    ServerManager *m_sm = nullptr;
-    JavaManager *m_java = nullptr;
-    qreal m_progress = 0;
-    qreal m_stageProgress = 0;
-    QString m_stageText;
-    bool m_busy = false;
-};
+// 安装协调器（InstallCoordinator）已独立为 installcoordinator.h/.cpp：
+// 支持"服务器类型 + 版本 + 加载器"的并发多任务安装，供下载中心 / WebUI / 机器人插件调用。
 
 // 诊断模式（Debug 专属）：在 cmd/控制台打印 qrc 资源路径、QML 导入路径等信息后退出（不启动 GUI）。
 // 用法：MinecraftServerManager.exe --console   （简写 -c / -diag）。仅 Debug 构建编译/可用。
@@ -1039,8 +913,10 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(QStringLiteral("schedulerController"), &schedulerController);
     engine.rootContext()->setContextProperty(QStringLiteral("updateController"), &updateController);
 
-    QObject::connect(&installCoordinator, &InstallCoordinator::status,
-                     &downloadCatalog, &DownloadCatalog::setStatus);
+    QObject::connect(&installCoordinator, &InstallCoordinator::toast,
+                     &downloadCatalog, [&downloadCatalog](const QString &title, const QString &text) {
+                         downloadCatalog.setStatus(title + QStringLiteral("：") + text);
+                     });
 
     appController->setSettingsController(&settingsController);
 
@@ -1053,6 +929,8 @@ int main(int argc, char *argv[])
 
     webuiServer.setThemeState(darkTheme, accentColor);
     webuiServer.setPort(settingsController.webuiPort());
+    webuiServer.setInstallCoordinator(&installCoordinator);
+    botController.setInstallCoordinator(&installCoordinator);
     webuiServer.setEnabled(settingsController.webuiEnabled());
     QObject::connect(&settingsController, &SettingsController::webuiEnabledChanged,
                      [&webuiServer, &settingsController]() { webuiServer.setEnabled(settingsController.webuiEnabled()); });

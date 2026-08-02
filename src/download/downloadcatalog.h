@@ -7,6 +7,7 @@
 #include <QHash>
 #include <QUrl>
 #include <functional>
+#include "httpclient.h"
 
 class DownloadManager;
 class DownloadItem;
@@ -117,7 +118,6 @@ public:
     // 按列表索引暂停 / 继续下载（与本地端下载列表的暂停、继续一致）
     Q_INVOKABLE void pause(int index);
     Q_INVOKABLE void resume(int index);
-    Q_INVOKABLE void openFile(int index);
     Q_INVOKABLE QVariantList items() const;
 
     QString status() const;
