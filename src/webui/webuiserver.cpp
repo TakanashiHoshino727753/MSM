@@ -142,13 +142,10 @@ void WebUIServer::rebind()
 // 配置 TLS 并开始监听。暴露到局域网(0.0.0.0)时必须带令牌；默认仅本机(127.0.0.1)。
 bool WebUIServer::startListen()
 {
-    // 先尝试同步加载已有证书（快，不阻塞）。若无证书则先以明文启动，再异步生成后升级 HTTPS，
-    // 避免 openssl 子进程阻塞主线程导致 WebUI 首屏长时间打不开。
-    if (!loadExistingTls()) {
-        m_https = false;
-        if (!m_settings->webuiCertPath().isEmpty() || QSslSocket::supportsSsl())
-            generateCertAsync();   // 生成完成后会 rebind 升级到 HTTPS
-    }
+    // 优先同步加载已有证书（快，不阻塞）；不存在/无效时同步生成（保证 HTTPS，
+    // 避免“证书未就绪→明文→用户用 https 访问得到空白页”）。仅首次/证书损坏时占用至多数秒。
+    if (!loadExistingTls())
+        ensureCertSync();
     const QHostAddress addr = m_settings->webuiExposeLan()
         ? QHostAddress::Any
         : QHostAddress::LocalHost;
@@ -517,35 +514,28 @@ bool WebUIServer::loadExistingTls()
     return false;
 }
 
-// 异步生成自签证书（不阻塞主线程/事件循环）。生成完成后再 rebind 升级为 HTTPS。
-// 若生成失败，保持明文模式运行。
-void WebUIServer::generateCertAsync()
+// 同步生成自签证书并加载（保证 HTTPS 可用，避免“证书未就绪→明文→用户用 https 访问得空白页”）。
+// 仅在证书文件不存在/无效时调用，故仅在首次启动或证书损坏时占用至多数秒；之后走 loadExistingTls 快路径。
+// 生成失败则返回 false（回退明文模式，功能不受影响，仅非加密）。
+bool WebUIServer::ensureCertSync()
 {
     const QString cerPath = certDir() + QStringLiteral("/msm_webui.crt");
     const QString keyPath = certDir() + QStringLiteral("/msm_webui.key");
     QFile::remove(cerPath);
     QFile::remove(keyPath);
 #ifdef Q_OS_WIN
-    if (!generateSelfSignedCertFilesSafe(cerPath, keyPath))
+    if (!generateSelfSignedCertFilesSafe(cerPath, keyPath)) {
         qWarning() << "[WebUI] 自签证书生成失败，将以明文提供（功能不受影响，仅非加密）";
-    else
-        QMetaObject::invokeMethod(this, "rebind", Qt::QueuedConnection);
+        return false;
+    }
 #else
-    if (!QSslSocket::supportsSsl()) return;   // 无 TLS 后端，明文即可
-    auto *op = new QProcess(this);
-    connect(op, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this, [this, op, cerPath, keyPath](int code, QProcess::ExitStatus st) {
-        op->deleteLater();
-        if (st == QProcess::NormalExit && code == 0 && QFile::exists(cerPath) && QFile::exists(keyPath)) {
-            qInfo() << "[WebUI] 自签证书已生成，升级到 HTTPS";
-            QMetaObject::invokeMethod(this, "rebind", Qt::QueuedConnection);
-        } else {
-            qWarning() << "[WebUI] 自签证书生成失败，将以明文提供（功能不受影响，仅非加密）"
-                       << op->readAllStandardError();
-        }
-    });
-    op->setProgram(QStringLiteral("openssl"));
-    op->setArguments({
+    if (!QSslSocket::supportsSsl()) {
+        qWarning() << "[WebUI] 缺少 TLS 后端插件，无法生成证书，将以明文提供";
+        return false;
+    }
+    QProcess openssl;
+    openssl.setProgram(QStringLiteral("openssl"));
+    openssl.setArguments({
         QStringLiteral("req"), QStringLiteral("-x509"),
         QStringLiteral("-newkey"), QStringLiteral("rsa:2048"),
         QStringLiteral("-nodes"),
@@ -555,12 +545,34 @@ void WebUIServer::generateCertAsync()
         QStringLiteral("-subj"), QStringLiteral("/CN=localhost"),
         QStringLiteral("-addext"), QStringLiteral("subjectAltName=DNS:localhost,IP:127.0.0.1"),
     });
-    op->start();
-    if (!op->waitForStarted(5000)) {   // 仅等进程启动；生成本身异步，不阻塞事件循环
-        op->deleteLater();
-        qWarning() << "[WebUI] openssl 启动失败（可能不在 PATH），将以明文提供";
+    openssl.start();
+    if (!openssl.waitForStarted(5000) || !openssl.waitForFinished(30000)) {
+        qWarning() << "[WebUI] openssl 生成证书失败（可能不在 PATH），将以明文提供";
+        return false;
+    }
+    if (openssl.exitStatus() != QProcess::NormalExit || openssl.exitCode() != 0) {
+        qWarning() << "[WebUI] openssl 生成自签证书失败:" << openssl.readAllStandardError();
+        return false;
     }
 #endif
+    // 加载刚生成的证书
+    if (!QFile::exists(cerPath) || !QFile::exists(keyPath))
+        return false;
+    QSslConfiguration conf = QSslConfiguration::defaultConfiguration();
+    conf.setPeerVerifyMode(QSslSocket::VerifyNone);
+    conf.setProtocol(QSsl::TlsV1_2OrLater);
+    const QList<QSslCertificate> certs = QSslCertificate::fromPath(cerPath);
+    QFile kf(keyPath);
+    if (certs.isEmpty() || !kf.open(QIODevice::ReadOnly))
+        return false;
+    QSslKey key(&kf, QSsl::Rsa);
+    if (key.isNull())
+        return false;
+    conf.setLocalCertificate(certs.first());
+    conf.setPrivateKey(key);
+    m_sslConf = conf;
+    m_https = true;
+    return true;
 }
 
 // 校验访问令牌：来源 Authorization: Bearer <token> 或 ?token=<token>。
