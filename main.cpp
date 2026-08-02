@@ -693,9 +693,12 @@ static int runConsoleDiagnostics(int argc, char *argv[])
 int main(int argc, char *argv[])
 {
     qInstallMessageHandler(msmMessageOutput);
-    // 使用 Windows 原生 SChannel 作为 TLS 后端（无需额外 OpenSSL DLL），
-    // 修复发布/运行目录下因找不到 OpenSSL 而"所有 HTTPS 请求失败（网络异常）"的问题。
-    qputenv("QT_TLS_BACKEND", "schannel");
+    // 使用 OpenSSL 作为 TLS 后端：部署目录已随包附带 libssl-3-x64.dll / libcrypto-3-x64.dll
+    // （取自 Git for Windows 的 MinGW-w64 OpenSSL 3.x，ABI 与 mingw1310 兼容）。
+    // 注：SChannel 后端无法可靠加载 PEM 格式的私钥（QSslServer 证书握手会失败/崩溃），
+    // 而 WebUI 自签证书为 openssl 生成的 PEM，必须用 openssl 后端才能正确加载。
+    // 下载中心(模组服/加载器)的 HTTPS 同样走 openssl 后端，稳定可用。
+    qputenv("QT_TLS_BACKEND", "openssl");
 
     // 锁定 Qt RHI 渲染后端为 OpenGL：避免依赖 Vulkan 头文件/SDK（构建时
     // "Could NOT find WrapVulkanHeaders"、运行时无需 Vulkan），改用系统 OpenGL。

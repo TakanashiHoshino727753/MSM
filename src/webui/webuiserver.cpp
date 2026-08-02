@@ -312,136 +312,51 @@ QString WebUIServer::certDir() const
     return dir;
 }
 
-// 运行时用 Windows CryptoAPI 生成自签证书 + 私钥（PEM），每台机器独立，不污染证书存储。
-#ifdef Q_OS_WIN
-#pragma comment(lib, "crypt32.lib")
-#pragma comment(lib, "advapi32.lib")
-
-// MinGW 的 wincrypt.h 中 CryptExportPKCS8 声明少了 hKey 参数（已知 header bug），
-// 这里按真实 8 参签名用 GetProcAddress 加载，避免误用错误的头声明。
-typedef BOOL (WINAPI *CryptExportPKCS8_t)(
-    HCRYPTPROV hCryptProv, DWORD dwKeySpec, LPSTR pszPrivateKeyObjId,
-    HCRYPTKEY hKey, DWORD dwFlags, void *pvAuxInfo,
-    BYTE *pbPrivateKeyBlob, DWORD *pcbPrivateKeyBlob);
-
-// 将 CSP 私钥直接导出为 PKCS#8 DER（Qt 的 Schannel 后端原生支持），再包成 PEM。
-static bool exportRsaPrivateKeyPem(HCRYPTPROV hProv, HCRYPTKEY hKey, QByteArray &pemOut)
-{
-    HMODULE hCrypt32 = GetModuleHandleA("crypt32.dll");
-    if (!hCrypt32) return false;
-    CryptExportPKCS8_t pfn = (CryptExportPKCS8_t)GetProcAddress(hCrypt32, "CryptExportPKCS8");
-    if (!pfn) return false;
-    DWORD len = 0;
-    if (!pfn(hProv, AT_SIGNATURE, (LPSTR)szOID_RSA_RSA, hKey, 0, NULL, NULL, &len) || len == 0)
-        return false;
-    QByteArray der((int)len, 0);
-    if (!pfn(hProv, AT_SIGNATURE, (LPSTR)szOID_RSA_RSA, hKey, 0, NULL, (BYTE *)der.data(), &len))
-        return false;
-    DWORD b64 = 0;
-    if (!CryptBinaryToStringA((const BYTE *)der.constData(), der.size(), CRYPT_STRING_BASE64, NULL, &b64))
-        return false;
-    QByteArray out((int)b64, 0);
-    if (!CryptBinaryToStringA((const BYTE *)der.constData(), der.size(), CRYPT_STRING_BASE64, (LPSTR)out.data(), &b64))
-        return false;
-    out.truncate((int)b64);
-    if (!out.isEmpty() && out.at(out.size() - 1) == 0) out.chop(1);
-    pemOut = "-----BEGIN PRIVATE KEY-----\n" + out + "\n-----END PRIVATE KEY-----\n";
-    return true;
-}
-
-// 生成自签证书(crt) + 私钥(key) 两个 PEM 文件，10 年有效，主题 CN=localhost。
-static bool generateSelfSignedCertFiles(const QString &certPath, const QString &keyPath)
-{
-    HCRYPTPROV hProv = 0;
-    const QString container = QStringLiteral("MSMWebUI_") + QUuid::createUuid().toString(QUuid::WithoutBraces);
-    if (!CryptAcquireContext(&hProv, (LPCWSTR)container.utf16(), NULL, PROV_RSA_FULL, CRYPT_NEWKEYSET)) {
-        if (GetLastError() != NTE_EXISTS ||
-            !CryptAcquireContext(&hProv, (LPCWSTR)container.utf16(), NULL, PROV_RSA_FULL, 0))
-            return false;
-    }
-    HCRYPTKEY hKey = 0;
-    if (!CryptGenKey(hProv, AT_SIGNATURE, (2048 << 16) | CRYPT_EXPORTABLE, &hKey)) {
-        CryptReleaseContext(hProv, 0);
-        return false;
-    }
-    BYTE nameBuf[256];
-    DWORD nameLen = sizeof(nameBuf);
-    if (!CertStrToName(X509_ASN_ENCODING, L"CN=localhost", CERT_X500_NAME_STR, NULL,
-                       nameBuf, &nameLen, NULL)) {
-        CryptDestroyKey(hKey); CryptReleaseContext(hProv, 0); return false;
-    }
-    CERT_NAME_BLOB subject = { nameLen, nameBuf };
-    CRYPT_ALGORITHM_IDENTIFIER sigAlg = { (LPSTR)szOID_RSA_SHA256RSA, 0, NULL };
-    SYSTEMTIME st; GetSystemTime(&st);
-    SYSTEMTIME stStart = st;
-    SYSTEMTIME stEnd = st;
-    stEnd.wYear += 10;
-    PCCERT_CONTEXT pCert = CertCreateSelfSignCertificate(
-        hProv, &subject, 0, NULL, &sigAlg, &stStart, &stEnd, NULL);
-    if (!pCert) {
-        CryptDestroyKey(hKey); CryptReleaseContext(hProv, 0); return false;
-    }
-    bool ok = false;
-    DWORD cb = 0;
-    if (CryptBinaryToStringA(pCert->pbCertEncoded, pCert->cbCertEncoded,
-                            CRYPT_STRING_BASE64HEADER, NULL, &cb)) {
-        QByteArray certPem((int)cb, 0);
-        if (CryptBinaryToStringA(pCert->pbCertEncoded, pCert->cbCertEncoded,
-                                CRYPT_STRING_BASE64HEADER, (LPSTR)certPem.data(), &cb)) {
-            certPem.truncate((int)cb);
-            if (!certPem.isEmpty() && certPem.at(certPem.size() - 1) == 0) certPem.chop(1);
-            QByteArray keyPem;
-            if (exportRsaPrivateKeyPem(hProv, hKey, keyPem)) {
-                QFile cf(certPath); QFile kf(keyPath);
-                if (cf.open(QIODevice::WriteOnly) && kf.open(QIODevice::WriteOnly)) {
-                    cf.write(certPem);
-                    kf.write(keyPem);
-                    ok = true;
-                }
-            }
-        }
-    }
-    CertFreeCertificateContext(pCert);
-    CryptDestroyKey(hKey);
-    CryptReleaseContext(hProv, 0);
-    // 删除临时密钥容器（私钥已导出为文件）
-    HCRYPTPROV hDel = 0;
-    CryptAcquireContext(&hDel, (LPCWSTR)container.utf16(), NULL, PROV_RSA_FULL, CRYPT_DELETEKEYSET);
-    return ok;
-}
-
-// 结构化异常(SEH)包裹：CryptoAPI 在部分 Windows 版本自签时会触发访问违规
-// (0xc0000005 @ CRYPT32.dll)。MinGW 不识别 MSVC 的 __try/__except，这里改用
-// setjmp/longjmp + SIGSEGV（MinGW 运行时会把 ACCESS_VIOLATION 转成 SIGSEGV）捕获，
-// 返回 false 使上层降级为明文，避免整个 MSM 主程序闪退。
-#include <setjmp.h>
-#include <signal.h>
-static jmp_buf g_certJmp;
-static void certSehHandler(int) { longjmp(g_certJmp, 1); }
-
-static bool generateSelfSignedCertFilesSafe(const QString &certPath, const QString &keyPath)
-{
-    void (*prev)(int) = signal(SIGSEGV, certSehHandler);
-    bool ok = false;
-    if (setjmp(g_certJmp) == 0) {
-        ok = generateSelfSignedCertFiles(certPath, keyPath);
-    } else {
-        qWarning() << "[WebUI] 自签证书生成触发异常(CryptoAPI)，降级为明文提供";
-        ok = false;
-    }
-    signal(SIGSEGV, prev);
-    return ok;
-}
-#endif // Q_OS_WIN
-
-// 非 Windows 平台：用系统 openssl 命令生成自签证书 + 私钥（PEM），10 年有效，主题 CN=localhost。
-#ifndef Q_OS_WIN
+// 全平台统一：用 openssl 命令生成自签证书(crt) + 私钥(key) 两个 PEM 文件，
+// 10 年有效，主题 CN=localhost，并带 subjectAltName（localhost + 127.0.0.1）。
+// 不再使用 Windows CryptoAPI 自签：CertCreateSelfSignCertificate 在部分 Windows 版本
+// 会触发 0xc0000005 访问违规（导致整进程 SIGSEGV 闪退），且其导出的 PKCS#8 私钥与
+// schannel/openssl 后端兼容性差。openssl 生成的 PEM 是业界标准格式，所有 TLS 后端通用。
+//
+// openssl 可执行文件的查找顺序：① 程序同目录（Windows 部署时随 OpenSSL 一起带上）；
+// ② 系统 PATH。本机常见位置：Git for Windows 的 mingw64/bin（开箱即用）。
 #include <QProcess>
+static QString findOpenSsl()
+{
+    const QString exeName =
+#ifdef Q_OS_WIN
+        QStringLiteral("openssl.exe");
+#else
+        QStringLiteral("openssl");
+#endif
+    // 1) 程序同目录
+    const QString dir = QCoreApplication::applicationDirPath();
+    const QString local = dir + QLatin1Char('/') + exeName;
+    if (QFile::exists(local))
+        return local;
+    // 2) 系统 PATH（Qt 的 QStandardPaths 找不到时退给 QProcess 自己解析）
+    const QString envPath = qEnvironmentVariable("PATH");
+    const QChar sep =
+#ifdef Q_OS_WIN
+        QLatin1Char(';');
+#else
+        QLatin1Char(':');
+#endif
+    for (const QString &p : envPath.split(sep, Qt::SkipEmptyParts)) {
+        const QString cand = p + QLatin1Char('/') + exeName;
+        if (QFile::exists(cand))
+            return cand;
+    }
+    // 3) 退回 PATH 解析（由 QProcess 自行查找）
+    return exeName;
+}
+
 static bool generateSelfSignedCertFiles(const QString &certPath, const QString &keyPath)
 {
-    QProcess openssl;
-    openssl.setProgram(QStringLiteral("openssl"));
-    openssl.setArguments({
+    const QString openssl = findOpenSsl();
+    QProcess proc;
+    proc.setProgram(openssl);
+    proc.setArguments({
         QStringLiteral("req"), QStringLiteral("-x509"),
         QStringLiteral("-newkey"), QStringLiteral("rsa:2048"),
         QStringLiteral("-nodes"),
@@ -449,17 +364,19 @@ static bool generateSelfSignedCertFiles(const QString &certPath, const QString &
         QStringLiteral("-out"), certPath,
         QStringLiteral("-days"), QStringLiteral("3650"),
         QStringLiteral("-subj"), QStringLiteral("/CN=localhost"),
+        QStringLiteral("-addext"), QStringLiteral("subjectAltName=DNS:localhost,IP:127.0.0.1"),
     });
-    openssl.start();
-    if (!openssl.waitForStarted() || !openssl.waitForFinished(30000))
+    proc.start();
+    if (!proc.waitForStarted(5000) || !proc.waitForFinished(30000)) {
+        qWarning() << "[WebUI] openssl 启动/执行超时（可能 openssl.exe 不在 PATH 或部署目录）";
         return false;
-    if (openssl.exitStatus() != QProcess::NormalExit || openssl.exitCode() != 0) {
-        qWarning() << "[WebUI] openssl 生成自签证书失败:" << openssl.readAllStandardError();
+    }
+    if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0) {
+        qWarning() << "[WebUI] openssl 生成自签证书失败:" << proc.readAllStandardError();
         return false;
     }
     return QFile::exists(certPath) && QFile::exists(keyPath);
 }
-#endif // !Q_OS_WIN
 
 // 只同步加载“已存在且有效”的证书（快路径，不阻塞事件循环）。
 // 返回 true 表示已可启用 HTTPS；false 表示需要（异步）生成或回退明文。
@@ -523,38 +440,14 @@ bool WebUIServer::ensureCertSync()
     const QString keyPath = certDir() + QStringLiteral("/msm_webui.key");
     QFile::remove(cerPath);
     QFile::remove(keyPath);
-#ifdef Q_OS_WIN
-    if (!generateSelfSignedCertFilesSafe(cerPath, keyPath)) {
-        qWarning() << "[WebUI] 自签证书生成失败，将以明文提供（功能不受影响，仅非加密）";
-        return false;
-    }
-#else
     if (!QSslSocket::supportsSsl()) {
         qWarning() << "[WebUI] 缺少 TLS 后端插件，无法生成证书，将以明文提供";
         return false;
     }
-    QProcess openssl;
-    openssl.setProgram(QStringLiteral("openssl"));
-    openssl.setArguments({
-        QStringLiteral("req"), QStringLiteral("-x509"),
-        QStringLiteral("-newkey"), QStringLiteral("rsa:2048"),
-        QStringLiteral("-nodes"),
-        QStringLiteral("-keyout"), keyPath,
-        QStringLiteral("-out"), cerPath,
-        QStringLiteral("-days"), QStringLiteral("3650"),
-        QStringLiteral("-subj"), QStringLiteral("/CN=localhost"),
-        QStringLiteral("-addext"), QStringLiteral("subjectAltName=DNS:localhost,IP:127.0.0.1"),
-    });
-    openssl.start();
-    if (!openssl.waitForStarted(5000) || !openssl.waitForFinished(30000)) {
-        qWarning() << "[WebUI] openssl 生成证书失败（可能不在 PATH），将以明文提供";
+    if (!generateSelfSignedCertFiles(cerPath, keyPath)) {
+        qWarning() << "[WebUI] 自签证书生成失败，将以明文提供（功能不受影响，仅非加密）";
         return false;
     }
-    if (openssl.exitStatus() != QProcess::NormalExit || openssl.exitCode() != 0) {
-        qWarning() << "[WebUI] openssl 生成自签证书失败:" << openssl.readAllStandardError();
-        return false;
-    }
-#endif
     // 加载刚生成的证书
     if (!QFile::exists(cerPath) || !QFile::exists(keyPath))
         return false;
