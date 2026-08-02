@@ -41,7 +41,13 @@ SettingsController::SettingsController(QObject *parent) : QObject(parent)
     m_webuiToken = s.value(QStringLiteral("app/webuiToken")).toString();
     if (m_webuiToken.isEmpty())
         m_webuiToken = generateWebuiToken();   // 首次运行自动生成，避免无令牌导致接口裸奔
+    // Linux 通常是服务器/VM 部署，默认暴露到局域网(0.0.0.0)以便远程访问；
+    // Windows 桌面端默认仅本机(127.0.0.1)最安全。令牌校验在两类平台上都强制生效。
+#ifdef Q_OS_LINUX
+    m_webuiExposeLan = s.value(QStringLiteral("app/webuiExposeLan"), true).toBool();
+#else
     m_webuiExposeLan = s.value(QStringLiteral("app/webuiExposeLan"), false).toBool();
+#endif
     m_webuiCertPath = s.value(QStringLiteral("app/webuiCertPath")).toString();
     m_webuiKeyPath = s.value(QStringLiteral("app/webuiKeyPath")).toString();
     m_showOnStartup = s.value(QStringLiteral("app/showOnStartup"), false).toBool();

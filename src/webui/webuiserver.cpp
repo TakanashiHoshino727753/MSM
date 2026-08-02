@@ -36,6 +36,7 @@
 #include <QSslKey>
 #include <QStandardPaths>
 #include <QCryptographicHash>
+#include <QElapsedTimer>
 #ifdef Q_OS_WIN
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -141,7 +142,13 @@ void WebUIServer::rebind()
 // 配置 TLS 并开始监听。暴露到局域网(0.0.0.0)时必须带令牌；默认仅本机(127.0.0.1)。
 bool WebUIServer::startListen()
 {
-    setupTls();
+    // 先尝试同步加载已有证书（快，不阻塞）。若无证书则先以明文启动，再异步生成后升级 HTTPS，
+    // 避免 openssl 子进程阻塞主线程导致 WebUI 首屏长时间打不开。
+    if (!loadExistingTls()) {
+        m_https = false;
+        if (!m_settings->webuiCertPath().isEmpty() || QSslSocket::supportsSsl())
+            generateCertAsync();   // 生成完成后会 rebind 升级到 HTTPS
+    }
     const QHostAddress addr = m_settings->webuiExposeLan()
         ? QHostAddress::Any
         : QHostAddress::LocalHost;
@@ -163,7 +170,10 @@ bool WebUIServer::startListen()
     } else if (wantSsl && sslNow) {
         sslNow->setSslConfiguration(m_sslConf);
     }
-    return m_server->listen(addr, m_port);
+    const bool ok = m_server->listen(addr, m_port);
+    qInfo() << "[WebUI] 监听于" << (m_settings->webuiExposeLan() ? "0.0.0.0" : addr.toString())
+            << ":" << m_port << (m_https ? "(HTTPS)" : "(明文)");
+    return ok;
 }
 
 void WebUIServer::setThemeState(bool dark, const QColor &accent)
@@ -240,7 +250,11 @@ void WebUIServer::onReadyRead()
             QString::fromUtf8(l.mid(cpos + 1)).trimmed();
     }
 
+    QElapsedTimer rt; rt.start();
     dispatch(method, path, query, hdr, body, s);
+    const qint64 ms = rt.elapsed();
+    if (ms > 200)
+        qWarning() << "[WebUI] 请求处理慢:" << ms << "ms" << method << path;
 }
 
 // ---------------- 响应辅助 ----------------
@@ -450,8 +464,9 @@ static bool generateSelfSignedCertFiles(const QString &certPath, const QString &
 }
 #endif // !Q_OS_WIN
 
-// 配置 SSL：用户自定义 PEM 证书优先；否则使用运行时自动生成的自签证书。
-bool WebUIServer::setupTls()
+// 只同步加载“已存在且有效”的证书（快路径，不阻塞事件循环）。
+// 返回 true 表示已可启用 HTTPS；false 表示需要（异步）生成或回退明文。
+bool WebUIServer::loadExistingTls()
 {
     m_https = false;
     if (!QSslSocket::supportsSsl()) {
@@ -481,20 +496,14 @@ bool WebUIServer::setupTls()
         qWarning() << "[WebUI] 自定义证书无效，回退自签证书";
     }
 
-    // 2) 自动自签证书（运行时生成 cert + key 两个 PEM 文件，每台机器独立）
+    // 2) 自动自签证书（生成过的会直接复用，避免每次启动都重跑 openssl 阻塞）
     const QString cerPath = certDir() + QStringLiteral("/msm_webui.crt");
     const QString keyPath = certDir() + QStringLiteral("/msm_webui.key");
-    if (!QFile::exists(cerPath) || !QFile::exists(keyPath)) {
-#ifdef Q_OS_WIN
-        generateSelfSignedCertFilesSafe(cerPath, keyPath);
-#else
-        generateSelfSignedCertFiles(cerPath, keyPath);
-#endif
-    }
-    const QList<QSslCertificate> certs = QSslCertificate::fromPath(cerPath);
-    QFile kf(keyPath);
-    if (!certs.isEmpty() && kf.open(QIODevice::ReadOnly)) {
-        QSslKey key(&kf, QSsl::Rsa);
+    if (QFile::exists(cerPath) && QFile::exists(keyPath)) {
+        const QList<QSslCertificate> certs = QSslCertificate::fromPath(cerPath);
+        QFile kf(keyPath);
+        if (!certs.isEmpty() && kf.open(QIODevice::ReadOnly)) {
+            QSslKey key(&kf, QSsl::Rsa);
             if (!key.isNull()) {
                 conf.setLocalCertificate(certs.first());
                 conf.setPrivateKey(key);
@@ -503,8 +512,55 @@ bool WebUIServer::setupTls()
                 return true;
             }
         }
-        qWarning() << "[WebUI] 自签证书生成失败，将以明文提供";
+        qWarning() << "[WebUI] 已存在的自签证书无效，将重新生成";
+    }
     return false;
+}
+
+// 异步生成自签证书（不阻塞主线程/事件循环）。生成完成后再 rebind 升级为 HTTPS。
+// 若生成失败，保持明文模式运行。
+void WebUIServer::generateCertAsync()
+{
+    const QString cerPath = certDir() + QStringLiteral("/msm_webui.crt");
+    const QString keyPath = certDir() + QStringLiteral("/msm_webui.key");
+    QFile::remove(cerPath);
+    QFile::remove(keyPath);
+#ifdef Q_OS_WIN
+    if (!generateSelfSignedCertFilesSafe(cerPath, keyPath))
+        qWarning() << "[WebUI] 自签证书生成失败，将以明文提供（功能不受影响，仅非加密）";
+    else
+        QMetaObject::invokeMethod(this, "rebind", Qt::QueuedConnection);
+#else
+    if (!QSslSocket::supportsSsl()) return;   // 无 TLS 后端，明文即可
+    auto *op = new QProcess(this);
+    connect(op, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, [this, op, cerPath, keyPath](int code, QProcess::ExitStatus st) {
+        op->deleteLater();
+        if (st == QProcess::NormalExit && code == 0 && QFile::exists(cerPath) && QFile::exists(keyPath)) {
+            qInfo() << "[WebUI] 自签证书已生成，升级到 HTTPS";
+            QMetaObject::invokeMethod(this, "rebind", Qt::QueuedConnection);
+        } else {
+            qWarning() << "[WebUI] 自签证书生成失败，将以明文提供（功能不受影响，仅非加密）"
+                       << op->readAllStandardError();
+        }
+    });
+    op->setProgram(QStringLiteral("openssl"));
+    op->setArguments({
+        QStringLiteral("req"), QStringLiteral("-x509"),
+        QStringLiteral("-newkey"), QStringLiteral("rsa:2048"),
+        QStringLiteral("-nodes"),
+        QStringLiteral("-keyout"), keyPath,
+        QStringLiteral("-out"), cerPath,
+        QStringLiteral("-days"), QStringLiteral("3650"),
+        QStringLiteral("-subj"), QStringLiteral("/CN=localhost"),
+        QStringLiteral("-addext"), QStringLiteral("subjectAltName=DNS:localhost,IP:127.0.0.1"),
+    });
+    op->start();
+    if (!op->waitForStarted(5000)) {   // 仅等进程启动；生成本身异步，不阻塞事件循环
+        op->deleteLater();
+        qWarning() << "[WebUI] openssl 启动失败（可能不在 PATH），将以明文提供";
+    }
+#endif
 }
 
 // 校验访问令牌：来源 Authorization: Bearer <token> 或 ?token=<token>。
@@ -595,8 +651,11 @@ void WebUIServer::setBotController(BotController *bot)
 void WebUIServer::dispatch(const QString &method, const QString &path, const QString &query,
                            const QMap<QString, QString> &hdr, const QByteArray &body, QTcpSocket *sock)
 {
+    QElapsedTimer t; t.start();
     if (path == QStringLiteral("/") || path == QStringLiteral("/index.html")) {
         sendHtml(sock, m_spaHtml());
+        const qint64 ms = t.elapsed();
+        if (ms > 200) qWarning() << "[WebUI] SPA 响应慢:" << ms << "ms";
         return;
     }
     if (path == QStringLiteral("/favicon.ico")) { sendStatus(sock, 204, QString()); return; }

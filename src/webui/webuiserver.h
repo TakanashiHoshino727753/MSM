@@ -85,7 +85,8 @@ private:
     // 安全：TLS 与令牌
     bool startListen();                 // 配置 TLS 并按设置绑定地址开始监听
     void relisten();                    // 重新监听（端口/暴露范围变化时）
-    bool setupTls();                    // 配置 SSL（自签或用户证书），成功返回 true
+    bool loadExistingTls();             // 同步加载已存在证书，成功返回 true（不阻塞）
+    void generateCertAsync();           // 异步生成自签证书，完成后 rebind 升级 HTTPS
     void ensureSelfSignedCert(const QString &cerPath);  // 自动生成自签证书进 Windows 存储
     QString certDir() const;            // 自签证书 .cer 存放目录
     bool checkToken(const QMap<QString, QString> &hdr, const QMap<QString, QString> &q) const;
