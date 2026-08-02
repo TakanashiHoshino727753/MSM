@@ -28,6 +28,7 @@ class InstallCoordinator;
 class WebUIServer : public QObject
 {
     Q_OBJECT
+    friend class WebTcpServer;
     Q_PROPERTY(bool running READ isRunning NOTIFY runningChanged)
     Q_PROPERTY(int port READ port NOTIFY portChanged)
     Q_PROPERTY(QString error READ error NOTIFY errorChanged)
@@ -71,6 +72,7 @@ signals:
 
 private slots:
     void onNewConnection();
+    void handleIncoming(qintptr socketDescriptor);
     void onReadyRead();
     void onDisconnected();
 

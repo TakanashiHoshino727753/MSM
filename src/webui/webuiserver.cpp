@@ -43,8 +43,28 @@
 #include <wincrypt.h>
 #endif
 
+// 内部子类：重写 incomingConnection，直接拿到原生 socket 描述符交给 QSslSocket 接管，
+// 避免“先 nextPendingConnection 拿 QTcpSocket 再 setSocketDescriptor 接管”导致两个 QObject
+// 共享同一 fd、互相抢事件（表现为 TLS 握手卡死/HTTP 无响应，在 Linux 上必现）。
+class WebUIServer;
+class WebTcpServer : public QTcpServer
+{
+public:
+    explicit WebTcpServer(WebUIServer *hub, QObject *parent = nullptr)
+        : QTcpServer(parent), m_hub(hub) {}
+protected:
+    void incomingConnection(qintptr socketDescriptor) override;
+private:
+    WebUIServer *m_hub;
+};
+
 // ---------------- HTTP 工具 ----------------
 // urlDecode / parseQuery 统一复用 core/httpclient.h（HttpClient::urlDecode / HttpClient::parseQuery）。
+
+void WebTcpServer::incomingConnection(qintptr socketDescriptor)
+{
+    m_hub->handleIncoming(socketDescriptor);
+}
 
 // ---------------- 构造 / 生命周期 ----------------
 
@@ -149,13 +169,13 @@ bool WebUIServer::startListen()
     const QHostAddress addr = m_settings->webuiExposeLan()
         ? QHostAddress::Any
         : QHostAddress::LocalHost;
-    // 始终用普通 QTcpServer 接收连接；HTTPS 时在 onNewConnection 里手动把
-    // QTcpSocket 接管进 QSslSocket 并 startServerEncryption()（而非用 QSslServer）。
+    // 始终用普通 QTcpServer 接收连接；HTTPS 时在 handleIncoming 里手动把
+    // 原生描述符接管进 QSslSocket 并 startServerEncryption()（而非用 QSslServer）。
     // 原因：QSslServer 在某些 Qt 6 版本存在 readyRead 不转发/响应不刷出的问题，
     // 表现为 TLS 握手成功但 HTTP 无响应（空白页）。手动接管模式稳定可靠。
     if (!m_server) {
-        m_server = new QTcpServer(this);
-        connect(m_server, &QTcpServer::newConnection, this, &WebUIServer::onNewConnection);
+        m_server = new WebTcpServer(this, this);
+        // WebTcpServer 已重写 incomingConnection 直接接管描述符，无需 newConnection 信号
     }
     const bool ok = m_server->listen(addr, m_port);
     qInfo() << "[WebUI] 监听于" << (m_settings->webuiExposeLan() ? "0.0.0.0" : addr.toString())
@@ -173,37 +193,45 @@ void WebUIServer::setThemeState(bool dark, const QColor &accent)
 
 void WebUIServer::onNewConnection()
 {
-    while (m_server->hasPendingConnections()) {
-        QTcpSocket *raw = m_server->nextPendingConnection();
-        if (!m_https) {
-            // 明文模式：直接用原生 socket
-            connect(raw, &QTcpSocket::readyRead, this, &WebUIServer::onReadyRead);
-            connect(raw, &QTcpSocket::disconnected, this, &WebUIServer::onDisconnected);
-            continue;
+    // 已改为 WebTcpServer::incomingConnection 直接接管描述符，这里保留为空接口。
+    // 明文模式在 handleIncoming 内直接处理。
+    Q_UNUSED(m_server);
+}
+
+void WebUIServer::handleIncoming(qintptr socketDescriptor)
+{
+    if (!m_https) {
+        // 明文模式：直接用原生 socket 描述符创建 QTcpSocket
+        auto *sock = new QTcpSocket(this);
+        if (!sock->setSocketDescriptor(socketDescriptor)) {
+            sock->deleteLater();
+            return;
         }
-        // HTTPS 模式：把原生 socket 的句柄接管进 QSslSocket，显式握手。
-        // 握手完成后 encrypted() 触发，再开始读；读事件挂在新 socket 上。
-        auto *ssl = new QSslSocket(this);
-        if (!ssl->setSocketDescriptor(raw->socketDescriptor())) {
-            qWarning() << "[WebUI] 无法接管 socket 描述符，关闭连接";
-            raw->deleteLater();
-            ssl->deleteLater();
-            continue;
-        }
-        raw->setParent(ssl); // 由 ssl 管理生命周期，避免重复关闭
-        ssl->setSslConfiguration(m_sslConf);
-        // 握手完成后才能读解密数据；encrypted() 之后再连 readyRead 最稳妥
-        connect(ssl, &QSslSocket::encrypted, this, [this, ssl]() {
-            connect(ssl, &QTcpSocket::readyRead, this, &WebUIServer::onReadyRead);
-        });
-        connect(ssl, &QTcpSocket::disconnected, this, &WebUIServer::onDisconnected);
-        connect(ssl, QOverload<const QList<QSslError> &>::of(&QSslSocket::sslErrors),
-                this, [ssl](const QList<QSslError> &) {
-                    // 自签证书：忽略证书错误，继续握手（浏览器侧用 -k / 信任例外）
-                    ssl->ignoreSslErrors();
-                });
-        ssl->startServerEncryption();
+        connect(sock, &QTcpSocket::readyRead, this, &WebUIServer::onReadyRead);
+        connect(sock, &QTcpSocket::disconnected, this, &WebUIServer::onDisconnected);
+        return;
     }
+    // HTTPS 模式：直接用原生描述符创建 QSslSocket 并握手，不经过中间 QTcpSocket，
+    // 避免两个 QObject 共享 fd 抢事件导致握手卡死。
+    auto *ssl = new QSslSocket(this);
+    if (!ssl->setSocketDescriptor(socketDescriptor)) {
+        qWarning() << "[WebUI] 无法接管 socket 描述符，关闭连接";
+        ssl->deleteLater();
+        return;
+    }
+    ssl->setSslConfiguration(m_sslConf);
+    // 握手完成后才能读解密数据；encrypted() 之后再连 readyRead 最稳妥
+    connect(ssl, &QSslSocket::encrypted, this, [this, ssl]() {
+        connect(ssl, &QTcpSocket::readyRead, this, &WebUIServer::onReadyRead);
+    });
+    connect(ssl, &QTcpSocket::disconnected, this, &WebUIServer::onDisconnected);
+    connect(ssl, QOverload<const QList<QSslError> &>::of(&QSslSocket::sslErrors),
+            this, [ssl](const QList<QSslError> &) {
+                // 自签证书：忽略证书错误，继续握手（浏览器侧用 -k / 信任例外）
+                ssl->ignoreSslErrors();
+            });
+    ssl->startServerEncryption();
+    qInfo() << "[WebUI] 新 HTTPS 连接，开始 TLS 握手 (fd=" << (int)socketDescriptor << ")";
 }
 
 void WebUIServer::onDisconnected()
