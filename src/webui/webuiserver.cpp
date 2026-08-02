@@ -149,23 +149,13 @@ bool WebUIServer::startListen()
     const QHostAddress addr = m_settings->webuiExposeLan()
         ? QHostAddress::Any
         : QHostAddress::LocalHost;
-    const bool wantSsl = m_https;
-    QSslServer *sslNow = qobject_cast<QSslServer *>(m_server);
-    // 根据是否启用 HTTPS 选择 QTcpServer(明文) / QSslServer(加密)，类型不符时重建
-    if ((wantSsl && !sslNow) || (!wantSsl && sslNow)) {
-        m_server->close();
-        m_server->disconnect(this);
-        delete m_server;
-        if (wantSsl) {
-            auto *s = new QSslServer(this);
-            s->setSslConfiguration(m_sslConf);
-            m_server = s;
-        } else {
-            m_server = new QTcpServer(this);
-        }
+    // 始终用普通 QTcpServer 接收连接；HTTPS 时在 onNewConnection 里手动把
+    // QTcpSocket 接管进 QSslSocket 并 startServerEncryption()（而非用 QSslServer）。
+    // 原因：QSslServer 在某些 Qt 6 版本存在 readyRead 不转发/响应不刷出的问题，
+    // 表现为 TLS 握手成功但 HTTP 无响应（空白页）。手动接管模式稳定可靠。
+    if (!m_server) {
+        m_server = new QTcpServer(this);
         connect(m_server, &QTcpServer::newConnection, this, &WebUIServer::onNewConnection);
-    } else if (wantSsl && sslNow) {
-        sslNow->setSslConfiguration(m_sslConf);
     }
     const bool ok = m_server->listen(addr, m_port);
     qInfo() << "[WebUI] 监听于" << (m_settings->webuiExposeLan() ? "0.0.0.0" : addr.toString())
@@ -184,9 +174,35 @@ void WebUIServer::setThemeState(bool dark, const QColor &accent)
 void WebUIServer::onNewConnection()
 {
     while (m_server->hasPendingConnections()) {
-        QTcpSocket *s = m_server->nextPendingConnection();
-        connect(s, &QTcpSocket::readyRead, this, &WebUIServer::onReadyRead);
-        connect(s, &QTcpSocket::disconnected, this, &WebUIServer::onDisconnected);
+        QTcpSocket *raw = m_server->nextPendingConnection();
+        if (!m_https) {
+            // 明文模式：直接用原生 socket
+            connect(raw, &QTcpSocket::readyRead, this, &WebUIServer::onReadyRead);
+            connect(raw, &QTcpSocket::disconnected, this, &WebUIServer::onDisconnected);
+            continue;
+        }
+        // HTTPS 模式：把原生 socket 的句柄接管进 QSslSocket，显式握手。
+        // 握手完成后 encrypted() 触发，再开始读；读事件挂在新 socket 上。
+        auto *ssl = new QSslSocket(this);
+        if (!ssl->setSocketDescriptor(raw->socketDescriptor())) {
+            qWarning() << "[WebUI] 无法接管 socket 描述符，关闭连接";
+            raw->deleteLater();
+            ssl->deleteLater();
+            continue;
+        }
+        raw->setParent(ssl); // 由 ssl 管理生命周期，避免重复关闭
+        ssl->setSslConfiguration(m_sslConf);
+        // 握手完成后才能读解密数据；encrypted() 之后再连 readyRead 最稳妥
+        connect(ssl, &QSslSocket::encrypted, this, [this, ssl]() {
+            connect(ssl, &QTcpSocket::readyRead, this, &WebUIServer::onReadyRead);
+        });
+        connect(ssl, &QTcpSocket::disconnected, this, &WebUIServer::onDisconnected);
+        connect(ssl, QOverload<const QList<QSslError> &>::of(&QSslSocket::sslErrors),
+                this, [ssl](const QList<QSslError> &) {
+                    // 自签证书：忽略证书错误，继续握手（浏览器侧用 -k / 信任例外）
+                    ssl->ignoreSslErrors();
+                });
+        ssl->startServerEncryption();
     }
 }
 
