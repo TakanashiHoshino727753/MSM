@@ -72,7 +72,8 @@ bool ServerController::isRunning(const QString &name) const
 }
 
 void ServerController::start(const QString &name, const QString &path,
-                             const QString &javaPath, int minMem, int maxMem)
+                             const QString &javaPath, int minMem, int maxMem,
+                             bool resetRetry)
 {
     // path 作为唯一身份键：同名不同目录的服务器互不串台
     if (m_procs.contains(path)) {
@@ -246,7 +247,10 @@ void ServerController::start(const QString &name, const QString &path,
     }
 
     m_procs.insert(path, p);
-    m_retryCount.remove(path);
+    // 仅手动启动时重置重试计数；自动重启拉起（resetRetry=false）必须保留计数，否则每次重试都归零，
+    // 表现为“每次都是 1/N 次、计数器没更新”。
+    if (resetRetry)
+        m_retryCount.remove(path);
     m_startTime.insert(path, QDateTime::currentMSecsSinceEpoch());
     m_ports.insert(path, port);
     m_intentionalKill.remove(path);
@@ -344,7 +348,7 @@ void ServerController::onFinished(const QString &path, int exitCode, QProcess::E
                     m_retryCount.remove(retryKey);
                     return;
                 }
-                start(a.name, a.path, a.javaPath, a.minMem, a.maxMem);
+                start(a.name, a.path, a.javaPath, a.minMem, a.maxMem, /*resetRetry=*/false);
             });
         }
     }

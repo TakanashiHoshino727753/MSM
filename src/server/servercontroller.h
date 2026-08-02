@@ -50,7 +50,8 @@ public:
     // name 仅用于日志/控制台展示。
     Q_INVOKABLE void start(const QString &name, const QString &path,
                            const QString &javaPath = QStringLiteral("java"),
-                           int minMem = 1024, int maxMem = 2048);
+                           int minMem = 1024, int maxMem = 2048,
+                           bool resetRetry = true);
     // 向服务端发送 stop 指令（优雅停止，等待存档保存后退出）
     Q_INVOKABLE void stop(const QString &path);
     // 强制终止进程（TerminateProcess），不等待存档；仅在无响应时兜底使用
