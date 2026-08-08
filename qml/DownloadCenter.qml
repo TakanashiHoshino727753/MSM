@@ -83,6 +83,42 @@ ApplicationWindow {
         downloadCatalog.serverType = serverTypes[0].key  // 服务端默认子类型（Paper）
         loaderList = downloadCatalog.modLoaders()         // 固定列表，缓存一次即可
         downloadCatalog.refresh()                         // 首次加载对应分类的内容
+        enterAnim.start()
+    }
+
+    // 分类/子类型切换的平滑过渡（串行状态机，杜绝 fadeOut/fadeIn 竞争同一 opacity 的竞态）：
+    //   beginTransition() → fadeOut 淡出(120ms) → onFinished 时 refresh() 拉数据 →
+    //   数据就绪(loading 回 false)或 awaitTimer 兜底 → endTransition() 淡入(240ms)。
+    // 淡入一定在“淡出完成 + 数据到达”之后，过渡稳定可见。opacity 是非几何属性，
+    // 不受 ColumnLayout 每帧重置影响（此前的 x/transform 动画被吞）。
+    function beginTransition() {
+        awaitTimer.stop()
+        fadeOut.restart()
+    }
+    function endTransition() {
+        if (contentReveal.opacity < 1)
+            fadeIn.restart()
+    }
+    // 数据就绪（loading 回 false）时收尾：停止轮询并淡入。信号与轮询共用此入口。
+    function onDataReady() {
+        if (!downloadCatalog.loading) {
+            awaitTimer.stop()
+            endTransition()
+        }
+    }
+    NumberAnimation {
+        id: fadeOut
+        target: contentReveal; property: "opacity"; to: 0; duration: 120; easing.type: Easing.OutCubic
+        onFinished: {
+            downloadCatalog.refresh()   // 淡出完成后再拉数据，避免淡入抢在淡出之前
+            awaitTimer.restart()         // 轮询兜底：每 50ms 检查 loading，信号丢失也能捕获就绪
+        }
+    }
+    NumberAnimation { id: fadeIn; target: contentReveal; property: "opacity"; from: 0; to: 1; duration: 240; easing.type: Easing.OutCubic }
+    Timer { id: awaitTimer; interval: 50; repeat: true; onTriggered: onDataReady() }
+    Connections {
+        target: downloadCatalog
+        function onLoadingChanged() { onDataReady() }   // 即时触发（比轮询更快），丢失则由 awaitTimer 兜底
     }
 
     // 语言变化时实时同步给 C++ 下载目录，使其状态/错误文案随界面翻译
@@ -106,6 +142,14 @@ ApplicationWindow {
         radius: Theme.radius
         color: Theme.bg
         clip: true
+        // 入场滑动动画：从右侧滑入 + 淡入（挂在内层 frame 上，Window 本身不支持 transform）
+        x: 60
+        opacity: 0
+        ParallelAnimation {
+            id: enterAnim
+            NumberAnimation { target: frame; property: "x"; from: 60; to: 0; duration: 220; easing.type: Easing.OutCubic }
+            NumberAnimation { target: frame; property: "opacity"; from: 0; to: 1; duration: 220; easing.type: Easing.OutCubic }
+        }
 
         ColumnLayout {
             anchors.fill: parent
@@ -120,6 +164,7 @@ ApplicationWindow {
 
         // 工具栏：主分类一行 + 服务端子类型一行 + 搜索/目录一行
         ColumnLayout {
+            id: toolbarLayout
             Layout.fillWidth: true
             spacing: 6
 
@@ -136,8 +181,9 @@ ApplicationWindow {
                         tabLabel: modelData.label
                         active: downloadCatalog.currentKey === modelData.key
                         onClicked: {
+                            if (downloadCatalog.currentKey === modelData.key) return
                             downloadCatalog.currentKey = modelData.key
-                            downloadCatalog.refresh()
+                            beginTransition()
                         }
                     }
                 }
@@ -158,8 +204,9 @@ ApplicationWindow {
                         cellHeight: 34
                         active: downloadCatalog.serverType === modelData.key
                         onClicked: {
+                            if (downloadCatalog.serverType === modelData.key) return
                             downloadCatalog.serverType = modelData.key
-                            downloadCatalog.refresh()
+                            beginTransition()
                         }
                     }
                 }
@@ -243,8 +290,19 @@ ApplicationWindow {
 
         Rectangle { Layout.fillWidth: true; Layout.leftMargin: 16; Layout.rightMargin: 16; Layout.preferredHeight: 1; color: Theme.border }
 
+        // 内容区统一过渡容器
+        Item {
+            id: contentReveal
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            ColumnLayout {
+                id: contentInner
+                anchors.fill: parent
+                spacing: 0
+
         // 模组服多加载器面板（仅服务端=模组服时显示）
         ColumnLayout {
+            id: modPanelContainer
             Layout.fillWidth: true
             Layout.fillHeight: true
             Layout.leftMargin: 12
@@ -436,6 +494,7 @@ ApplicationWindow {
         // 通用资源列表：除“模组服”外的所有分类都用它展示可下载条目。
         // model 直接绑定 downloadCatalog（C++ 侧同时实现了列表模型角色：title/subtitle/errorText）。
         ListView {
+            id: resListView
             visible: !(downloadCatalog.currentKey === "server" && downloadCatalog.serverType === "mod")  // 模组服走上面的专用面板
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -516,9 +575,9 @@ ApplicationWindow {
                 }
             }
         }
-        }
-    }
-
-    // 全局下载任务面板（右侧抽屉）：由标题栏“下载”按钮 onDownloadsClicked 打开
-    DownloadsPanel { id: downloadsPanel }
-}
+        }   // contentInner (ColumnLayout) 结束
+        }   // contentReveal (Item) 结束
+        DownloadsPanel { id: downloadsPanel }
+        }   // 主 ColumnLayout 结束
+    }   // frame 结束
+}   // DownloadCenter Window 结束

@@ -10,6 +10,7 @@ import "PropsNames.js" as PropsNames
 
 Item {
     id: root
+    objectName: "ServerPageRoot"
     property string serverName
     property string serverVersion
     property string serverType: ""

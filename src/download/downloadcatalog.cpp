@@ -272,6 +272,10 @@ void DownloadCatalog::setModLoaderType(const QString &t)
 
 void DownloadCatalog::refresh()
 {
+    // 统一在入口置 loading=true，保证即便后续是同步/本地数据路径（如 Java、模组服），
+    // 也能发射一次 loadingChanged(true)，与结尾的 loadingChanged(false) 配对，
+    // 让 QML 的“数据就绪后淡入”过渡在每一个分类都稳定触发（否则同值不发射信号会丢失过渡）。
+    setLoading(true);
     if (m_currentKey == QStringLiteral("java"))
         loadJava();
     else if (m_currentKey == QStringLiteral("server"))
@@ -480,16 +484,19 @@ void DownloadCatalog::loadVanilla()
 void DownloadCatalog::loadMod()
 {
     clearItems();
-    setLoading(false);
+    setLoading(true);
     setStatus(ts("选择 Minecraft 版本与加载器后，批量下载安装器"));
     if (m_mcReleases.isEmpty()) {
         fetchMcReleases([this](const QStringList &rels) {
             emit mcReleasesChanged();
             if (m_modVersion.isEmpty() && !rels.isEmpty())
                 setModVersion(rels.first());   // 列表降序，首个为最新版本
+            setLoading(false);
         });
-    } else if (m_modVersion.isEmpty()) {
-        setModVersion(m_mcReleases.first());   // 列表降序，首个为最新版本
+    } else {
+        if (m_modVersion.isEmpty())
+            setModVersion(m_mcReleases.first());   // 列表降序，首个为最新版本
+        setLoading(false);
     }
 }
 

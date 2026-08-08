@@ -58,6 +58,7 @@ ApplicationWindow {
         for (let i = 0; i < langBox.model.length; ++i)
             if (langBox.model[i] === settingsController.language) { langBox.currentIndex = i; break }
         updateCurrent()   // 进入页面时按视口顶锚点初始化当前分类高亮
+        enterAnim.start()
     }
 
     // 背景：纯色 + 轻微主色染色，避免依赖外部图片资源
@@ -68,6 +69,14 @@ ApplicationWindow {
         radius: window.visibility === Window.Maximized ? 0 : Theme.radius
         color: Theme.bg
         clip: true
+        // 入场滑动动画：从右侧滑入 + 淡入（挂在内层 frame 上，Window 本身不支持 transform）
+        x: 60
+        opacity: 0
+        ParallelAnimation {
+            id: enterAnim
+            NumberAnimation { target: frame; property: "x"; from: 60; to: 0; duration: 220; easing.type: Easing.OutCubic }
+            NumberAnimation { target: frame; property: "opacity"; from: 0; to: 1; duration: 220; easing.type: Easing.OutCubic }
+        }
 
         Rectangle {
             anchors.fill: parent

@@ -14,6 +14,16 @@ Popup {
     y: Math.round((parent.height - height) / 2)
     background: Rectangle { color: Theme.bg; radius: Theme.radius; border.color: Theme.border }
 
+    // 弹出/关闭过渡：缩放 + 淡入（轻微放大感，避免突兀）
+    enter: Transition {
+        NumberAnimation { target: contentItem; property: "scale"; from: 0.92; to: 1; duration: 160; easing.type: Easing.OutCubic }
+        NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 160; easing.type: Easing.OutCubic }
+    }
+    exit: Transition {
+        NumberAnimation { target: contentItem; property: "scale"; to: 0.92; duration: 130; easing.type: Easing.InCubic }
+        NumberAnimation { property: "opacity"; to: 0; duration: 130; easing.type: Easing.InCubic }
+    }
+
     property int popupWidth: 560
     property int popupHeight: 480
     width: Math.min(parent.width - 40, popupWidth)

@@ -65,6 +65,7 @@ ApplicationWindow {
         verBox.currentIndex = 0
         eulaBox.checked = createServer.eulaAccepted
         window.show()
+        enterAnim.start()
         window.requestActivate()
     }
 
@@ -134,6 +135,14 @@ ApplicationWindow {
         radius: Theme.radius
         color: Theme.bg
         clip: true
+        // 入场滑动动画：从右侧滑入 + 淡入（挂在内层 frame 上，Window 本身不支持 transform）
+        x: 60
+        opacity: 0
+        ParallelAnimation {
+            id: enterAnim
+            NumberAnimation { target: frame; property: "x"; from: 60; to: 0; duration: 220; easing.type: Easing.OutCubic }
+            NumberAnimation { target: frame; property: "opacity"; from: 0; to: 1; duration: 220; easing.type: Easing.OutCubic }
+        }
 
         ColumnLayout {
             anchors.fill: parent
