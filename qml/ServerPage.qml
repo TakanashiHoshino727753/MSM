@@ -20,6 +20,20 @@ Item {
     // 是否为模组服（目录含 mods/），决定是否显示“优化模组”入口
     readonly property bool hasModsDir: serverPath ? serverController.pathExists(serverPath + "/mods") : false
 
+    // 本服当前是否存在活动异常（第5项：异常纠错跳转入口可见性）
+    property bool hasActiveError: serverPath ? computeActiveError() : false
+    function computeActiveError() {
+        if (!serverPath) return false;
+        var recs = serverController.errorRecords();
+        for (var i = 0; i < recs.length; ++i)
+            if (recs[i].path === root.serverPath) return true;
+        return false;
+    }
+    Connections {
+        target: serverController
+        function onErrorRecordsChanged() { root.hasActiveError = root.computeActiveError(); }
+    }
+
     property bool running: false
     property string statusText: running ? I18n.t("运行中", I18n.lang) : I18n.t("已停止", I18n.lang)
     property date runningSince: new Date(0)
@@ -408,6 +422,13 @@ Item {
             text: I18n.t("优化模组", I18n.lang)
             visible: root.hasModsDir
             onClicked: { optLoaderCombo.currentIndex = 0; optVerCombo.currentIndex = 0; optProgress.visible = false; optDlg.open() }
+        }
+        // 异常纠错跳转（第5项）：仅当该服当前存在活动异常时显示
+        AccentButton {
+            text: I18n.t("异常纠错", I18n.lang)
+            accentColor: Theme.danger
+            visible: root.hasActiveError
+            onClicked: { window.selectPage("error"); }
         }
         AccentButton {
             text: I18n.t("删除服务器", I18n.lang)

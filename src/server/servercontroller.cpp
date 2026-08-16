@@ -46,6 +46,11 @@ ServerController::ServerController(QObject *parent) : QObject(parent)
     m_watchdogTimer->setInterval(5000);
     connect(m_watchdogTimer, &QTimer::timeout, this, &ServerController::watchdogTick);
     m_watchdogTimer->start();
+    // 异常重试倒计时：每秒刷新 nextRetryInSec，到期触发自动重拉起
+    m_errorTimer = new QTimer(this);
+    m_errorTimer->setInterval(1000);
+    connect(m_errorTimer, &QTimer::timeout, this, &ServerController::errorTick);
+    m_errorTimer->start();
 }
 
 void ServerController::setAutoRestart(bool v)
@@ -320,6 +325,11 @@ void ServerController::start(const QString &name, const QString &path,
     emit consoleAppended(name, QStringLiteral("[MSM] 正在启动服务器…"));
     emit stateChanged(path, true);
     emit runningCountChanged();
+    // 启动成功 → 该服务器的异常已纠错，清除记录
+    if (m_errors.contains(path)) {
+        m_errors.remove(path);
+        emit errorRecordsChanged();
+    }
 }
 
 void ServerController::handleOutput(const QString &path)
@@ -397,26 +407,15 @@ void ServerController::onFinished(const QString &path, int exitCode, QProcess::E
     emit stateChanged(path, false);
     emit playersChanged(path, {});
     emit runningCountChanged();
-    // 非主动强关却异常退出（崩溃 / 非 0 退出码）→ 上报错误日志
+    // 非主动强关却异常退出（崩溃 / 非 0 退出码）→ 上报错误日志并记入异常纠错中心
     if (!intentional && (status == QProcess::CrashExit || exitCode != 0)) {
+        const QString name = m_args.value(path).name;
         emit serverError(path, tail);
-        // 后端崩溃自动拉起：指数退避，最多 m_maxRetries 次；EULA 未同意或用户已手动停止则不再拉起
-        const QString retryKey = path;
-        if (m_autoRestart && !tail.contains(QLatin1String("eula"), Qt::CaseInsensitive)
-            && m_retryCount[retryKey] < m_maxRetries) {
-            const int attempt = ++m_retryCount[retryKey];
-            const int delay = m_backoffSec * (1 << (attempt - 1));
-            emit consoleAppended(retryKey, QStringLiteral("[MSM] 后端异常退出，%1 秒后自动重启（第 %2/%3 次）")
-                                          .arg(delay).arg(attempt).arg(m_maxRetries));
-            const StartArgs a = m_args.value(retryKey);
-            QTimer::singleShot(delay * 1000, this, [this, retryKey, a, attempt]() {
-                if (m_intentionalKill.contains(retryKey)) {
-                    m_retryCount.remove(retryKey);
-                    return;
-                }
-                start(a.name, a.path, a.javaPath, a.minMem, a.maxMem, /*resetRetry=*/false);
-            });
-        }
+        // 异常分类：日志含 eula 字样 → EULA 未同意（致命、不可自动恢复）；否则视为崩溃
+        const QString type = tail.contains(QLatin1String("eula"), Qt::CaseInsensitive)
+                ? QStringLiteral("eula") : QStringLiteral("crash");
+        recordError(path, type, tail);
+        Q_UNUSED(name)
     }
 }
 
@@ -524,8 +523,203 @@ void ServerController::triggerWatchdog(const QString &path, const QString &reaso
     const QString name = m_args.value(path).name;
     emit consoleAppended(path, QStringLiteral("[MSM] 看门狗检测到服务器无响应（%1），强制终止并纠错重启…").arg(reason));
     emit watchdogTriggered(path, reason);
+    // 记录异常（卡死）进纠错中心，带最近控制台尾部便于排查
+    const QString tail = it->console.right(3000);
+    recordError(path, reason, tail);
     // 不插入 m_intentionalKill：让 onFinished 判定为异常退出 → 走纠错重拉起
     it->proc->kill();
+}
+
+// 记录一条异常到纠错中心：分类、决定是否自动重拉起，并计算下次重试时刻。
+void ServerController::recordError(const QString &path, const QString &type, const QString &logTail)
+{
+    ErrorInfo &e = m_errors[path];
+    const QString name = m_args.value(path).name;
+    if (e.path.isEmpty()) {
+        // 首次记录：填充静态字段
+        e.name = name;
+        e.path = path;
+        e.time = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd hh:mm:ss"));
+        e.autoRestart = m_autoRestart;
+        e.maxRetries = m_maxRetries;
+        e.retryCount = m_retryCount.value(path, 0);
+    } else {
+        e.retryCount = m_retryCount.value(path, e.retryCount);
+    }
+    e.type = type;
+    e.logTail = logTail;
+    // 分类标签
+    if (type == QLatin1String("eula"))
+        e.typeLabel = QStringLiteral("EULA 未同意");
+    else if (type == QLatin1String("io"))
+        e.typeLabel = QStringLiteral("IO 管道卡死");
+    else if (type == QLatin1String("heartbeat"))
+        e.typeLabel = QStringLiteral("进程无响应（心跳超时）");
+    else
+        e.typeLabel = QStringLiteral("异常崩溃");
+
+    // 致命（EULA 未同意）：不可自动恢复，停止重试
+    if (type == QLatin1String("eula")) {
+        e.fatal = true;
+        e.retrying = false;
+        e.nextRetryInSec = 0;
+        e.retryDeadlineMs = 0;
+        emit consoleAppended(path, QStringLiteral("[MSM] 检测到 EULA 未同意，已停止自动重启。请在服务器目录下同意 eula.txt 后手动启动。"));
+    } else if (m_autoRestart && e.retryCount < e.maxRetries) {
+        // 计算指数退避延迟并安排下次自动重拉起
+        const int attempt = e.retryCount + 1;
+        const int delay = m_backoffSec * (1 << (attempt - 1));
+        e.retrying = true;
+        e.retryDeadlineMs = QDateTime::currentMSecsSinceEpoch() + qint64(delay) * 1000;
+        e.nextRetryInSec = delay;
+        e.fatal = false;
+        emit consoleAppended(path, QStringLiteral("[MSM] 后端异常（%1），%2 秒后自动重启（第 %3/%4 次）")
+                              .arg(e.typeLabel).arg(delay).arg(attempt).arg(e.maxRetries));
+    } else {
+        // 自动重拉起已关闭或已达最大重试次数
+        e.retrying = false;
+        e.nextRetryInSec = 0;
+        e.retryDeadlineMs = 0;
+        e.fatal = false;
+        if (!m_autoRestart)
+            emit consoleAppended(path, QStringLiteral("[MSM] 自动重启已关闭，异常未处理。请手动运维。"));
+        else
+            emit consoleAppended(path, QStringLiteral("[MSM] 已达最大重试次数（%1），停止自动重启。请排查原因后手动启动。").arg(e.maxRetries));
+    }
+    emit errorRecordsChanged();
+}
+
+// 清除某服务器的异常记录（成功重拉起 / 人工标记已解决）
+void ServerController::clearErrorRecord(const QString &path)
+{
+    if (m_errors.remove(path)) {
+        m_retryCount.remove(path);
+        emit errorRecordsChanged();
+    }
+}
+
+// 每秒刷新待重试倒计时；到点的触发自动重拉起，达到上限则放弃。
+void ServerController::errorTick()
+{
+    if (m_errors.isEmpty())
+        return;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    bool changed = false;
+    for (auto it = m_errors.begin(); it != m_errors.end(); ++it) {
+        ErrorInfo &e = it.value();
+        if (!e.retrying || e.retryDeadlineMs == 0)
+            continue;
+        const qint64 remain = e.retryDeadlineMs - now;
+        if (remain > 0) {
+            const int sec = int((remain + 999) / 1000);
+            if (sec != e.nextRetryInSec) {
+                e.nextRetryInSec = sec;
+                changed = true;
+            }
+            continue;
+        }
+        // 到点：触发一次自动重拉起
+        e.nextRetryInSec = 0;
+        e.retryDeadlineMs = 0;
+        const int attempt = ++e.retryCount;
+        const StartArgs a = m_args.value(e.path);
+        if (a.path.isEmpty()) {
+            // 启动参数丢失（极少见），放弃
+            e.retrying = false;
+            changed = true;
+            continue;
+        }
+        if (m_intentionalKill.contains(e.path)) {
+            // 期间被人工强关，放弃重试
+            e.retrying = false;
+            changed = true;
+            continue;
+        }
+        start(a.name, a.path, a.javaPath, a.minMem, a.maxMem, /*resetRetry=*/false);
+        // 若还能继续重试，安排下一轮
+        if (e.retryCount < e.maxRetries) {
+            const int delay = m_backoffSec * (1 << (e.retryCount)); // 下一轮 attempt = retryCount+1
+            e.retrying = true;
+            e.retryDeadlineMs = now + qint64(delay) * 1000;
+            e.nextRetryInSec = delay;
+            emit consoleAppended(e.path, QStringLiteral("[MSM] 自动重启第 %1/%2 次已发起（下次 %3 秒后）")
+                                  .arg(attempt).arg(e.maxRetries).arg(delay));
+        } else {
+            e.retrying = false;
+            emit consoleAppended(e.path, QStringLiteral("[MSM] 自动重启第 %1/%2 次已发起，达上限后停止。").arg(attempt).arg(e.maxRetries));
+        }
+        changed = true;
+    }
+    if (changed)
+        emit errorRecordsChanged();
+}
+
+QVariantList ServerController::errorRecords() const
+{
+    QVariantList out;
+    for (auto it = m_errors.begin(); it != m_errors.end(); ++it) {
+        const ErrorInfo &e = it.value();
+        QVariantMap m;
+        m[QStringLiteral("name")] = e.name;
+        m[QStringLiteral("path")] = e.path;
+        m[QStringLiteral("type")] = e.type;
+        m[QStringLiteral("typeLabel")] = e.typeLabel;
+        m[QStringLiteral("time")] = e.time;
+        m[QStringLiteral("logTail")] = e.logTail;
+        m[QStringLiteral("autoRestart")] = e.autoRestart;
+        m[QStringLiteral("retryCount")] = e.retryCount;
+        m[QStringLiteral("maxRetries")] = e.maxRetries;
+        m[QStringLiteral("retrying")] = e.retrying;
+        m[QStringLiteral("nextRetryInSec")] = e.nextRetryInSec;
+        m[QStringLiteral("fatal")] = e.fatal;
+        out << m;
+    }
+    return out;
+}
+
+// 立即强制重拉起（取消 pending 计时），用于界面“现在重试”
+void ServerController::retryNow(const QString &path)
+{
+    auto it = m_errors.find(path);
+    if (it == m_errors.end())
+        return;
+    ErrorInfo &e = it.value();
+    const StartArgs a = m_args.value(path);
+    if (a.path.isEmpty())
+        return;
+    m_intentionalKill.remove(path);
+    e.retryDeadlineMs = 0;
+    e.nextRetryInSec = 0;
+    start(a.name, a.path, a.javaPath, a.minMem, a.maxMem, /*resetRetry=*/false);
+    // 安排后续重试
+    if (e.retryCount < e.maxRetries) {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        const int delay = m_backoffSec * (1 << e.retryCount);
+        e.retrying = true;
+        e.retryDeadlineMs = now + qint64(delay) * 1000;
+        e.nextRetryInSec = delay;
+    } else {
+        e.retrying = false;
+    }
+    emit errorRecordsChanged();
+}
+
+// 停止自动重拉起（保留记录），用于“停止重试”
+void ServerController::stopRetries(const QString &path)
+{
+    auto it = m_errors.find(path);
+    if (it == m_errors.end())
+        return;
+    it->retrying = false;
+    it->nextRetryInSec = 0;
+    it->retryDeadlineMs = 0;
+    emit errorRecordsChanged();
+}
+
+// 人工标记已解决：清除记录
+void ServerController::clearError(const QString &path)
+{
+    clearErrorRecord(path);
 }
 
 QVariantMap ServerController::watchdogStatus(const QString &path) const

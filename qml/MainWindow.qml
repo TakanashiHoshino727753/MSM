@@ -41,6 +41,7 @@ ApplicationWindow {
         currentKey = key
         if (key === "overview") stackView.replace(overviewComponent)
         else if (key === "proxy") stackView.replace(proxyComponent)
+        else if (key === "error") stackView.replace(errorCenterComponent)
         syncTabHighlight()
     }
 
@@ -188,16 +189,33 @@ ApplicationWindow {
                         onClicked: window.selectServer(modelData.name)
                     }
                 }
-                // 代理聚合页签：永远位于最后，右两圆角收尾
+                // 代理聚合页签
                 TabButton {
                     id: bProxy
                     text: I18n.t("代理聚合", I18n.lang)
                     palette.windowText: Theme.text; palette.buttonText: Theme.text; palette.brightText: Theme.text
                     background: Rectangle {
                         color: bProxy.checked ? Theme.accent : Theme.accentSoft
-                        topRightRadius: Theme.radius; bottomRightRadius: Theme.radius
                     }
                     onClicked: window.selectPage("proxy")
+                }
+                // 异常纠错中心页签：永远位于最后，右两圆角收尾
+                TabButton {
+                    id: bError
+                    text: I18n.t("异常纠错", I18n.lang)
+                    palette.windowText: Theme.text; palette.buttonText: Theme.text; palette.brightText: Theme.text
+                    background: Rectangle {
+                        color: bError.checked ? Theme.accent : Theme.accentSoft
+                        topRightRadius: Theme.radius; bottomRightRadius: Theme.radius
+                        // 角标：有活动异常时显示红点
+                        Rectangle {
+                            visible: serverController && serverController.errorRecords().length > 0
+                            width: 8; height: 8; radius: 4
+                            color: Theme.danger
+                            anchors { top: parent.top; right: parent.right; topMargin: 6; rightMargin: 8 }
+                        }
+                    }
+                    onClicked: window.selectPage("error")
                 }
             }
             StackView {
@@ -272,6 +290,11 @@ ApplicationWindow {
                 Component {
                     id: proxyComponent
                     ProxyPage { }
+                }
+                // ---- 异常纠错中心 ----
+                Component {
+                    id: errorCenterComponent
+                    ErrorCenterPage { }
                 }
             }
         }

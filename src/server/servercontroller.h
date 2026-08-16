@@ -39,6 +39,9 @@ class ServerController : public QObject
     Q_PROPERTY(int watchdogHeartbeatSec READ watchdogHeartbeatSec WRITE setWatchdogHeartbeatSec NOTIFY watchdogHeartbeatSecChanged)
     Q_PROPERTY(int watchdogSilenceSec READ watchdogSilenceSec WRITE setWatchdogSilenceSec NOTIFY watchdogSilenceSecChanged)
     Q_PROPERTY(int watchdogTimeoutSec READ watchdogTimeoutSec WRITE setWatchdogTimeoutSec NOTIFY watchdogTimeoutSecChanged)
+    // 异常纠错中心：当前存在活动异常（未恢复）的服务器记录列表；QML 据此渲染纠错界面。
+    // 记录会在服务器成功重拉起后自动清除（视为已纠错）。
+    Q_PROPERTY(QVariantList errorRecords READ errorRecords NOTIFY errorRecordsChanged)
 public:
     explicit ServerController(QObject *parent = nullptr);
 
@@ -98,6 +101,18 @@ public:
     // { enabled, running, lastStdoutSec, lastHeartbeatSec, pendingHeartbeat, healthy }
     Q_INVOKABLE QVariantMap watchdogStatus(const QString &path) const;
 
+    // ---- 异常纠错中心 ----
+    // 返回当前所有“活动异常”（未恢复）的服务器纠错记录列表，每条含：
+    //  name, path, type(crash/io/heartbeat/eula), typeLabel, time, logTail,
+    //  autoRestart, retryCount, maxRetries, retrying, nextRetryInSec, fatal(eula 等不可自动恢复)
+    Q_INVOKABLE QVariantList errorRecords() const;
+    // 立即强制重拉起（取消 pending 重试计时器），用于界面“现在重试”按钮
+    Q_INVOKABLE void retryNow(const QString &path);
+    // 停止该服务器的自动重拉起（保留记录，标记 retrying=false），用于“停止重试”
+    Q_INVOKABLE void stopRetries(const QString &path);
+    // 清除该服务器的纠错记录（已人工处理完毕），用于“标记已解决”
+    Q_INVOKABLE void clearError(const QString &path);
+
     // ---- 多开端口管理 ----
     // 读取 server.properties 中的 server-port（缺失/非法时返回默认 25565）
     Q_INVOKABLE int serverPort(const QString &path) const;
@@ -132,6 +147,9 @@ signals:
     // 看门狗触发：服务器被判定卡死并强制终止，附带原因（"io"=被动静默 / "heartbeat"=心跳无响应）
     void watchdogTriggered(const QString &name, const QString &reason);
 
+    // 异常纠错记录变化（新增/更新/清除任一记录后发出），供 QML 刷新纠错中心
+    void errorRecordsChanged();
+
 private:
     // 在 dir 根目录（不含子目录）查找首个文件名以 prefix 开头、且不在 exclude 列表中的文件
     // （exclude 用于剔除 installer/日志等，如 "*-installer*.jar"）。找不到返回空串。
@@ -150,6 +168,29 @@ private:
     void sendHeartbeat(const QString &name);
     // 看门狗触发：判定卡死，强制终止并走异常纠错重启
     void triggerWatchdog(const QString &path, const QString &reason);
+    // 记录一条异常（serverError / watchdogTriggered 统一入口），分类并刷新待重试计时
+    void recordError(const QString &path, const QString &type, const QString &logTail);
+    // 清除某服务器的异常记录（成功重拉起 / 人工标记已解决）
+    void clearErrorRecord(const QString &path);
+    // 每秒刷新待重试倒计时（nextRetryInSec），到期则触发自动重拉起
+    void errorTick();
+
+    // 单个服务器异常纠错记录
+    struct ErrorInfo {
+        QString name;
+        QString path;
+        QString type;            // crash / io / heartbeat / eula
+        QString typeLabel;       // 中文分类标签
+        QString time;            // 首次发生时间（本地可读）
+        QString logTail;         // 尾部日志（供界面展示）
+        bool autoRestart = true; // 是否配置了自动重拉起
+        int retryCount = 0;      // 已重试次数
+        int maxRetries = 5;      // 最大重试次数
+        bool retrying = false;   // 仍在自动重拉起尝试中（false = 已停止重试或已放弃）
+        int nextRetryInSec = 0;  // 距下次自动重拉起的剩余秒数（>0 表示 pending）
+        bool fatal = false;      // 致命且不可自动恢复（如 eula 未同意）
+        qint64 retryDeadlineMs = 0; // 计划重拉起的墙钟时刻
+    };
 
     // 单个服务器进程运行态：保存进程指针、完整控制台、在线玩家
     struct Proc {
@@ -192,4 +233,7 @@ private:
     int m_watchdogSilenceSec = 300;      // 被动静默上限（秒，无 stdout 即疑似卡死）
     int m_watchdogTimeoutSec = 20;       // 心跳发出后等待响应的超时（秒）
     QTimer *m_watchdogTimer = nullptr;    // 周期性扫描定时器
+    QTimer *m_errorTimer = nullptr;       // 异常重试倒计时定时器（每秒）
+    // 活动异常记录（key = path）；成功重拉起后移除
+    QHash<QString, ErrorInfo> m_errors;
 };
