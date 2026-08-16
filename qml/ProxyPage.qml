@@ -18,10 +18,22 @@ Item {
     // 页签切到本页/切换实例时刷新后端映射表
     property var backends: []
     function refreshBackends() { backends = page.proxy ? page.proxy.backendSummary() : [] }
-    Component.onCompleted: refreshBackends()
-    onVisibleChanged: if (visible) refreshBackends()
+
+    // 绑定到本代理的服务器（含 running 状态），用于下方分组展示与启停联动
+    property var boundServers: []
+    function refreshBoundServers() {
+        if (!page.proxy) { boundServers = []; return }
+        var list = page.proxy.serversBoundTo()
+        var running = serverController.runningServerNames()
+        for (var i = 0; i < list.length; ++i)
+            list[i].running = running.indexOf(list[i].name) >= 0
+        boundServers = list
+    }
+    Component.onCompleted: { refreshBackends(); refreshBoundServers() }
+    onVisibleChanged: if (visible) { refreshBackends(); refreshBoundServers() }
     onProxyChanged: {
         refreshBackends()
+        refreshBoundServers()
         consoleArea.text = page.proxy ? page.proxy.getConsole() : ""
     }
 
@@ -253,6 +265,95 @@ Item {
                         width: parent.width; wrapMode: Text.Wrap
                         color: Theme.textMuted; font.pixelSize: 11
                         text: I18n.t("代理异常退出时按指数退避（最多 5 次）自动重启；手动停止不触发。", I18n.lang)
+                    }
+                }
+            }
+
+                    // ---- 绑定到本代理的服务器（第2项：绑定服务器置于代理标签页下 + 手动启停联动）----
+            Label {
+                text: I18n.t("绑定到本代理的服务器", I18n.lang)
+                font.pixelSize: 15; font.bold: true; color: Theme.text
+            }
+            Label {
+                width: parent.width; wrapMode: Text.Wrap
+                color: Theme.textMuted; font.pixelSize: 11
+                text: I18n.t("在此处把服务器“绑定”到本代理后，它们会出现在下面列表并可在此直接启停；与上方“聚合后端”的区别是：绑定是持久归属关系，聚合是运行时转发范围。", I18n.lang)
+            }
+            Rectangle {
+                width: parent.width
+                color: Theme.panel; radius: Theme.radius; border.color: Theme.border
+                height: boundCol.implicitHeight + 20
+                Column {
+                    id: boundCol
+                    anchors { left: parent.left; right: parent.right; top: parent.top; margins: 10 }
+                    spacing: 8
+                    Row {
+                        spacing: 10; width: parent.width
+                        ComboBox {
+                            id: bindCombo
+                            width: 240
+                            palette.text: Theme.text
+                            // 仅列出未绑定到任何代理的服务器，避免重复绑定
+                            model: serverManager.serverSummary().filter(function(s){ return !s.proxyId || s.proxyId === (page.proxy ? page.proxy.instanceId : ""); })
+                            textRole: "name"
+                            displayText: I18n.t("选择服务器以绑定到本代理", I18n.lang)
+                        }
+                        Button {
+                            text: I18n.t("绑定", I18n.lang)
+                            enabled: bindCombo.currentIndex >= 0
+                            palette.windowText: "white"; palette.buttonText: "white"
+                            background: Rectangle { color: parent.enabled ? (parent.hovered ? Theme.accentHover : Theme.accent) : Theme.panelAlt; radius: 6 }
+                            onClicked: {
+                                var s = bindCombo.model[bindCombo.currentIndex]
+                                serverManager.setServerProxy(s.name, page.proxy.instanceId)
+                                page.refreshBoundServers()
+                            }
+                        }
+                    }
+                    Repeater {
+                        model: page.boundServers
+                        Rectangle {
+                            width: parent.width
+                            color: "transparent"
+                            height: boundRow.implicitHeight + 12
+                            Row {
+                                id: boundRow
+                                spacing: 10; width: parent.width
+                                Rectangle {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: 8; height: 8; radius: 4
+                                    color: modelData.running ? "#43d17a" : Theme.border
+                                }
+                                Label { width: 200; elide: Text.ElideRight; text: modelData.name; color: Theme.text; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+                                Label { width: 120; text: modelData.type; color: Theme.textMuted; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+                                Button {
+                                    height: 26
+                                    text: modelData.running ? I18n.t("停止", I18n.lang) : I18n.t("启动", I18n.lang)
+                                    palette.windowText: Theme.text; palette.buttonText: Theme.text
+                                    background: Rectangle { color: parent.hovered ? Theme.panel : Theme.bg; radius: 6; border.color: Theme.border }
+                                    onClicked: {
+                                        if (modelData.running) page.proxy.stopBackend(modelData.name)
+                                        else page.proxy.startBackend(modelData.name)
+                                        page.refreshBoundServers()
+                                    }
+                                }
+                                Button {
+                                    height: 26
+                                    text: I18n.t("解绑", I18n.lang)
+                                    palette.windowText: "#e05f5f"; palette.buttonText: "#e05f5f"
+                                    background: Rectangle { color: parent.hovered ? Theme.panel : Theme.bg; radius: 6; border.color: Theme.border }
+                                    onClicked: {
+                                        serverManager.setServerProxy(modelData.name, "")
+                                        page.refreshBoundServers()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Label {
+                        visible: page.boundServers.length === 0
+                        color: Theme.textMuted; font.pixelSize: 12
+                        text: I18n.t("暂未绑定任何服务器。在上方选择并点击“绑定”。", I18n.lang)
                     }
                 }
             }

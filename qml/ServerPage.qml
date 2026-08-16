@@ -17,6 +17,9 @@ Item {
     property string serverPath
     property int serverIndex: -1
 
+    // 是否为模组服（目录含 mods/），决定是否显示“优化模组”入口
+    readonly property bool hasModsDir: serverPath ? serverController.pathExists(serverPath + "/mods") : false
+
     property bool running: false
     property string statusText: running ? I18n.t("运行中", I18n.lang) : I18n.t("已停止", I18n.lang)
     property date runningSince: new Date(0)
@@ -400,6 +403,12 @@ Item {
             text: I18n.t("属性", I18n.lang)
             onClicked: { loadProps(); propsPopup.open() }
         }
+        // 一键安装优化模组（第3项）：仅当服务器含 mods/ 目录（模组服）时显示
+        AccentButton {
+            text: I18n.t("优化模组", I18n.lang)
+            visible: root.hasModsDir
+            onClicked: { optLoaderCombo.currentIndex = 0; optVerCombo.currentIndex = 0; optProgress.visible = false; optDlg.open() }
+        }
         AccentButton {
             text: I18n.t("删除服务器", I18n.lang)
             accentColor: Theme.danger
@@ -415,6 +424,39 @@ Item {
                 Label { text: I18n.t("内存: ", I18n.lang) + memText; color: Theme.textMuted }
                 Label { text: I18n.t("TPS: ", I18n.lang) + tpsText; color: Theme.textMuted }
                 Item { Layout.fillWidth: true }
+            }
+
+            // 绑定代理（第2项：把服务器归属到某个代理实例，绑定后在代理标签页下展示）
+            RowLayout { spacing: 10; Layout.fillWidth: true
+                Label { text: I18n.t("归属代理:", I18n.lang); color: Theme.textMuted }
+                ComboBox {
+                    id: proxyBindCombo
+                    Layout.preferredWidth: 240
+                    palette.text: Theme.text
+                    property string currentProxyId: {
+                        const list = serverManager.serverSummary()
+                        for (let i = 0; i < list.length; ++i)
+                            if (list[i].name === root.serverName) return list[i].proxyId || ""
+                        return ""
+                    }
+                    model: [{ id: "", name: I18n.t("（未绑定）", I18n.lang) }].concat(
+                        (typeof proxyManager !== "undefined" && proxyManager && proxyManager.proxies)
+                            ? proxyManager.proxies.map(function(p){ return { id: p.instanceId, name: (p.name || p.instanceId) }; })
+                            : []
+                    )
+                    textRole: "name"
+                    valueRole: "id"
+                    currentIndex: {
+                        const id = currentProxyId
+                        for (let i = 0; i < model.length; ++i)
+                            if (model[i].id === id) return i
+                        return 0
+                    }
+                    onActivated: {
+                        serverManager.setServerProxy(root.serverName, currentValue || "")
+                    }
+                }
+                Label { text: I18n.t("绑定后可在对应代理标签页下直接管理此服务器", I18n.lang); color: Theme.textMuted; font.pixelSize: 11 }
             }
         }
         Rectangle { Layout.fillWidth: true; height: 1; color: Theme.border }
@@ -1037,6 +1079,94 @@ Item {
             RowLayout { spacing: 8; Layout.leftMargin: 14; Layout.rightMargin: 14; Layout.bottomMargin: 14; Layout.topMargin: 8
                 Item { Layout.fillWidth: true }
                 Button { text: I18n.t("关闭", I18n.lang); background: Rectangle { color: parent.hovered ? Theme.panel : Theme.bg; radius: 6; border.color: Theme.border } onClicked: schedPopup.close() }
+            }
+        }
+    }
+
+    // ================= 弹窗：一键安装优化模组（第3项） =================
+    ModalPopup {
+        id: optDlg
+        popupWidth: 520; popupHeight: 460
+        Component.onCompleted: {
+            downloadCatalog.optimizationModsReady.connect(function(mods){
+                optPreview.model = mods
+            })
+            downloadCatalog.optimizationInstallProgress.connect(function(title, done, total){
+                optProgress.visible = true
+                optProgressText.text = I18n.t("安装中 %1/%2：%3").arg(done).arg(total).arg(title)
+            })
+            downloadCatalog.optimizationInstallFinished.connect(function(ok, msg){
+                optProgress.visible = false
+                showToast(msg, ok)
+            })
+        }
+        contentItem: ColumnLayout { spacing: 0
+            Label { text: I18n.t("一键安装优化模组", I18n.lang); font.pixelSize: 15; font.bold: true; color: Theme.text; padding: 14 }
+            Rectangle { height: 1; color: Theme.border }
+            ColumnLayout { spacing: 10; Layout.fillWidth: true
+                Layout.leftMargin: 14; Layout.rightMargin: 14; Layout.topMargin: 12
+                Label { text: I18n.t("为当前模组服按 MC 版本与加载器检索并安装优化类模组（Lithium/Sodium/Phosphor/Ferrite-Core 等）。", I18n.lang); color: Theme.textMuted; wrapMode: Text.Wrap }
+                RowLayout { spacing: 10
+                    Label { text: I18n.t("MC 版本:", I18n.lang); color: Theme.textMuted }
+                    TextField {
+                        id: optVerCombo
+                        Layout.preferredWidth: 130
+                        text: root.serverVersion
+                        color: Theme.text
+                        background: Rectangle { color: Theme.panelAlt; radius: 6; border.color: Theme.border }
+                    }
+                    Label { text: I18n.t("加载器:", I18n.lang); color: Theme.textMuted }
+                    ComboBox {
+                        id: optLoaderCombo
+                        Layout.preferredWidth: 140
+                        palette.text: Theme.text
+                        model: [
+                            { k: "fabric", l: "Fabric" },
+                            { k: "forge", l: "Forge" },
+                            { k: "neoforge", l: "NeoForge" }
+                        ]
+                        textRole: "l"; valueRole: "k"
+                        currentIndex: 0
+                    }
+                }
+                AccentButton {
+                    text: I18n.t("检索可优化模组", I18n.lang)
+                    onClicked: downloadCatalog.fetchOptimizationMods(optVerCombo.text.trim(), optLoaderCombo.currentValue)
+                }
+                Label { text: I18n.t("可安装的优化模组：", I18n.lang); color: Theme.text; font.bold: true; visible: optPreview.count > 0 }
+                ScrollView {
+                    Layout.fillWidth: true; Layout.preferredHeight: 150
+                    contentWidth: width
+                    ListView {
+                        id: optPreview
+                        anchors.fill: parent
+                        model: []
+                        delegate: Rectangle {
+                            width: ListView.view.width; height: 30
+                            color: "transparent"
+                            RowLayout { spacing: 8; width: parent.width
+                                Label { text: "•"; color: Theme.accent }
+                                Label { text: (modelData.name || modelData.slug); color: Theme.text; font.pixelSize: 12; Layout.fillWidth: true; elide: Text.ElideRight }
+                                Label { text: (modelData.version || ""); color: Theme.textMuted; font.pixelSize: 11 }
+                            }
+                        }
+                    }
+                }
+                Label { id: optProgressText; visible: false; color: Theme.accent; font.pixelSize: 12 }
+                ProgressBar { id: optProgress; visible: false; Layout.fillWidth: true; indeterminate: true }
+            }
+            Rectangle { height: 1; color: Theme.border }
+            RowLayout { spacing: 8; Layout.leftMargin: 14; Layout.rightMargin: 14; Layout.bottomMargin: 14; Layout.topMargin: 10; Layout.alignment: Qt.AlignRight
+                SubtleButton { text: I18n.t("取消", I18n.lang); onClicked: optDlg.close() }
+                AccentButton {
+                    text: I18n.t("安装到本服", I18n.lang)
+                    accentColor: Theme.accent
+                    enabled: optPreview.count > 0
+                    onClicked: {
+                        optProgress.visible = true
+                        downloadCatalog.installOptimizationMods(root.serverPath, optVerCombo.text.trim(), optLoaderCombo.currentValue)
+                    }
+                }
             }
         }
     }

@@ -159,6 +159,16 @@ public:
     Q_INVOKABLE void downloadLoader(const QString &loader);
     Q_INVOKABLE void cleanupTempJava();
 
+    // 一键安装优化模组（第3项）：对于给定的 MC 版本 + 加载器（fabric/forge/neoforge），
+    // 从 Modrinth 检索推荐的优化类模组（Lithium/Sodium/Phosphor/Ferrite-Core/EntityCulling/Krypton 等），
+    // 解析出与版本兼容的最新版下载地址，批量安装到指定服务端 mods/ 目录。
+    Q_INVOKABLE void fetchOptimizationMods(const QString &mcVersion, const QString &loader);
+    Q_INVOKABLE void installOptimizationMods(const QString &serverPath, const QString &mcVersion, const QString &loader);
+signals:
+    void optimizationModsReady(const QVariantList &mods);
+    void optimizationInstallProgress(const QString &modTitle, int done, int total);
+    void optimizationInstallFinished(bool ok, const QString &msg);
+
 signals:
     void statusChanged();
     void languageChanged();
@@ -214,6 +224,13 @@ private:
                     int idx = 0);
     static QStringList modrinthBases();
 
+    // 一键优化模组：解析单个优化模组的下载地址（slug → Modrinth 项目 → 兼容版本 → 下载 URL）
+    void resolveOptimizationMod(const QString &slug, const QString &mcVersion, const QString &loader,
+                               std::function<void(const QVariantMap &mod)> cb);
+    // 优化模组推荐清单（slug + 适用加载器 + 备注），按加载器筛选
+    static QVariantList optimizationCatalog(const QString &loader);
+    void onOptimizationInstallDone(const QString &serverPath, int total);
+
     JavaManager *m_java = nullptr;
     DownloadManager *m_dm = nullptr;
     std::function<void()> m_packager;   // 注入的打包委托（复用创建服务器引擎）
@@ -234,4 +251,12 @@ private:
     QString m_modLoaderType;       // 当前选中的子项加载器（forge/fabric/neoforge）
     QStringList m_mcReleases;
     bool m_mcReleasesFetching = false;
+
+    // 一键优化模组安装状态
+    struct OptInstall {
+        QString serverPath;
+        int total = 0, done = 0;
+        QStringList okTitles, failTitles;
+    };
+    QHash<QString, OptInstall> m_optInstalls;   // key = serverPath
 };

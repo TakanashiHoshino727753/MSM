@@ -986,3 +986,179 @@ void DownloadCatalog::onDownloadError(const QString &id, const QString &message)
     it->setDownloading(false);
     it->setErrorText(message.isEmpty() ? ts("下载失败") : message);
 }
+
+// ===================== 一键优化模组（第3项） =====================
+
+// 优化模组推荐清单：slug（Modrinth 项目 ID/别名）、显示名、适用加载器。
+// 仅列出各加载器生态下公认、互相兼容、且持续维护的优化类模组，避免冲突。
+QVariantList DownloadCatalog::optimizationCatalog(const QString &loader)
+{
+    QVariantList all;
+    auto add = [&](const QString &slug, const QString &name, const QStringList &loaders) {
+        QVariantMap m;
+        m[QStringLiteral("slug")] = slug;
+        m[QStringLiteral("name")] = name;
+        m[QStringLiteral("loaders")] = loaders;
+        all.append(m);
+    };
+    // 通用（所有加载器适用，但需按版本匹配）：
+    add(QStringLiteral("lithium"),               QStringLiteral("Lithium（服务端逻辑优化）"),     { QStringLiteral("fabric"), QStringLiteral("neoforge"), QStringLiteral("quilt") });
+    add(QStringLiteral("sodium"),                QStringLiteral("Sodium（渲染优化）"),            { QStringLiteral("fabric"), QStringLiteral("neoforge"), QStringLiteral("quilt") });
+    add(QStringLiteral("phosphor"),              QStringLiteral("Phosphor（光照优化，1.18-）"),   { QStringLiteral("fabric"), QStringLiteral("quilt") });
+    add(QStringLiteral("starlight"),             QStringLiteral("Starlight（光照优化，fabric）"), { QStringLiteral("fabric"), QStringLiteral("quilt") });
+    add(QStringLiteral("ferrite-core"),          QStringLiteral("Ferrite-Core（内存优化）"),      { QStringLiteral("fabric"), QStringLiteral("forge"), QStringLiteral("neoforge") });
+    add(QStringLiteral("entityculling"),         QStringLiteral("EntityCulling（实体/方块剔除）"), { QStringLiteral("fabric"), QStringLiteral("forge"), QStringLiteral("neoforge") });
+    add(QStringLiteral("krypton"),               QStringLiteral("Krypton（网络优化）"),           { QStringLiteral("fabric"), QStringLiteral("quilt") });
+    add(QStringLiteral("c2me-fabric"),           QStringLiteral("C2ME（区块生成优化）"),          { QStringLiteral("fabric"), QStringLiteral("quilt") });
+    add(QStringLiteral("concurrent-chunk-management"), QStringLiteral("Concurrent Chunk Mgmt（并发加载）"), { QStringLiteral("fabric"), QStringLiteral("forge"), QStringLiteral("neoforge") });
+    add(QStringLiteral("embeddium"),             QStringLiteral("Embeddium（Forge 渲染优化）"),    { QStringLiteral("forge"), QStringLiteral("neoforge") });
+    add(QStringLiteral("canary"),                QStringLiteral("Canary（Forge 逻辑优化）"),       { QStringLiteral("forge") });
+    add(QStringLiteral("rubidium"),              QStringLiteral("Rubidium（Forge 渲染优化，旧）"), { QStringLiteral("forge") });
+    add(QStringLiteral("betterfps"),             QStringLiteral("BetterFps（帧率优化）"),          { QStringLiteral("forge"), QStringLiteral("fabric") });
+    add(QStringLiteral("cull-less-leaves"),      QStringLiteral("Cull Less Leaves（树叶剔除）"),   { QStringLiteral("fabric"), QStringLiteral("forge"), QStringLiteral("neoforge") });
+    add(QStringLiteral("lazydfu"),               QStringLiteral("LazyDFU（启动优化）"),            { QStringLiteral("fabric"), QStringLiteral("forge"), QStringLiteral("neoforge") });
+
+    // 按加载器过滤
+    QVariantList out;
+    for (const QVariant &v : all) {
+        const QVariantMap m = v.toMap();
+        const QStringList ls = m.value(QStringLiteral("loaders")).toStringList();
+        if (ls.contains(loader))
+            out.append(m);
+    }
+    return out;
+}
+
+// 解析单个优化模组的下载地址：用 slug 查 Modrinth 项目版本，筛选与 mcVersion+loader 兼容的
+// 最新版，取 primary 文件（下载 URL + 文件名）。
+void DownloadCatalog::resolveOptimizationMod(const QString &slug, const QString &mcVersion, const QString &loader,
+                                             std::function<void(const QVariantMap &)> cb)
+{
+    QStringList urls;
+    for (const QString &base : modrinthBases())
+        urls.append(base + QStringLiteral("/project/") + slug + QStringLiteral("/version"));
+    fetchFirst(urls,
+        [this, slug, mcVersion, loader, cb](const QJsonDocument &d) {
+            const QJsonArray versions = d.array();
+            QJsonObject best;
+            int bestIdx = -1;
+            for (int i = 0; i < versions.size(); ++i) {
+                const QJsonObject ver = versions.at(i).toObject();
+                const QStringList gv = ver.value(QStringLiteral("game_versions")).toVariant().toStringList();
+                const QStringList ld = ver.value(QStringLiteral("loaders")).toVariant().toStringList();
+                if (gv.contains(mcVersion) && ld.contains(loader)) {
+                    // 取数组中靠前的（通常最新）
+                    if (bestIdx < 0) { best = ver; bestIdx = i; }
+                }
+            }
+            if (bestIdx < 0) { cb(QVariantMap()); return; }
+            QJsonObject f;
+            const QJsonArray files = best.value(QStringLiteral("files")).toArray();
+            for (const auto &x : files) {
+                if (x.toObject().value(QStringLiteral("primary")).toBool()) { f = x.toObject(); break; }
+            }
+            if (f.isEmpty() && !files.isEmpty()) f = files.first().toObject();
+            if (f.isEmpty()) { cb(QVariantMap()); return; }
+            QVariantMap m;
+            m[QStringLiteral("slug")] = slug;
+            m[QStringLiteral("name")] = best.value(QStringLiteral("name")).toString();
+            m[QStringLiteral("version")] = best.value(QStringLiteral("version_number")).toString();
+            m[QStringLiteral("url")] = f.value(QStringLiteral("url")).toString();
+            m[QStringLiteral("filename")] = f.value(QStringLiteral("filename")).toString();
+            cb(m);
+        },
+        [this, cb](const QString &) { cb(QVariantMap()); });
+}
+
+void DownloadCatalog::fetchOptimizationMods(const QString &mcVersion, const QString &loader)
+{
+    if (mcVersion.isEmpty() || loader.isEmpty()) {
+        emit optimizationModsReady(QVariantList());
+        return;
+    }
+    const QVariantList catalog = optimizationCatalog(loader);
+    QVariantList resolved;
+    int pending = catalog.size();
+    if (pending == 0) { emit optimizationModsReady(resolved); return; }
+    for (const QVariant &v : catalog) {
+        const QString slug = v.toMap().value(QStringLiteral("slug")).toString();
+        resolveOptimizationMod(slug, mcVersion, loader,
+            [&, slug](const QVariantMap &m) {
+                if (!m.isEmpty() && !m.value(QStringLiteral("url")).toString().isEmpty())
+                    resolved.append(m);
+                if (--pending == 0)
+                    emit optimizationModsReady(resolved);
+            });
+    }
+}
+
+void DownloadCatalog::installOptimizationMods(const QString &serverPath, const QString &mcVersion, const QString &loader)
+{
+    const QDir modsDir(serverPath + QStringLiteral("/mods"));
+    if (!modsDir.exists() && !QDir().mkpath(modsDir.absolutePath())) {
+        emit optimizationInstallFinished(false, ts("无法创建 mods 目录：%1").arg(modsDir.absolutePath()));
+        return;
+    }
+    const QVariantList catalog = optimizationCatalog(loader);
+    int pending = catalog.size();
+    if (pending == 0) {
+        emit optimizationInstallFinished(true, ts("没有适用于该版本/加载器的优化模组"));
+        return;
+    }
+    OptInstall ins;
+    ins.serverPath = serverPath;
+    ins.total = pending;
+    ins.done = 0;
+    m_optInstalls.insert(serverPath, ins);
+
+    for (const QVariant &v : catalog) {
+        const QString slug = v.toMap().value(QStringLiteral("slug")).toString();
+        resolveOptimizationMod(slug, mcVersion, loader,
+            [this, serverPath, slug](const QVariantMap &m) {
+                OptInstall &ins = m_optInstalls[serverPath];
+                const QString title = m.value(QStringLiteral("name"), slug).toString();
+                if (m.isEmpty() || m.value(QStringLiteral("url")).toString().isEmpty()) {
+                    ins.failTitles.append(title);
+                } else {
+                    const QString filename = m.value(QStringLiteral("filename")).toString();
+                    const QString id = m_dm->download(m.value(QStringLiteral("url")).toString(),
+                                                      serverPath + QStringLiteral("/mods"), filename, title);
+                    ins.okTitles.append(title);
+                    connect(m_dm, &DownloadManager::finished, this,
+                            [this, serverPath, id](const QString &fid, const QString &) {
+                                if (fid != id) return;
+                                OptInstall &i2 = m_optInstalls[serverPath];
+                                ++i2.done;
+                                emit optimizationInstallProgress(fid, i2.done, i2.total);
+                                onOptimizationInstallDone(serverPath, i2.total);
+                            });
+                    connect(m_dm, &DownloadManager::error, this,
+                            [this, serverPath, id, title](const QString &fid, const QString &) {
+                                if (fid != id) return;
+                                OptInstall &i2 = m_optInstalls[serverPath];
+                                i2.failTitles.append(title);
+                                ++i2.done;
+                                emit optimizationInstallProgress(fid, i2.done, i2.total);
+                                onOptimizationInstallDone(serverPath, i2.total);
+                            });
+                }
+                ++ins.done;
+                emit optimizationInstallProgress(title, ins.done, ins.total);
+                if (ins.done >= ins.total)
+                    onOptimizationInstallDone(serverPath, ins.total);
+            });
+    }
+}
+
+void DownloadCatalog::onOptimizationInstallDone(const QString &serverPath, int total)
+{
+    Q_UNUSED(total);
+    OptInstall ins = m_optInstalls.value(serverPath);
+    if (ins.done < ins.total) return;   // 仍有未决议项
+    const bool ok = ins.failTitles.isEmpty();
+    QString msg = ok
+        ? ts("已安装 %1 个优化模组到 %2/mods").arg(ins.okTitles.size()).arg(serverPath)
+        : ts("安装完成：成功 %1，失败 %2（%3）").arg(ins.okTitles.size()).arg(ins.failTitles.size()).arg(ins.failTitles.join(QStringLiteral("、")));
+    m_optInstalls.remove(serverPath);
+    emit optimizationInstallFinished(ok, msg);
+}

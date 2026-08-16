@@ -116,6 +116,19 @@ bool ServerController::isRunning(const QString &name) const
     return m_procs.contains(name);
 }
 
+QStringList ServerController::runningServerNames() const
+{
+    QStringList out;
+    for (auto it = m_procs.begin(); it != m_procs.end(); ++it)
+        out << m_args.value(it.key()).name;
+    return out;
+}
+
+bool ServerController::pathExists(const QString &path) const
+{
+    return !path.isEmpty() && QFileInfo::exists(path);
+}
+
 void ServerController::start(const QString &name, const QString &path,
                              const QString &javaPath, int minMem, int maxMem,
                              bool resetRetry)

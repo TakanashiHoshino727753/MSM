@@ -63,6 +63,10 @@ public:
 
     // 判断指定服务器当前是否在运行（按 path 身份键区分，同名不同目录互不干扰）
     Q_INVOKABLE bool isRunning(const QString &path) const;
+    // 返回当前所有运行中的服务器名称（供 QML/WebUI 判断运行时状态）
+    Q_INVOKABLE QStringList runningServerNames() const;
+    // 判断路径是否存在（文件或目录），供 QML 判断服务器是否含 mods/ 等子目录
+    Q_INVOKABLE bool pathExists(const QString &path) const;
     // 以给定的 java 路径与内存参数（最小/最大，单位 MB）启动一台服务器。
     // path 为服务端根目录（含核心 jar），同时作为唯一进程键（同名不同目录互不串台）；
     // name 仅用于日志/控制台展示。
