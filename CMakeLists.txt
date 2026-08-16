@@ -30,6 +30,7 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS
     Svg
     WebSockets
     HttpServer
+    Multimedia
 )
 
 qt_standard_project_setup(REQUIRES 6.8)
@@ -102,6 +103,7 @@ target_link_libraries(MinecraftServerManager PRIVATE
     Qt6::Network
     Qt6::Svg
     Qt6::WebSockets
+    Qt6::Multimedia
     msm_core
     msm_download
     msm_java

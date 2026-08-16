@@ -9,6 +9,10 @@
 #include <QQmlComponent>
 #include <QSystemTrayIcon>
 #include <QMenu>
+#include <QMediaPlayer>
+#include <QAudioOutput>
+#include <QUrl>
+#include <QFile>
 #include <QAction>
 #include <QQuickWindow>
 #include <QEvent>
@@ -191,7 +195,31 @@ public:
         : QObject(parent), m_engine(engine)
     {
         loadDict();  // 先加载翻译字典，供 rebuildTrayMenu 使用
+        setupBgm();
         setupTray();
+    }
+
+    // 初始化 BGM 播放器：资源缺失时优雅降级（bgmAvailable=false，开关无效）
+    void setupBgm()
+    {
+        m_bgm = new QMediaPlayer(this);
+        m_bgm->setAudioOutput(new QAudioOutput(this));
+        m_bgm->setLoops(QMediaPlayer::Infinite);
+        // 优先级：exe 同目录 bgm.mp3 > qrc:/audio/bgm.mp3；用户可直接丢文件到 exe 目录启用
+        const QString local = QCoreApplication::applicationDirPath() + QStringLiteral("/bgm.mp3");
+        if (QFile::exists(local)) {
+            m_bgm->setSource(QUrl::fromLocalFile(local));
+            m_bgmAvailable = true;
+        } else if (QFile::exists(QStringLiteral(":/audio/bgm.mp3"))) {
+            m_bgm->setSource(QUrl(QStringLiteral("qrc:/audio/bgm.mp3")));
+            m_bgmAvailable = true;
+        } else {
+            m_bgmAvailable = false;
+        }
+        QSettings s;
+        m_bgmEnabled = s.value(QStringLiteral("ui/bgm"), false).toBool();
+        if (m_bgmEnabled && m_bgmAvailable)
+            m_bgm->play();
     }
 
     private:
@@ -316,6 +344,7 @@ public:
 
 signals:
     void themeApplied(bool dark, const QColor &accent);
+    void bgmEnabledChanged();
 
 public slots:
     void showMainWindow()            { showUnique(QStringLiteral("MainWindow")); }
@@ -353,6 +382,19 @@ public slots:
     }
     void openControllerSettings()    { showUnique(QStringLiteral("ControllerSettings")); }
     void setTheme(bool dark, const QColor &accent);   // 持久化并应用主题（QML 调用）
+
+public:
+    // 应用版本号（标题栏副标题展示）
+    Q_PROPERTY(QString appVersion READ appVersion CONSTANT)
+    QString appVersion() const;
+
+    // 背景音乐（BGM）开关：持久化到 QSettings，启用且资源存在时循环播放
+    Q_PROPERTY(bool bgmEnabled READ bgmEnabled NOTIFY bgmEnabledChanged)
+    Q_PROPERTY(bool bgmAvailable READ bgmAvailable CONSTANT)
+    bool bgmEnabled() const;
+    bool bgmAvailable() const;
+    Q_INVOKABLE void setBgmEnabled(bool on);
+
 
     void closeAllWindows()
     {
@@ -413,6 +455,9 @@ private:
     QList<QQuickWindow *> m_windows;
     QHash<QString, QString> m_dict;
     SettingsController *m_sc = nullptr;
+    QMediaPlayer *m_bgm = nullptr;
+    bool m_bgmEnabled = false;
+    bool m_bgmAvailable = false;
 
 public:
     void setSettingsController(SettingsController *sc) { m_sc = sc; }
@@ -501,6 +546,24 @@ public:
         connect(quit, &QAction::triggered, this, &AppController::quitApp);
     }
 };
+
+QString AppController::appVersion() const { return QStringLiteral("v7.0"); }
+
+bool AppController::bgmEnabled() const { return m_bgmEnabled; }
+
+bool AppController::bgmAvailable() const { return m_bgmAvailable; }
+
+void AppController::setBgmEnabled(bool on)
+{
+    m_bgmEnabled = on;
+    QSettings s;
+    s.setValue(QStringLiteral("ui/bgm"), on);
+    if (on && m_bgmAvailable && m_bgm)
+        m_bgm->play();
+    else if (m_bgm)
+        m_bgm->stop();
+    emit bgmEnabledChanged();
+}
 
 void AppController::setTheme(bool dark, const QColor &accent)
 {

@@ -150,6 +150,17 @@ ApplicationWindow {
             anchors.fill: parent; color: Theme.accentSoft
             // 右下角跟随窗口圆角（frame 的 clip 不会裁剪子项的圆角，需在此单独设置）
             bottomRightRadius: window.visibility === Window.Maximized ? 0 : Theme.radius
+            // 顶部渐变高光：让主区域更有层次（背景美化）
+            Rectangle {
+                anchors.fill: parent
+                bottomRightRadius: parent.bottomRightRadius
+                gradient: Gradient {
+                    orientation: Gradient.Vertical
+                    GradientStop { position: 0.0; color: Theme.accent; }
+                    GradientStop { position: 0.18; color: Theme.accentSoft; }
+                }
+                opacity: 0.18
+            }
         }
         Rectangle {
             width: 1; anchors.left: parent.left; color: Theme.border

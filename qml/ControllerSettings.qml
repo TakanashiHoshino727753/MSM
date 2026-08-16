@@ -298,6 +298,26 @@ ApplicationWindow {
                                     }
                                 }
                             }
+                            // 背景音乐（BGM）：启用后循环播放 exe 同目录的 bgm.mp3（缺失则开关旁提示不可用）
+                            RowLayout {
+                                Layout.fillWidth: true
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 2
+                                    Label { text: I18n.t("背景音乐", I18n.lang); color: Theme.text }
+                                    Label {
+                                        visible: !appController.bgmAvailable
+                                        text: I18n.t("（将 bgm.mp3 放入程序目录即可启用）", I18n.lang)
+                                        color: Theme.textMuted; font.pixelSize: 11
+                                    }
+                                }
+                                Switch {
+                                    id: bgmToggle
+                                    checked: appController.bgmEnabled
+                                    enabled: appController.bgmAvailable
+                                    onToggled: appController.setBgmEnabled(bgmToggle.checked)
+                                }
+                            }
                         }
                     }
 

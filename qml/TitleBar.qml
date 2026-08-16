@@ -42,6 +42,12 @@ Rectangle {
             font.pixelSize: 13
             anchors.verticalCenter: parent.verticalCenter
         }
+        Text {
+            text: appController.appVersion
+            color: Theme.textMuted
+            font.pixelSize: 11
+            anchors.verticalCenter: parent.verticalCenter
+        }
     }
 
     Row {
