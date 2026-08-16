@@ -134,6 +134,8 @@ table td.t{color:var(--text-muted);width:42%}
     <div class="brand">⛏ MSM</div>
     <div class="nav">
       <button data-tab="servers" class="active">🖥 服务器</button>
+      <button data-tab="proxy">🌐 代理聚合</button>
+      <button data-tab="errors">🛠 异常纠错</button>
       <button data-tab="downloads">⬇ 下载中心</button>
       <button data-tab="create">➕ 创建服务器</button>
       <button data-tab="import">📦 导入整合包</button>
@@ -148,6 +150,8 @@ table td.t{color:var(--text-muted);width:42%}
   </aside>
   <main class="main">
     <section id="page-servers" class="page active"></section>
+    <section id="page-proxy" class="page"></section>
+    <section id="page-errors" class="page"></section>
     <section id="page-downloads" class="page"></section>
     <section id="page-create" class="page"></section>
     <section id="page-import" class="page"></section>
@@ -350,12 +354,72 @@ function switchTab(tab){
   document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active',p.id==='page-'+tab));
   stopTimers();
   if(tab==='servers')enterServers();
+  else if(tab==='proxy')enterProxy();
+  else if(tab==='errors')enterErrors();
   else if(tab==='downloads')renderDownloads();
   else if(tab==='create')renderCreate();
   else if(tab==='import')renderImport();
   else if(tab==='settings')renderSettings();
 }
 function stopTimers(){Object.values(timers).forEach(clearInterval);timers={};}
+
+// ---------------- 代理聚合（第2/8项） ----------------
+function enterProxy(){
+  curTab='proxy';
+  const el=document.getElementById('page-proxy');
+  el.innerHTML='<h2>🌐 '+T('代理聚合')+'</h2><div id="proxyList"></div>';
+  renderProxy();
+  timers.proxy=setInterval(renderProxy,3000);
+}
+async function renderProxy(){
+  const el=document.getElementById('proxyList');if(!el)return;
+  try{
+    const data=await api('/api/proxies');const proxies=data.proxies||[];
+    el.innerHTML=proxies.map(p=>{
+      const servers=(p.servers||[]).map(s=>'<span class="tag">'+esc(s)+'</span>').join('')||'<span class="muted">'+T('无绑定')+'</span>';
+      return '<div class="card"><div class="row" style="justify-content:space-between">'
+        +'<div><b>'+esc(p.name||p.instanceId)+'</b> <span class="muted">'+esc(p.instanceId)+'</span> '
+        +'<span class="sdot '+(p.running?'run':'')+'"></span></div>'
+        +'<span class="muted">'+esc(p.type)+' :'+esc(p.proxyPort)+'</span></div>'
+        +'<div class="row" style="margin-top:8px;gap:6px;flex-wrap:wrap">'+T('绑定服务器')+': '+servers+'</div></div>';
+    }).join('')||'<p class="muted">'+T('暂无代理')+'</p>';
+  }catch(e){el.innerHTML='<p class="muted">'+T('加载失败')+'</p>';}
+}
+
+// ---------------- 异常纠错中心（第5/8项） ----------------
+function enterErrors(){
+  curTab='errors';
+  const el=document.getElementById('page-errors');
+  el.innerHTML='<h2>🛠 '+T('异常纠错中心')+'</h2><div id="errList"></div>';
+  renderErrors();
+  timers.errors=setInterval(renderErrors,2000);
+}
+async function renderErrors(){
+  const el=document.getElementById('errList');if(!el)return;
+  try{
+    const data=await api('/api/errors');const errs=data.errors||[];
+    if(!errs.length){el.innerHTML='<p class="ok">'+T('当前无活动异常，所有服务器运行正常 ✓')+'</p>';return;}
+    el.innerHTML=errs.map(e=>{
+      const path=encodeURIComponent(e.path);
+      const retryBtn=e.fatal?'':'<button class="ghost" onclick="errAction(\''+path+'\',\'retry\')">'+T('现在重试')+'</button>';
+      const stopBtn=e.retrying?'<button class="ghost" onclick="errAction(\''+path+'\',\'stop\')">'+T('停止重试')+'</button>':'';
+      const prog=e.fatal?('<span class="warn">'+T('致命错误：无法自动恢复')+'</span>')
+        :(e.retrying?('<span>'+T('自动重启中：第')+(e.retryCount+1)+'/'+e.maxRetries+T('次，')+e.nextRetryInSec+T('秒后重试')+'</span>')
+        :((e.retryCount>=e.maxRetries)?('<span class="warn">'+T('已达最大重试次数（')+e.maxRetries+'）'+T('，已停止自动重启')+'</span>'):('<span class="muted">'+T('自动重启已关闭，等待手动处理')+'</span>')));
+      const log=e.logTail?('<pre class="log">'+esc(e.logTail)+'</pre>'):'';
+      const eulaTip=e.type==='eula'?('<p class="warn">'+T('处理建议：在服务器目录 eula.txt 中将 eula=false 改为 eula=true 后点击“现在重试”。')+'</p>'):'';
+      return '<div class="card"><div class="row" style="justify-content:space-between">'
+        +'<div><b>'+esc(e.typeLabel)+'</b> <span class="muted">'+esc(e.name)+'</span></div>'
+        +'<span class="muted">'+esc(e.time)+'</span></div>'
+        +'<div style="margin:6px 0">'+prog+'</div>'+log+eulaTip
+        +'<div class="row" style="gap:8px;margin-top:8px">'+retryBtn+stopBtn
+        +'<button class="ghost" onclick="errAction(\''+path+'\',\'clear\')">'+T('标记已解决')+'</button></div></div>';
+    }).join('');
+  }catch(e){el.innerHTML='<p class="muted">'+T('加载失败')+'</p>';}
+}
+function errAction(path,action){
+  api('/api/errors/'+path+'/'+action,{method:'POST'}).then(()=>{toast(T('已')+action);renderErrors();}).catch(e=>toast(T('失败:')+e.message));
+}
 
 // 系统监控 —— 折线图（仿本地桌面端：固定容量、最新点在最右、>85% 变红）
 const CHART_CAP=60; let cpuHist=[], memHist=[];
@@ -500,11 +564,19 @@ async function refreshServer(){
       </div>
     </div>
     <div class="tag" style="margin-top:6px">目录：${esc(d.path)}</div>
+    <div class="row" style="margin-top:8px;gap:14px;flex-wrap:wrap;align-items:center">
+      <span class="muted">${T('看门狗')}：<span id="wdStatus">…</span></span>
+      <span class="muted">${T('归属代理')}：</span>
+      <select id="proxySel" onchange="setProxy('${esc(curServer)}',this.value)" style="padding:4px 8px;border-radius:6px;border:1px solid var(--card-bd);background:var(--bg-2);color:inherit">
+        <option value="">${T('（无 / 默认）')}</option>
+      </select>
+    </div>
     <div style="margin-top:10px"><span class="muted">${T('在线玩家：')}</span></div>
     <div style="margin-top:6px">${phtml}</div>
     <div class="row" style="margin-top:12px">
       <button class="ghost" onclick="showWorld()">${T('世界管理')}</button>
       <button class="ghost" onclick="showMods()">${T('查看 Mods')} (${ (d.mods||[]).length })</button>
+      <button class="ghost" onclick="showOptMods()">${T('优化模组')}</button>
       <button class="ghost" onclick="showPlayers()">${T('玩家管理')}</button>
     </div>
     <div class="row" style="margin-top:12px;align-items:center">
@@ -521,6 +593,9 @@ async function refreshServer(){
   </div>`;
   // 直接复用本接口已返回的 console 字段刷新控制台，省去一次独立的 /console 轮询请求
   const c=document.getElementById('console');if(c){c.innerHTML=renderConsole(d.console||'');c.scrollTop=c.scrollHeight;}
+  // 看门狗状态 + 归属代理下拉（第6/2/8项）
+  loadWatchdog(curServer);
+  loadProxySel(curServer, d.proxyId);
 }
 // 控制台刷新已合并到 refreshServer()：直接复用 /api/servers 详情已返回的 console 字段，省去一次独立 /console 轮询。
 function renderConsole(text){
@@ -611,6 +686,61 @@ async function saveProps(){
 }
 async function showMods(){const d=await api('/api/servers/'+encodeURIComponent(curServer));const m=d.mods||[];
   document.getElementById('detailExtra').innerHTML=`<hr><h3>${T('Mods')} (${m.length})</h3>`+(m.map(x=>`<div class="item"><div class="meta"><div class="t">${esc(x.name||x.file)}</div><div class="s">${esc(x.version||'')}</div></div></div>`).join('')||'<p class="muted">'+T('无')+'</p>');}
+
+// 看门狗状态加载（第6/8项）
+async function loadWatchdog(name){
+  const el=document.getElementById('wdStatus');if(!el)return;
+  try{const w=await api('/api/servers/'+encodeURIComponent(name)+'/watchdog');
+    el.textContent = (w.enabled?T('已启用'):T('未启用'))+' · '+(w.lastBeat?T('上次心跳：')+esc(w.lastBeat):T('尚无心跳'))+' · '+(w.timeoutSec||0)+'s';
+  }catch(e){el.textContent=T('不可用');}
+}
+// 归属代理下拉填充（第2/8项）
+async function loadProxySel(name, sel){
+  const sel2=document.getElementById('proxySel');if(!sel2)return;
+  try{const data=await api('/api/proxies');const proxies=data.proxies||[];
+    sel2.innerHTML='<option value="">'+T('（无 / 默认）')+'</option>'+proxies.map(p=>'<option value="'+esc(p.instanceId)+'"'+(p.instanceId===sel?' selected':'')+'>'+esc(p.name||p.instanceId)+'</option>').join('');
+  }catch(e){}
+}
+function setProxy(name,id){
+  api('/api/servers/'+encodeURIComponent(name)+'/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({proxyId:id})})
+    .then(()=>toast(T('归属代理已更新'))).catch(e=>toast(T('失败:')+e.message));
+}
+// 一键优化模组（第3/8项）：检索 + 安装
+let optTimer=null;
+async function showOptMods(){
+  const cur=curServer; if(!cur)return;
+  document.getElementById('detailExtra').innerHTML=`<hr><h3>${T('优化模组')}</h3>
+    <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+      <input id="optMc" placeholder="${T('MC 版本，如 1.20.1')}" style="padding:4px 8px;border-radius:6px;border:1px solid var(--card-bd);background:var(--bg-2);color:inherit"/>
+      <select id="optLoader" style="padding:4px 8px;border-radius:6px;border:1px solid var(--card-bd);background:var(--bg-2);color:inherit">
+        <option value="fabric">Fabric</option><option value="forge">Forge</option><option value="neoforge">NeoForge</option>
+      </select>
+      <button class="primary" onclick="fetchOptMods('${esc(cur)}')">${T('检索可优化模组')}</button>
+    </div>
+    <div id="optResult" style="margin-top:10px"></div>`;
+}
+async function fetchOptMods(name){
+  const mc=document.getElementById('optMc').value.trim();const loader=document.getElementById('optLoader').value;
+  const out=document.getElementById('optResult');if(!mc){out.innerHTML='<p class="warn">'+T('请填写 MC 版本')+'</p>';return;}
+  out.innerHTML='<p class="muted">'+T('检索中…')+'</p>';
+  await api('/api/servers/'+encodeURIComponent(name)+'/optimods?mc='+encodeURIComponent(mc)+'&loader='+encodeURIComponent(loader));
+  if(optTimer)clearInterval(optTimer);
+  optTimer=setInterval(async ()=>{
+    try{const r=await api('/api/servers/'+encodeURIComponent(name)+'/optimods');const mods=r.mods||[];
+      if(mods.length){clearInterval(optTimer);optTimer=null;renderOptList(name,mc,loader,mods);}
+    }catch(e){}
+  },1500);
+}
+function renderOptList(name,mc,loader,mods){
+  const out=document.getElementById('optResult');if(!out)return;
+  out.innerHTML='<p class="muted">'+T('共 ')+mods.length+T(' 个可优化模组：')+'</p>'
+    +mods.map(m=>'<div class="item"><div class="meta"><div class="t">'+esc(m.title)+(m.version?(' @ '+esc(m.version)):'')+'</div><div class="s">'+esc(m.desc||'')+'</div></div></div>').join('')
+    +'<div class="row" style="margin-top:10px"><button class="primary" onclick="installOptMods(\''+esc(name)+'\',\''+esc(mc)+'\',\''+esc(loader)+'\')">'+T('安装到本服')+'</button></div>';
+}
+function installOptMods(name,mc,loader){
+  api('/api/servers/'+encodeURIComponent(name)+'/installoptimod',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mc:mc,loader:loader})})
+    .then(()=>toast(T('已开始安装优化模组'))).catch(e=>toast(T('失败:')+e.message));
+}
 
 // ---------------- 指令集 / 快捷操作 ----------------
 function runQuickWeb(cmd){

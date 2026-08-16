@@ -18,6 +18,7 @@
 #include "botcontroller.h"
 #include "installcoordinator.h"
 #include "httpclient.h"
+#include "../proxy/proxymanager.h"
 
 #include <QTcpSocket>
 #include <QJsonDocument>
@@ -611,6 +612,16 @@ void WebUIServer::setBotController(BotController *bot)
     m_bot = bot;
 }
 
+void WebUIServer::setDownloadCatalog(DownloadCatalog *dc)
+{
+    m_dc = dc;
+    if (m_dc) {
+        // 优化模组检索结果缓存：信号到达即写入，供 WebUI 轮询 /api/optimods 读取
+        connect(m_dc, &DownloadCatalog::optimizationModsReady, this,
+                [this](const QVariantList &mods) { m_optModsCache = mods; });
+    }
+}
+
 void WebUIServer::dispatch(const QString &method, const QString &path, const QString &query,
                            const QMap<QString, QString> &hdr, const QByteArray &body, QTcpSocket *sock)
 {
@@ -1073,6 +1084,106 @@ void WebUIServer::dispatch(const QString &method, const QString &path, const QSt
     if (api == QStringLiteral("/java/sethome") && method == QStringLiteral("GET")) {
         const QString dir = q.value(QStringLiteral("dir"));
         if (!dir.isEmpty()) m_java->setManualJavaHome(dir);
+        sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
+        return;
+    }
+
+    // ---------- 第8项 WebUI 增强：代理绑定 / 看门狗 / 优化模组 / 异常纠错 ----------
+
+    // 代理聚合列表（含每个代理绑定的服务器）
+    if (api == QStringLiteral("/proxies") && method == QStringLiteral("GET")) {
+        QJsonArray arr;
+        if (m_proxyMgr) {
+            const QVariantList list = m_proxyMgr->proxies();
+            for (const QVariant &v : list) {
+                QObject *p = v.value<QObject *>();
+                if (!p) continue;
+                QJsonObject o;
+                o[QStringLiteral("instanceId")] = p->property("instanceId").toString();
+                o[QStringLiteral("name")] = p->property("name").toString();
+                o[QStringLiteral("type")] = p->property("type").toString();
+                o[QStringLiteral("running")] = p->property("running").toBool();
+                o[QStringLiteral("proxyPort")] = p->property("proxyPort").toInt();
+                // 本代理绑定的服务器名列表
+                QJsonArray bound;
+                QVariantList boundList;
+                QMetaObject::invokeMethod(const_cast<QObject *>(p), "serversBoundTo",
+                    Qt::DirectConnection, Q_RETURN_ARG(QVariantList, boundList));
+                for (const QVariant &sv : boundList) bound.append(sv.toString());
+                o[QStringLiteral("servers")] = bound;
+                arr.append(o);
+            }
+        }
+        sendJson(sock, QJsonObject{{QStringLiteral("proxies"), arr}});
+        return;
+    }
+
+    // 服务器 → 代理绑定（POST body:{proxyId}；空串表示解绑）
+    if (api.startsWith(QStringLiteral("/servers/")) && api.endsWith(QStringLiteral("/proxy")) && method == QStringLiteral("POST")) {
+        const QString name = api.mid(9, api.length() - 9 - 6); // 去掉 "/servers/" 前缀与 "/proxy" 后缀
+        const QString proxyId = bodyJson.value(QStringLiteral("proxyId")).toString();
+        const bool ok = m_sm->setServerProxy(name, proxyId);
+        sendJson(sock, QJsonObject{{QStringLiteral("ok"), ok}});
+        return;
+    }
+
+    // 服务器看门狗状态
+    if (api.startsWith(QStringLiteral("/servers/")) && api.endsWith(QStringLiteral("/watchdog")) && method == QStringLiteral("GET")) {
+        const QString name = api.mid(9, api.length() - 9 - 10);
+        Server *srv = m_sm->serverByName(name);
+        if (!srv) { sendStatus(sock, 404, QStringLiteral("server not found")); return; }
+        const QVariantMap wd = m_sc->watchdogStatus(srv->path());
+        QJsonObject o = QJsonObject::fromVariantMap(wd);
+        sendJson(sock, o);
+        return;
+    }
+
+    // 异常纠错记录（活动异常列表）
+    if (api == QStringLiteral("/errors") && method == QStringLiteral("GET")) {
+        sendJson(sock, QJsonObject{{QStringLiteral("errors"), QJsonArray::fromVariantList(m_sc->errorRecords())}});
+        return;
+    }
+    // 异常纠错手动操作：/errors/{path}/retry | /stop | /clear
+    if (api.startsWith(QStringLiteral("/errors/")) && (api.endsWith(QStringLiteral("/retry"))
+            || api.endsWith(QStringLiteral("/stop")) || api.endsWith(QStringLiteral("/clear")))) {
+        QString rest = api.mid(7); // 去 "/errors/"
+        const int slash = rest.lastIndexOf(QLatin1Char('/'));
+        const QString path = HttpClient::urlDecode(rest.left(slash));
+        const QString action = rest.mid(slash + 1);
+        if (action == QStringLiteral("retry"))
+            QMetaObject::invokeMethod(m_sc, "retryNow", Qt::QueuedConnection, Q_ARG(QString, path));
+        else if (action == QStringLiteral("stop"))
+            QMetaObject::invokeMethod(m_sc, "stopRetries", Qt::QueuedConnection, Q_ARG(QString, path));
+        else
+            QMetaObject::invokeMethod(m_sc, "clearError", Qt::QueuedConnection, Q_ARG(QString, path));
+        sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
+        return;
+    }
+
+    // 优化模组检索（触发 + 返回缓存）
+    if (api.startsWith(QStringLiteral("/servers/")) && api.endsWith(QStringLiteral("/optimods")) && method == QStringLiteral("GET")) {
+        const QString name = api.mid(9, api.length() - 9 - 9);
+        Server *srv = m_sm->serverByName(name);
+        if (!srv) { sendStatus(sock, 404, QStringLiteral("server not found")); return; }
+        const QString mc = q.value(QStringLiteral("mc"));
+        const QString loader = q.value(QStringLiteral("loader"));
+        if (m_dc && !mc.isEmpty() && !loader.isEmpty())
+            QMetaObject::invokeMethod(m_dc, "fetchOptimizationMods", Qt::QueuedConnection,
+                Q_ARG(QString, mc), Q_ARG(QString, loader));
+        sendJson(sock, QJsonObject{{QStringLiteral("mods"), QJsonArray::fromVariantList(m_optModsCache)},
+                                   {QStringLiteral("loading"), mc.isEmpty() || loader.isEmpty() ? false : true}});
+        return;
+    }
+    // 优化模组安装（POST body:{mc,loader}）
+    if (api.startsWith(QStringLiteral("/servers/")) && api.endsWith(QStringLiteral("/installoptimod")) && method == QStringLiteral("POST")) {
+        const QString name = api.mid(9, api.length() - 9 - 15);
+        Server *srv = m_sm->serverByName(name);
+        if (!srv) { sendStatus(sock, 404, QStringLiteral("server not found")); return; }
+        const QString mc = bodyJson.value(QStringLiteral("mc")).toString();
+        const QString loader = bodyJson.value(QStringLiteral("loader")).toString();
+        if (m_dc)
+            QMetaObject::invokeMethod(m_dc, "installOptimizationMods", Qt::QueuedConnection,
+                Q_ARG(QString, srv->path()), Q_ARG(QString, mc), Q_ARG(QString, loader));
         sendJson(sock, QJsonObject{{QStringLiteral("ok"), true}});
         return;
     }

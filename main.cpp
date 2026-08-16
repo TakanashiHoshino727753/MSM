@@ -985,6 +985,9 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(QStringLiteral("botController"), &botController);
     engine.rootContext()->setContextProperty(QStringLiteral("proxyController"), &proxyController);
     engine.rootContext()->setContextProperty(QStringLiteral("proxyManager"), &proxyManager);
+    // WebUI 增强：接入代理管理器与主下载目录（优化模组）
+    webuiServer.setProxyManager(&proxyManager);
+    webuiServer.setDownloadCatalog(&downloadCatalog);
     engine.rootContext()->setContextProperty(QStringLiteral("portMapper"), &portMapper);
     engine.rootContext()->setContextProperty(QStringLiteral("backupController"), &backupController);
     engine.rootContext()->setContextProperty(QStringLiteral("schedulerController"), &schedulerController);

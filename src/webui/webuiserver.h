@@ -22,6 +22,7 @@ class SystemMonitor;
 class JavaManager;
 class BotController;
 class InstallCoordinator;
+class ProxyManager;
 
 // 本地 WebUI 服务：在 0.0.0.0:端口 监听 HTTP，提供与本地端功能/设计一致的单页管理面板。
 // 除“关闭 WebUI”这类有害设置外，其余功能与本地端保持一致；弹窗（创建/导入）改为标签页切换。
@@ -63,6 +64,11 @@ public:
 
     // 接入安装协调器（服务器类型+版本+加载器，支持多任务并发），供 WebUI 提交安装任务
     void setInstallCoordinator(InstallCoordinator *c) { m_install = c; }
+
+    // 接入代理管理器（多代理实例），供 WebUI 展示代理聚合与服务器→代理绑定
+    void setProxyManager(ProxyManager *pm) { m_proxyMgr = pm; }
+    // 接入主下载目录（DownloadCatalog），供 WebUI 触发一键优化模组检索/安装
+    void setDownloadCatalog(DownloadCatalog *dc);
 
 signals:
     void runningChanged();
@@ -107,6 +113,9 @@ private:
     ServerManager *m_sm = nullptr;
     ServerController *m_sc = nullptr;
     DownloadCatalog *m_webCatalog = nullptr;   // WebUI 独立使用的下载目录，与本地端互不影响
+    ProxyManager *m_proxyMgr = nullptr;         // 代理管理器（多代理实例），供 WebUI 聚合展示
+    DownloadCatalog *m_dc = nullptr;            // 主下载目录（优化模组检索/安装）
+    QVariantList m_optModsCache;                // 最近一次优化模组检索结果缓存（供 WebUI 轮询）
     CreateServerController *m_create = nullptr;
     ModpackImporter *m_import = nullptr;
     SettingsController *m_settings = nullptr;
