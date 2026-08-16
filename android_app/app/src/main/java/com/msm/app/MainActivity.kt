@@ -17,7 +17,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val vm: MainViewModel = viewModel()
             val state by vm.state.collectAsState()
-            var screen by remember { mutableStateOf("list") } // list | detail | errors | scanner
+            var screen by remember { mutableStateOf("list") } // list | detail | errors | scanner | detail-proxy | detail-opt | detail-watchdog
             var pendingUri by remember { mutableStateOf<String?>(null) }
 
             LaunchedEffect(deepLink) {
@@ -55,7 +55,32 @@ class MainActivity : ComponentActivity() {
                             onStart = { vm.start(state.selected!!.name) },
                             onStop = { vm.stop(state.selected!!.name) },
                             onRefresh = { vm.selectServer(state.selected!!.name) },
-                            onCommand = { vm.sendCommand(state.selected!!.name, it) }
+                            onCommand = { vm.sendCommand(state.selected!!.name, it) },
+                            onProxy = { vm.loadProxies(); screen = "detail-proxy" },
+                            onOptMods = {
+                                vm.loadOptMods(state.selected!!.name, state.selected!!.mcVersion, state.selected!!.loader)
+                                screen = "detail-opt"
+                            },
+                            onWatchdog = { vm.loadWatchdog(state.selected!!.name); screen = "detail-watchdog" }
+                        )
+                        screen == "detail-proxy" -> ProxyScreen(
+                            proxies = state.proxies,
+                            onBack = { screen = "detail" },
+                            onBind = { vm.setServerProxy(state.selected!!.name, it); screen = "detail" }
+                        )
+                        screen == "detail-opt" -> OptModScreen(
+                            mcVersion = state.selected!!.mcVersion,
+                            loader = state.selected!!.loader,
+                            optMods = state.optMods,
+                            loading = state.optLoading,
+                            onBack = { screen = "detail" },
+                            onRefresh = { vm.loadOptMods(state.selected!!.name, state.selected!!.mcVersion, state.selected!!.loader) },
+                            onInstall = { id, ver -> vm.installOptMod(state.selected!!.name, id, ver) }
+                        )
+                        screen == "detail-watchdog" -> WatchdogScreen(
+                            watchdog = state.watchdog,
+                            onBack = { screen = "detail" },
+                            onRefresh = { vm.loadWatchdog(state.selected!!.name) }
                         )
                         screen == "errors" -> ErrorScreen(
                             errors = state.errors,

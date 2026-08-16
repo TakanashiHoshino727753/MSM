@@ -127,6 +127,7 @@ table td.t{color:var(--text-muted);width:42%}
 .prop-input.text{background:var(--panel-alt);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--text);font-size:13px;font-family:Consolas,monospace}
 #props-form{max-height:50vh;overflow-y:auto}
 </style>
+<script src="/qrcode.js"></script>
 </head>
 <body>
 <div class="layout">
@@ -396,7 +397,7 @@ function renderPair(){
         box.innerHTML='';
         try{
           const qr=qrcode(0,'M');qr.addData(d.uri);qr.make();
-          box.innerHTML=qr.createImgTag(4,8);
+          box.innerHTML=qr.createSvgTag(4,8);
         }catch(e){box.textContent='QR '+T('生成失败');}
       }else{
         box.innerHTML='<div style="color:#888;font-size:12px;display:flex;align-items:center;justify-content:center;height:100%;text-align:center;padding:8px;">'+

@@ -42,6 +42,7 @@
 #include <QNetworkInterface>
 #include <QHostAddress>
 #include <QDateTime>
+#include "qrcode_lib.h"   // 内嵌 qrcode-generator，供配对页生成二维码
 #ifdef Q_OS_WIN
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -673,6 +674,13 @@ void WebUIServer::dispatch(const QString &method, const QString &path, const QSt
         return;
     }
     if (path == QStringLiteral("/favicon.ico")) { sendStatus(sock, 204, QString()); return; }
+
+    // 公开静态资源：内嵌的 qrcode 库（配对页生成二维码用，无需令牌）
+    if (path == QStringLiteral("/qrcode.js")) {
+        sendText(sock, QString::fromUtf8(QRCODE_JS),
+                 QStringLiteral("application/javascript; charset=utf-8"));
+        return;
+    }
 
     // 移动端配对端点：免令牌校验（否则手机永远拿不到令牌）。配对码换取真实 token。
     if (path == QStringLiteral("/api/pair") && method == QStringLiteral("POST")) {

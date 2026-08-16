@@ -3,6 +3,7 @@ package com.msm.app.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.gson.JsonNull
 import com.google.gson.JsonObject
 import com.msm.app.data.*
 import kotlinx.coroutines.Dispatchers
@@ -22,7 +23,11 @@ data class UiState(
     val errors: List<ErrorRecord> = emptyList(),
     val selected: ServerDetail? = null,
     val console: String = "",
-    val players: List<String> = emptyList()
+    val players: List<String> = emptyList(),
+    val proxies: JsonObject? = null,
+    val watchdog: JsonObject? = null,
+    val optMods: JsonObject? = null,
+    val optLoading: Boolean = false
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -166,6 +171,63 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 refreshAll()
             } catch (_: Exception) {
             }
+        }
+    }
+
+    // ---------------- 代理聚合 ----------------
+    fun loadProxies() {
+        viewModelScope.launch {
+            try {
+                _state.value = _state.value.copy(proxies = api?.proxies()?.body())
+            } catch (_: Exception) { }
+        }
+    }
+
+    fun setServerProxy(name: String, proxyId: String?) {
+        viewModelScope.launch {
+            try {
+                val body = JsonObject().apply {
+                    if (proxyId == null) add("proxyId", JsonNull.INSTANCE)
+                    else addProperty("proxyId", proxyId)
+                }.toString().toRequestBody("application/json".toMediaType())
+                api?.setProxy(name, body)
+                selectServer(name)
+            } catch (_: Exception) { }
+        }
+    }
+
+    // ---------------- 看门狗 ----------------
+    fun loadWatchdog(name: String) {
+        viewModelScope.launch {
+            try {
+                _state.value = _state.value.copy(watchdog = api?.watchdog(name)?.body())
+            } catch (_: Exception) { }
+        }
+    }
+
+    // ---------------- 优化模组 ----------------
+    fun loadOptMods(name: String, mc: String, loader: String) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(optLoading = true)
+            try {
+                val r = api?.optMods(name, mc, loader)?.body()
+                _state.value = _state.value.copy(optMods = r, optLoading = false)
+            } catch (_: Exception) {
+                _state.value = _state.value.copy(optLoading = false)
+            }
+        }
+    }
+
+    fun installOptMod(name: String, modId: String, version: String) {
+        viewModelScope.launch {
+            try {
+                val body = JsonObject().apply {
+                    addProperty("modId", modId)
+                    addProperty("version", version)
+                }.toString().toRequestBody("application/json".toMediaType())
+                api?.installOptMod(name, body)
+                selectServer(name)
+            } catch (_: Exception) { }
         }
     }
 }

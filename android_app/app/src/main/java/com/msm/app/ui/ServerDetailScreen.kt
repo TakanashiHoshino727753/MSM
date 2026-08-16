@@ -19,7 +19,10 @@ fun ServerDetailScreen(
     onStart: () -> Unit,
     onStop: () -> Unit,
     onRefresh: () -> Unit,
-    onCommand: (String) -> Unit
+    onCommand: (String) -> Unit,
+    onProxy: () -> Unit,
+    onOptMods: () -> Unit,
+    onWatchdog: () -> Unit
 ) {
     var cmd by remember { mutableStateOf("") }
 
@@ -49,6 +52,11 @@ fun ServerDetailScreen(
                     if (detail.running) "● 运行中" else "○ 已停止",
                     modifier = Modifier.alignByBaseline()
                 )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onProxy) { Text("代理") }
+                OutlinedButton(onClick = onOptMods) { Text("优化模组") }
+                OutlinedButton(onClick = onWatchdog) { Text("看门狗") }
             }
             Text("版本 ${detail.mcVersion} · ${detail.loader} · 端口 ${detail.port}", style = MaterialTheme.typography.bodySmall)
             Text("玩家 ${detail.players}/${detail.maxPlayers} · ${detail.javaInfo}", style = MaterialTheme.typography.bodySmall)
