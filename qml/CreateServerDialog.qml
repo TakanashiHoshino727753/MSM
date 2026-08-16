@@ -23,6 +23,8 @@ ApplicationWindow {
     NumberAnimation { id: fadeIn; target: window; property: "opacity"; from: 0; to: 1; duration: 240; easing.type: Easing.OutCubic }
     NumberAnimation { id: fadeOut; target: window; property: "opacity"; from: 1; to: 0; duration: 180; easing.type: Easing.InCubic; onStopped: window.close() }
     onClosing: (close) => { if (!_fadingOut) { close.accepted = false; _fadingOut = true; fadeOut.start() } }
+    // 窗口真正可见后再触发淡入（show() 是异步的，紧跟 start 会因窗口尚不可见而不生效）
+    onVisibleChanged: if (visible) { window.opacity = 0; fadeIn.start() }
 
     property var chosenLoaders: []
 
@@ -71,9 +73,8 @@ ApplicationWindow {
         typeBox.currentIndex = 0
         verBox.currentIndex = 0
         eulaBox.checked = createServer.eulaAccepted
-        window.opacity = 0
+        _fadingOut = false
         window.show()
-        fadeIn.start()
         window.requestActivate()
     }
 
