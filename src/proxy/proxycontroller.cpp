@@ -168,6 +168,49 @@ void ProxyController::setServerEnabled(const QString &serverName, bool on)
     setServerFilter(coversAll ? QStringList() : cur);
 }
 
+// 返回 proxyId 等于本实例 instanceId 的服务器摘要（即“绑定到本代理”的服务器），
+// 用于代理标签页下分组展示；与 serverFilter（聚合范围）无关。
+QVariantList ProxyController::serversBoundTo() const
+{
+    QVariantList out;
+    if (!m_sm)
+        return out;
+    for (const QVariant &v : m_sm->serverSummary()) {
+        const QVariantMap m = v.toMap();
+        if (m.value(QStringLiteral("proxyId")).toString() == m_instanceId)
+            out << m;
+    }
+    return out;
+}
+
+// 手动启停联动：在代理标签页里直接把某台绑定/聚合的后端拉起或强关。
+// 通过 ServerController 按路径操作（需先把 name 解析成 path）。
+void ProxyController::startBackend(const QString &serverName)
+{
+    if (!m_sc || !m_sm)
+        return;
+    for (const QVariant &v : m_sm->serverSummary()) {
+        const QVariantMap m = v.toMap();
+        if (m.value(QStringLiteral("name")).toString() == serverName) {
+            m_sc->start(serverName, m.value(QStringLiteral("path")).toString());
+            return;
+        }
+    }
+}
+
+void ProxyController::stopBackend(const QString &serverName)
+{
+    if (!m_sc || !m_sm)
+        return;
+    for (const QVariant &v : m_sm->serverSummary()) {
+        const QVariantMap m = v.toMap();
+        if (m.value(QStringLiteral("name")).toString() == serverName) {
+            m_sc->forceStop(m.value(QStringLiteral("path")).toString());
+            return;
+        }
+    }
+}
+
 void ProxyController::setPlayerCount(int n)
 {
     n = qMax(0, n);

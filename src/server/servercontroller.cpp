@@ -37,6 +37,15 @@ ServerController::ServerController(QObject *parent) : QObject(parent)
     m_autoRestart = s.value(QStringLiteral("server/autoRestart"), true).toBool();
     m_maxRetries = s.value(QStringLiteral("server/maxRetries"), 5).toInt();
     m_backoffSec = s.value(QStringLiteral("server/backoffSec"), 5).toInt();
+    m_watchdogEnabled = s.value(QStringLiteral("server/watchdogEnabled"), true).toBool();
+    m_watchdogHeartbeatSec = s.value(QStringLiteral("server/watchdogHeartbeatSec"), 60).toInt();
+    m_watchdogSilenceSec = s.value(QStringLiteral("server/watchdogSilenceSec"), 300).toInt();
+    m_watchdogTimeoutSec = s.value(QStringLiteral("server/watchdogTimeoutSec"), 20).toInt();
+    // 看门狗定时器：每 5 秒扫描一次所有运行进程（比最短超时都短，保证及时性且不浪费 CPU）
+    m_watchdogTimer = new QTimer(this);
+    m_watchdogTimer->setInterval(5000);
+    connect(m_watchdogTimer, &QTimer::timeout, this, &ServerController::watchdogTick);
+    m_watchdogTimer->start();
 }
 
 void ServerController::setAutoRestart(bool v)
@@ -64,6 +73,42 @@ void ServerController::setBackoffSec(int v)
     m_backoffSec = v;
     QSettings().setValue(QStringLiteral("server/backoffSec"), v);
     emit backoffSecChanged();
+}
+
+void ServerController::setWatchdogEnabled(bool v)
+{
+    if (v == m_watchdogEnabled)
+        return;
+    m_watchdogEnabled = v;
+    QSettings().setValue(QStringLiteral("server/watchdogEnabled"), v);
+    emit watchdogEnabledChanged();
+}
+
+void ServerController::setWatchdogHeartbeatSec(int v)
+{
+    if (v == m_watchdogHeartbeatSec)
+        return;
+    m_watchdogHeartbeatSec = qMax(5, v);
+    QSettings().setValue(QStringLiteral("server/watchdogHeartbeatSec"), m_watchdogHeartbeatSec);
+    emit watchdogHeartbeatSecChanged();
+}
+
+void ServerController::setWatchdogSilenceSec(int v)
+{
+    if (v == m_watchdogSilenceSec)
+        return;
+    m_watchdogSilenceSec = qMax(10, v);
+    QSettings().setValue(QStringLiteral("server/watchdogSilenceSec"), m_watchdogSilenceSec);
+    emit watchdogSilenceSecChanged();
+}
+
+void ServerController::setWatchdogTimeoutSec(int v)
+{
+    if (v == m_watchdogTimeoutSec)
+        return;
+    m_watchdogTimeoutSec = qMax(3, v);
+    QSettings().setValue(QStringLiteral("server/watchdogTimeoutSec"), m_watchdogTimeoutSec);
+    emit watchdogTimeoutSecChanged();
 }
 
 bool ServerController::isRunning(const QString &name) const
@@ -252,6 +297,9 @@ void ServerController::start(const QString &name, const QString &path,
     if (resetRetry)
         m_retryCount.remove(path);
     m_startTime.insert(path, QDateTime::currentMSecsSinceEpoch());
+    // 看门狗：新进程视为刚有输出，避免启动初期就被误判卡死
+    p.lastStdoutMs = QDateTime::currentMSecsSinceEpoch();
+    p.lastHeartbeatMs = 0;
     m_ports.insert(path, port);
     m_intentionalKill.remove(path);
     m_tps[path] = 20.0;
@@ -268,6 +316,11 @@ void ServerController::handleOutput(const QString &path)
         return;
     QProcess *proc = it->proc;
     const QString data = QString::fromLocal8Bit(proc->readAllStandardOutput());
+    // 看门狗：任何 stdout 输出都刷新"最后收到输出时间"，并清除待响应心跳标记
+    // （即便只是日志刷屏，也说明进程仍在运行、IO 管道仍通畅）
+    it->lastStdoutMs = QDateTime::currentMSecsSinceEpoch();
+    if (it->heartbeatPending)
+        it->heartbeatPending = false;
     QStringList lines = data.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
     for (QString line : lines) {
         line = line.trimmed();
@@ -399,6 +452,86 @@ void ServerController::send(const QString &path, const QString &cmd)
     if (it == m_procs.end())
         return;
     it->proc->write(cmd.toLocal8Bit() + "\n");
+}
+
+// 看门狗：周期性扫描所有运行进程，双检测判断是否卡死。
+//  - 被动静默：连续 silenceSec 秒无任何 stdout → 进程或 IO 管道疑似阻塞
+//  - 主动心跳：距上次发出 list 指令已超 heartbeatSec，则发一次；若发出后 timeoutSec 秒仍无新
+//    stdout（heartbeatPending 仍为真）→ 进程无响应（卡死/死锁），触发强关纠错
+void ServerController::watchdogTick()
+{
+    if (!m_watchdogEnabled || m_procs.isEmpty())
+        return;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    for (auto it = m_procs.begin(); it != m_procs.end(); ++it) {
+        const QString path = it.key();
+        Proc &p = it.value();
+        const qint64 sinceStdout = (now - p.lastStdoutMs) / 1000;
+
+        // 1) 被动静默超时：长时间无任何输出（世界可能卡死/IO 阻塞）
+        if (sinceStdout >= m_watchdogSilenceSec) {
+            triggerWatchdog(path, QStringLiteral("io"));
+            continue;
+        }
+
+        // 2) 主动心跳：到点则发一次 list（list 在所有主流服务端都会回显 "There are N/0 ..."）
+        const qint64 sinceHeartbeat = p.lastHeartbeatMs
+                ? (now - p.lastHeartbeatMs) / 1000 : (now - p.lastStdoutMs) / 1000;
+        if (!p.heartbeatPending && sinceHeartbeat >= m_watchdogHeartbeatSec) {
+            sendHeartbeat(path);
+            continue;
+        }
+        // 心跳已发出但超过 timeoutSec 仍无响应 → 进程无响应
+        if (p.heartbeatPending && sinceHeartbeat >= (m_watchdogHeartbeatSec + m_watchdogTimeoutSec)) {
+            triggerWatchdog(path, QStringLiteral("heartbeat"));
+            continue;
+        }
+    }
+}
+
+void ServerController::sendHeartbeat(const QString &path)
+{
+    auto it = m_procs.find(path);
+    if (it == m_procs.end())
+        return;
+    // 用 list 指令做心跳：几乎所有服务端都会回显在线人数，便于确认进程响应
+    it->proc->write("list\n");
+    it->lastHeartbeatMs = QDateTime::currentMSecsSinceEpoch();
+    it->heartbeatPending = true;
+}
+
+// 看门狗触发：判定卡死 → 记录、强关、并走异常纠错重启（复用 autoRestart 逻辑）。
+// 与用户主动强关不同：这里用 forceStop 但不标记 intentionalKill，使 onFinished 视为异常，
+// 从而触发 serverError 通知与崩溃自动重拉起（即"纠错"）。
+void ServerController::triggerWatchdog(const QString &path, const QString &reason)
+{
+    auto it = m_procs.find(path);
+    if (it == m_procs.end())
+        return;
+    const QString name = m_args.value(path).name;
+    emit consoleAppended(path, QStringLiteral("[MSM] 看门狗检测到服务器无响应（%1），强制终止并纠错重启…").arg(reason));
+    emit watchdogTriggered(path, reason);
+    // 不插入 m_intentionalKill：让 onFinished 判定为异常退出 → 走纠错重拉起
+    it->proc->kill();
+}
+
+QVariantMap ServerController::watchdogStatus(const QString &path) const
+{
+    QVariantMap m;
+    m[QStringLiteral("enabled")] = m_watchdogEnabled;
+    auto it = m_procs.find(path);
+    if (it == m_procs.end()) {
+        m[QStringLiteral("running")] = false;
+        return m;
+    }
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    m[QStringLiteral("running")] = true;
+    m[QStringLiteral("lastStdoutSec")] = int((now - it->lastStdoutMs) / 1000);
+    m[QStringLiteral("lastHeartbeatSec")] = it->lastHeartbeatMs
+            ? int((now - it->lastHeartbeatMs) / 1000) : -1;
+    m[QStringLiteral("pendingHeartbeat")] = it->heartbeatPending;
+    m[QStringLiteral("healthy")] = (now - it->lastStdoutMs) / 1000 < m_watchdogSilenceSec;
+    return m;
 }
 
 QString ServerController::getConsole(const QString &path) const

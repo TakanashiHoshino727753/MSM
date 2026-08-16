@@ -9,6 +9,7 @@
 #include <QSet>
 #include <QPair>
 #include <QDateTime>
+#include <QTimer>
 
 #ifdef Q_OS_WIN
 #define WIN32_LEAN_AND_MEAN
@@ -30,6 +31,14 @@ class ServerController : public QObject
     Q_PROPERTY(bool autoRestart READ autoRestart WRITE setAutoRestart NOTIFY autoRestartChanged)
     Q_PROPERTY(int maxRetries READ maxRetries WRITE setMaxRetries NOTIFY maxRetriesChanged)
     Q_PROPERTY(int backoffSec READ backoffSec WRITE setBackoffSec NOTIFY backoffSecChanged)
+    // 看门狗：防止 IO 卡死导致无法控制。双检测机制：
+    //  1) 被动静默超时：进程存活但连续 silenceSec 秒无 stdout 输出（疑似 IO 管道阻塞/世界卡死）
+    //  2) 主动心跳超时：周期性发 list 指令，heartbeatTimeoutSec 秒内无新 stdout 响应（进程无响应）
+    // 两者任一触发即判定卡死，自动强关并走异常纠错重启（若 autoRestart 开启）。
+    Q_PROPERTY(bool watchdogEnabled READ watchdogEnabled WRITE setWatchdogEnabled NOTIFY watchdogEnabledChanged)
+    Q_PROPERTY(int watchdogHeartbeatSec READ watchdogHeartbeatSec WRITE setWatchdogHeartbeatSec NOTIFY watchdogHeartbeatSecChanged)
+    Q_PROPERTY(int watchdogSilenceSec READ watchdogSilenceSec WRITE setWatchdogSilenceSec NOTIFY watchdogSilenceSecChanged)
+    Q_PROPERTY(int watchdogTimeoutSec READ watchdogTimeoutSec WRITE setWatchdogTimeoutSec NOTIFY watchdogTimeoutSecChanged)
 public:
     explicit ServerController(QObject *parent = nullptr);
 
@@ -42,6 +51,15 @@ public:
     void setMaxRetries(int v);
     int backoffSec() const { return m_backoffSec; }
     void setBackoffSec(int v);
+
+    bool watchdogEnabled() const { return m_watchdogEnabled; }
+    void setWatchdogEnabled(bool v);
+    int watchdogHeartbeatSec() const { return m_watchdogHeartbeatSec; }
+    void setWatchdogHeartbeatSec(int v);
+    int watchdogSilenceSec() const { return m_watchdogSilenceSec; }
+    void setWatchdogSilenceSec(int v);
+    int watchdogTimeoutSec() const { return m_watchdogTimeoutSec; }
+    void setWatchdogTimeoutSec(int v);
 
     // 判断指定服务器当前是否在运行（按 path 身份键区分，同名不同目录互不干扰）
     Q_INVOKABLE bool isRunning(const QString &path) const;
@@ -72,6 +90,9 @@ public:
     Q_INVOKABLE void writeProperties(const QString &path, const QVariantMap &map);
     // 运行中服务器的资源占用快照（CPU%/内存MB/在线人数/运行时长）
     Q_INVOKABLE QVariantList runningServerUsages() const;
+    // 取某服务器的看门狗健康状态（供 QML/WebUI 展示）：
+    // { enabled, running, lastStdoutSec, lastHeartbeatSec, pendingHeartbeat, healthy }
+    Q_INVOKABLE QVariantMap watchdogStatus(const QString &path) const;
 
     // ---- 多开端口管理 ----
     // 读取 server.properties 中的 server-port（缺失/非法时返回默认 25565）
@@ -100,6 +121,12 @@ signals:
     void autoRestartChanged();
     void maxRetriesChanged();
     void backoffSecChanged();
+    void watchdogEnabledChanged();
+    void watchdogHeartbeatSecChanged();
+    void watchdogSilenceSecChanged();
+    void watchdogTimeoutSecChanged();
+    // 看门狗触发：服务器被判定卡死并强制终止，附带原因（"io"=被动静默 / "heartbeat"=心跳无响应）
+    void watchdogTriggered(const QString &name, const QString &reason);
 
 private:
     // 在 dir 根目录（不含子目录）查找首个文件名以 prefix 开头、且不在 exclude 列表中的文件
@@ -113,12 +140,22 @@ private:
     void handleOutput(const QString &name);
     // 进程结束回调：清理资源、发出 stateChanged(false)，保留控制台缓存
     void onFinished(const QString &name, int exitCode, QProcess::ExitStatus status);
+    // 看门狗：每 tickSec 秒扫描所有运行进程，检测静默超时 / 心跳超时
+    void watchdogTick();
+    // 对指定进程发送一次心跳指令（list），记录发送时刻并标记 pending
+    void sendHeartbeat(const QString &name);
+    // 看门狗触发：判定卡死，强制终止并走异常纠错重启
+    void triggerWatchdog(const QString &path, const QString &reason);
 
     // 单个服务器进程运行态：保存进程指针、完整控制台、在线玩家
     struct Proc {
         QProcess *proc = nullptr;
         QString console;
         QStringList playerList;
+        // ---- 看门狗运行态 ----
+        qint64 lastStdoutMs = 0;     // 最近一次收到 stdout 的时间
+        qint64 lastHeartbeatMs = 0;  // 最近一次发出心跳指令的时间
+        bool heartbeatPending = false; // 心跳已发出、尚未收到新 stdout 响应
     };
     // name -> 运行进程信息；同一时间同名仅允许一个进程
     QHash<QString, Proc> m_procs;
@@ -144,4 +181,11 @@ private:
     // 若过去 60s 内没有过载日志，则回退为满速 20。
     QMap<QString, double> m_tps;
     QMap<QString, qint64> m_lastOverload;
+
+    // 看门狗配置
+    bool m_watchdogEnabled = true;       // 总开关（默认开）
+    int m_watchdogHeartbeatSec = 60;     // 心跳指令周期（秒）
+    int m_watchdogSilenceSec = 300;      // 被动静默上限（秒，无 stdout 即疑似卡死）
+    int m_watchdogTimeoutSec = 20;       // 心跳发出后等待响应的超时（秒）
+    QTimer *m_watchdogTimer = nullptr;    // 周期性扫描定时器
 };

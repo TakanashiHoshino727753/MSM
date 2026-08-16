@@ -69,6 +69,12 @@ public:
     // QML 便捷开关：把某台后端加入/移出本实例的聚合范围
     Q_INVOKABLE void setServerEnabled(const QString &serverName, bool on);
     int playerCount() const { return m_playerCount; }
+    // 绑定到本代理实例的服务器列表（proxyId == instanceId）。用于“代理绑定服务器时，
+    // 将对应服务器置于代理标签页下”的分组展示。
+    Q_INVOKABLE QVariantList serversBoundTo() const;
+    // 手动启停联动：把某台绑定/聚合的后端拉起或强关（由本代理标签页的用户操作触发）。
+    Q_INVOKABLE void startBackend(const QString &serverName);
+    Q_INVOKABLE void stopBackend(const QString &serverName);
 
     bool running() const { return m_proc && m_proc->state() != QProcess::NotRunning; }
     bool installed() const;

@@ -422,6 +422,7 @@ void BotController::startNapcat()
     }
     m_napcatProc = p;
     setNapcatState(QStringLiteral("running"));
+    updateControlServer();   // NapCat 单用时也启动控制通道，使其能双向通讯
 }
 
 void BotController::stopNapcat()
@@ -429,6 +430,7 @@ void BotController::stopNapcat()
     if (m_napcatProc)
         m_napcatProc->kill();
     setNapcatState(QStringLiteral("stopped"));
+    updateControlServer();   // NapCat 关闭但 NoneBot 仍在时保持监听
 }
 
 void BotController::startNonebot()
@@ -502,10 +504,10 @@ void BotController::startNonebot()
                     return;
                 }
                 if (m_nonebotStopping) {
-                    // 用户显式停用：关闭控制通道（stopNonebot 已先调用过，这里幂等）
+                    // 用户显式停用 NoneBot：若 NapCat 仍在运行则保持 25585 监听
                     m_nonebotStopping = false;
                     setNonebotState(QStringLiteral("stopped"));
-                    stopControlServer();
+                    updateControlServer();
                     return;
                 }
                 // 意外退出：控制通道生命周期与 nb 启动器进程解耦——保持 25585 监听，
@@ -525,13 +527,13 @@ void BotController::startNonebot()
     m_nonebotProc = p;
     setNonebotState(QStringLiteral("running"));
     qDebug() << "[BOT] NoneBot 已启动 pid=" << p->processId() << "，准备启动控制服务器";
-    startControlServer();
+    updateControlServer();
 }
 
 void BotController::stopNonebot()
 {
     m_nonebotStopping = true;   // 标记为显式停止，finished 时不再自动重启/保持服务器
-    stopControlServer();
+    updateControlServer();      // 若 NapCat 仍在运行则保持 25585 监听
     if (m_nonebotProc)
         m_nonebotProc->kill();
     setNonebotState(QStringLiteral("stopped"));
@@ -1108,6 +1110,81 @@ bool BotController::ensureNapcatWhitelist(const QString &batPath)
     return true;
 }
 
+// 在 NapCat 主配置（napcat.json 的 plugins 列表）中标记 napcat-plugin-msm 为启用。
+// 仅放进 plugins/ 目录还不够，NapCat 还需在主配置里登记并 enabled，否则不会自动加载 =
+// 表现为“插件不会自动启用”。返回 true 表示已启用或无需处理。
+bool BotController::enableNapcatPluginInConfig(const QString &batPath)
+{
+    if (batPath.isEmpty() || !QFile::exists(batPath))
+        return false;
+    // 候选配置文件：bat 同级的 napcat.json / config/napcat.json / 上一级 napcat.json
+    const QDir batDir(QFileInfo(batPath).absolutePath());
+    QStringList candidates;
+    candidates << batDir.filePath(QStringLiteral("napcat.json"));
+    candidates << batDir.filePath(QStringLiteral("config/napcat.json"));
+    QDir up = batDir;
+    up.cdUp();
+    candidates << up.filePath(QStringLiteral("napcat.json"));
+    const QString pluginId = QStringLiteral("napcat-plugin-msm");
+
+    QString cfgPath;
+    for (const QString &c : candidates) {
+        if (QFile::exists(c)) {
+            cfgPath = c;
+            break;
+        }
+    }
+    if (cfgPath.isEmpty()) {
+        qDebug() << "[BOT] 未找到 napcat.json，跳过插件启用登记（假设 NapCat 自动扫描 plugins/）";
+        return true;   // 部分 NapCat 版本自动扫描 plugins/，无需显式登记
+    }
+
+    QFile f(cfgPath);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        qDebug() << "[BOT] 无法读取 napcat.json：" << cfgPath;
+        return false;
+    }
+    QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+    f.close();
+    if (doc.isNull() || !doc.isObject()) {
+        qDebug() << "[BOT] napcat.json 不是合法 JSON，跳过插件启用登记";
+        return false;
+    }
+    QJsonObject root = doc.object();
+    QJsonArray plugins = root.value(QStringLiteral("plugins")).toArray();
+
+    // 已在列表中且未禁用 → 无需处理
+    bool foundEnabled = false;
+    for (const QJsonValue &v : plugins) {
+        const QJsonObject o = v.toObject();
+        if (o.value(QStringLiteral("id")).toString() == pluginId) {
+            if (!o.value(QStringLiteral("disabled")).toBool(false))
+                foundEnabled = true;
+            break;
+        }
+    }
+    if (foundEnabled) {
+        qDebug() << "[BOT] napcat-plugin-msm 已在 napcat.json 中启用，无需处理";
+        return true;
+    }
+
+    // 追加/修复为启用状态
+    QJsonObject entry;
+    entry[QStringLiteral("id")] = pluginId;
+    entry[QStringLiteral("disabled")] = false;
+    plugins.append(entry);
+    root[QStringLiteral("plugins")] = plugins;
+
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+        qDebug() << "[BOT] 无法写入 napcat.json：" << cfgPath;
+        return false;
+    }
+    f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    f.close();
+    qDebug() << "[BOT] 已在 napcat.json 启用 napcat-plugin-msm：" << cfgPath;
+    return true;
+}
+
 void BotController::ensureNapcatPlugin()
 {
     const QString bat = detectNapcatPath();
@@ -1117,6 +1194,8 @@ void BotController::ensureNapcatPlugin()
     }
     // 自动检测并给 NapCat 4.18+ 的硬编码插件白名单打补丁（第三方插件会被拒）
     ensureNapcatWhitelist(bat);
+    // 在主配置（napcat.json）登记并启用插件，修复“插件不会自动启用”
+    enableNapcatPluginInConfig(bat);
 
     const QString srcDir = napcatPluginSourceDir();
     if (srcDir.isEmpty()) {
@@ -1265,6 +1344,20 @@ void BotController::stopAll()
     stopControlServer();
     stopNapcat();
     stopNonebot();
+}
+
+// 控制通道生命周期与任一 bot 进程解耦：NapCat 或 NoneBot 任一启用就保持 25585 监听，
+// 两者都关才停。这样两个插件各自独立都能双向通讯（NapCat 单用 / NoneBot 单用都行），
+// 修复此前“少一个就断”（控制通道只随 NoneBot 启动）的根因。
+void BotController::updateControlServer()
+{
+    const bool need = m_napcat || m_nonebot;
+    qDebug() << "[BOT] updateControlServer() need=" << need
+             << "napcat=" << m_napcat << "nonebot=" << m_nonebot;
+    if (need && !m_tcp)
+        startControlServer();
+    else if (!need && m_tcp)
+        stopControlServer();
 }
 
 void BotController::onApiNewConnection()

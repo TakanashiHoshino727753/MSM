@@ -138,6 +138,9 @@ private:
     void startNonebotConnectOnly();
     void startControlServer();
     void stopControlServer();
+    // 根据 NapCat / NoneBot 任一启用即启动控制通道，两者都关才停。
+    // 让两个插件各自独立都能双向通讯（不再依赖对方进程），修复“少一个就断”的根因。
+    void updateControlServer();
     void pushUsage();
 
     // 控制通道 HTTP 解析（QTcpServer 手动解析，避开 QHttpServer 在 MinGW 下的运行期崩溃）
@@ -193,6 +196,10 @@ private:
     // 若缺 napcat-plugin-msm 则自动追加一行，使本地插件能正常加载。
     // 返回 true：已在白名单（无需补丁）或补丁成功；false：找不到 napcat.mjs / 锚点。
     bool ensureNapcatWhitelist(const QString &batPath);
+    // NapCat 4.x 仅把插件放到 plugins/ 还不够，还需在主配置（napcat.json 的 plugins 列表）
+    // 标记为启用（disabled:false），否则插件不会被加载 = “不会自动启用”。
+    // 本函数扫描 bat 目录上/下找到 napcat.json，确保 napcat-plugin-msm 在 plugins 列表中且启用。
+    bool enableNapcatPluginInConfig(const QString &batPath);
     // 在 dir 下递归查找 napcat-plugin-msm 源目录（depth 层内），优先返回带正确 package.json 的
     QString findNapcatPluginSource(const QDir &dir, int depth = 4) const;
     static bool copyDirRecursively(const QString &srcDir, const QString &dstDir);

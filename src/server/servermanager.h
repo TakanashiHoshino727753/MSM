@@ -24,11 +24,14 @@ class Server : public QObject
     Q_PROPERTY(QString type READ type WRITE setType NOTIFY typeChanged)
     Q_PROPERTY(QString path READ path WRITE setPath NOTIFY pathChanged)
     Q_PROPERTY(QString id READ id WRITE setId NOTIFY idChanged)
+    // 绑定的代理实例 id（为空表示未绑定）。用于“代理绑定服务器时，将服务器置于代理标签页下”。
+    Q_PROPERTY(QString proxyId READ proxyId WRITE setProxyId NOTIFY proxyIdChanged)
 public:
     explicit Server(QObject *parent = nullptr) : QObject(parent) {}
     Server(const QString &name, const QString &version, const QString &type,
-           const QString &path, const QString &id = QString(), QObject *parent = nullptr)
-        : QObject(parent), m_name(name), m_version(version), m_type(type), m_path(path), m_id(id) {}
+           const QString &path, const QString &id = QString(), const QString &proxyId = QString(),
+           QObject *parent = nullptr)
+        : QObject(parent), m_name(name), m_version(version), m_type(type), m_path(path), m_id(id), m_proxyId(proxyId) {}
 
     QString name() const { return m_name; }
     void setName(const QString &v) { if (m_name != v) { m_name = v; emit nameChanged(); } }
@@ -40,14 +43,17 @@ public:
     void setPath(const QString &v) { if (m_path != v) { m_path = v; emit pathChanged(); } }
     QString id() const { return m_id; }
     void setId(const QString &v) { if (m_id != v) { m_id = v; emit idChanged(); } }
+    QString proxyId() const { return m_proxyId; }
+    void setProxyId(const QString &v) { if (m_proxyId != v) { m_proxyId = v; emit proxyIdChanged(); } }
 signals:
     void nameChanged();
     void versionChanged();
     void typeChanged();
     void pathChanged();
     void idChanged();
+    void proxyIdChanged();
 private:
-    QString m_name, m_version, m_type, m_path, m_id;
+    QString m_name, m_version, m_type, m_path, m_id, m_proxyId;
 };
 
 // 服务器集合（C++ 逻辑层）：提供 QML 列表并支持持久化、扫描文档文件夹。
@@ -86,6 +92,7 @@ public:
             m[QStringLiteral("type")] = s->type();
             m[QStringLiteral("path")] = s->path();
             m[QStringLiteral("id")] = s->id();
+            m[QStringLiteral("proxyId")] = s->proxyId();
             out << m;
         }
         return out;
@@ -150,10 +157,22 @@ public:
         if (hasServerPath(norm))
             return;
         const QString realId = id.isEmpty() ? ensureServerId(norm) : id;
-        auto *s = new Server(name, version, type, norm, realId, this);
+        auto *s = new Server(name, version, type, norm, realId, QString(), this);
         m_servers.append(s);
         saveServers();
         emit serversChanged();
+    }
+    // 设置某服务器的绑定代理 id（空串表示解绑）。改属性并持久化，供代理标签页分组与启停联动使用。
+    Q_INVOKABLE bool setServerProxy(const QString &name, const QString &proxyId) {
+        for (Server *s : m_servers) {
+            if (s->name() == name) {
+                s->setProxyId(proxyId);
+                saveServers();
+                emit serversChanged();
+                return true;
+            }
+        }
+        return false;
     }
     Q_INVOKABLE void removeServer(int index) {
         if (index < 0 || index >= m_servers.size())
@@ -329,6 +348,7 @@ private:
             obj[QStringLiteral("type")] = s->type();
             obj[QStringLiteral("path")] = s->path();
             obj[QStringLiteral("id")] = s->id();
+            obj[QStringLiteral("proxyId")] = s->proxyId();
             arr.append(obj);
         }
         QFile f(configPath());
@@ -359,6 +379,7 @@ private:
                 obj[QStringLiteral("type")].toString(),
                 path,
                 id,
+                obj[QStringLiteral("proxyId")].toString(),
                 this);
             m_servers.append(s);
         }
