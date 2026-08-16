@@ -40,12 +40,14 @@ ApplicationWindow {
         color: Theme.bg
         border.width: 0
         clip: true
-        // 入场滑动动画：从右侧轻微滑入。frame 默认即可见，动画仅作增强。
+        // 入场动画：轻微滑入 + 淡入。frame 默认 opacity:1 兜底可见，
+        // 动画运行时从 0.55 淡入到 1，即使动画未触发也不会不可见。
         x: 0
         opacity: 1
         ParallelAnimation {
             id: enterAnim
-            NumberAnimation { target: frame; property: "x"; from: 40; to: 0; duration: 200; easing.type: Easing.OutCubic }
+            NumberAnimation { target: frame; property: "x"; from: 40; to: 0; duration: 220; easing.type: Easing.OutCubic }
+            NumberAnimation { target: frame; property: "opacity"; from: 0.55; to: 1; duration: 220; easing.type: Easing.OutCubic }
         }
 
         TitleBar {

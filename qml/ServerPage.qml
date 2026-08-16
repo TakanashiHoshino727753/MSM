@@ -471,6 +471,7 @@ Item {
                 ComboBox {
                     id: proxyBindCombo
                     Layout.preferredWidth: 240
+                    height: 34
                     palette.text: Theme.text
                     property string currentProxyId: {
                         const list = serverManager.serverSummary()
@@ -478,9 +479,9 @@ Item {
                             if (list[i].name === root.serverName) return list[i].proxyId || ""
                         return ""
                     }
-                    model: [{ id: "", name: I18n.t("（未绑定）", I18n.lang) }].concat(
+                    model: [{ id: "", name: I18n.t("（未绑定）", I18n.lang), running: false }].concat(
                         (typeof proxyManager !== "undefined" && proxyManager && proxyManager.proxies)
-                            ? proxyManager.proxies.map(function(p){ return { id: p.instanceId, name: (p.name || p.instanceId) }; })
+                            ? proxyManager.proxies.map(function(p){ return { id: p.instanceId, name: (p.name || p.instanceId), running: !!p.running, port: p.port }; })
                             : []
                     )
                     textRole: "name"
@@ -490,6 +491,52 @@ Item {
                         for (let i = 0; i < model.length; ++i)
                             if (model[i].id === id) return i
                         return 0
+                    }
+                    // 隐藏默认双箭头指示器，统一用单个向下箭头
+                    indicator: null
+                    background: Rectangle {
+                        color: proxyBindCombo.hovered ? Theme.panel : Theme.bg
+                        radius: Theme.radius; border.color: Theme.border; border.width: 1
+                    }
+                    delegate: ItemDelegate {
+                        width: proxyBindCombo.width
+                        contentItem: Row {
+                            spacing: 6; anchors.verticalCenter: parent.verticalCenter
+                            Rectangle {
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 8; height: 8; radius: 4
+                                color: modelData.running ? "#43d17a" : (modelData.id === "" ? Theme.border : Theme.border)
+                            }
+                            Label {
+                                text: modelData.name + (modelData.running ? " · 运行中" : "")
+                                color: Theme.text; font.pixelSize: 12
+                            }
+                        }
+                        highlighted: proxyBindCombo.highlightedIndex === index
+                        background: Rectangle { color: highlighted ? Theme.panelAlt : "transparent" }
+                    }
+                    contentItem: RowLayout {
+                        spacing: 6
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.left: parent.left; anchors.leftMargin: 12
+                        anchors.right: parent.right; anchors.rightMargin: 10
+                        Rectangle {
+                            width: 8; height: 8; radius: 4
+                            color: (proxyBindCombo.model[proxyBindCombo.currentIndex]
+                                    ? (proxyBindCombo.model[proxyBindCombo.currentIndex].running ? "#43d17a" : Theme.border)
+                                    : Theme.border)
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: (proxyBindCombo.model[proxyBindCombo.currentIndex]
+                                   ? proxyBindCombo.model[proxyBindCombo.currentIndex].name
+                                     + (proxyBindCombo.model[proxyBindCombo.currentIndex].running ? " · 运行中" : "")
+                                   : I18n.t("（未绑定）", I18n.lang))
+                            color: Theme.text; font.pixelSize: 12
+                        }
+                        Label {
+                            text: "▾"; color: Theme.textMuted; font.pixelSize: 12
+                        }
                     }
                     onActivated: {
                         serverManager.setServerProxy(root.serverName, currentValue || "")
