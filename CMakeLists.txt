@@ -79,6 +79,7 @@ qt_add_qml_module(MinecraftServerManager
         qml/ServerPage.qml
         qml/ModalPopup.qml
         qml/MainWindow.qml
+        qml/ErrorCenterPage.qml
         qml/DownloadCenter.qml
         qml/DownloadsPanel.qml
         qml/CreateServerDialog.qml
