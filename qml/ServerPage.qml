@@ -29,9 +29,27 @@ Item {
             if (recs[i].path === root.serverPath) return true;
         return false;
     }
+    // 本服务器专属异常记录（第5项：服务器自己的纠错页）
+    property var myError: null
+    function refreshMyError() {
+        root.myError = null;
+        if (!serverPath) return;
+        var recs = serverController.errorRecords();
+        for (var i = 0; i < recs.length; ++i)
+            if (recs[i].path === root.serverPath) { root.myError = recs[i]; break; }
+    }
+    function errorTypeColor(t) {
+        if (t === "eula") return "#f0a020";
+        if (t === "io") return "#e0533d";
+        if (t === "heartbeat") return "#b060d0";
+        return "#e0533d";
+    }
     Connections {
         target: serverController
-        function onErrorRecordsChanged() { root.hasActiveError = root.computeActiveError(); }
+        function onErrorRecordsChanged() {
+            root.hasActiveError = root.computeActiveError();
+            root.refreshMyError();
+        }
     }
 
     property bool running: false
@@ -376,7 +394,7 @@ Item {
         }
     } }
 
-    Component.onCompleted: { PropsNames.setLanguage(settingsController.language); reloadConsole(); reloadMods(); reloadPlayers(); syncState() }
+    Component.onCompleted: { PropsNames.setLanguage(settingsController.language); reloadConsole(); reloadMods(); reloadPlayers(); syncState(); root.refreshMyError() }
 
     // ================= 主布局 =================
     ColumnLayout { anchors.fill: parent; spacing: 8
@@ -478,6 +496,70 @@ Item {
                     }
                 }
                 Label { text: I18n.t("绑定后可在对应代理标签页下直接管理此服务器", I18n.lang); color: Theme.textMuted; font.pixelSize: 11 }
+            }
+
+            // 本服务器异常纠错（第5项：专属纠错页，存在活动异常时显示）
+            Rectangle {
+                Layout.fillWidth: true
+                visible: root.myError !== null
+                color: Theme.panel; radius: Theme.radius; border.color: errorTypeColor(root.myError ? root.myError.type : "crash")
+                height: srvErrCol.implicitHeight + 24
+                Column {
+                    id: srvErrCol
+                    anchors { left: parent.left; right: parent.right; top: parent.top; margins: 12 }
+                    spacing: 10
+                    Row { spacing: 8
+                        Rectangle { width: 12; height: 12; radius: 6; color: errorTypeColor(root.myError.type); anchors.verticalCenter: parent.verticalCenter }
+                        Label { text: I18n.t("本服务器异常", I18n.lang); color: Theme.text; font.bold: true; font.pixelSize: 14; anchors.verticalCenter: parent.verticalCenter }
+                        Label {
+                            text: root.myError.typeLabel
+                            color: errorTypeColor(root.myError.type); font.pixelSize: 12; font.bold: true
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                        Label {
+                            text: root.myError.fatal
+                                ? I18n.t("致命错误：无法自动恢复", I18n.lang)
+                                : (root.myError.retrying
+                                    ? I18n.t("自动重启中：第 %1/%2 次").arg(root.myError.retryCount + 1).arg(root.myError.maxRetries)
+                                    : (root.myError.retryCount >= root.myError.maxRetries
+                                        ? I18n.t("已达最大重试次数（%1）").arg(root.myError.maxRetries)
+                                        : I18n.t("自动重启已关闭，等待手动处理")))
+                            color: root.myError.fatal ? "#f0a020" : (root.myError.retrying ? Theme.text : Theme.textMuted)
+                            font.pixelSize: 12
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                    }
+                    TextArea {
+                        readOnly: true; wrapMode: Text.WrapAnywhere
+                        text: root.myError.logTail || I18n.t("（无可用日志）", I18n.lang)
+                        font.family: "Consolas, monospace"; font.pixelSize: 11
+                        color: Theme.textMuted
+                        background: Rectangle { color: Theme.bg; radius: 6; border.color: Theme.border }
+                        Layout.fillWidth: true; Layout.maximumHeight: 140
+                    }
+                    Row { spacing: 8
+                        AccentButton {
+                            text: I18n.t("现在重试", I18n.lang)
+                            enabled: !root.myError.fatal
+                            onClicked: { serverController.retryNow(root.myError.path); root.refreshMyError(); }
+                        }
+                        AccentButton {
+                            text: I18n.t("停止重试", I18n.lang)
+                            enabled: root.myError.retrying
+                            onClicked: { serverController.stopRetries(root.myError.path); root.refreshMyError(); }
+                        }
+                        AccentButton {
+                            text: I18n.t("标记已解决", I18n.lang)
+                            accentColor: Theme.success
+                            onClicked: { serverController.clearError(root.myError.path); root.refreshMyError(); }
+                        }
+                    }
+                    Label {
+                        visible: root.myError.type === "eula"
+                        text: I18n.t("处理建议：在服务器目录的 eula.txt 中将 eula=false 改为 eula=true 后，点击“现在重试”。", I18n.lang)
+                        color: "#f0a020"; font.pixelSize: 12; wrapMode: Text.Wrap
+                    }
+                }
             }
         }
         Rectangle { Layout.fillWidth: true; height: 1; color: Theme.border }

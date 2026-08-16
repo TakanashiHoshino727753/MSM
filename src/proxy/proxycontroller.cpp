@@ -812,10 +812,13 @@ void ProxyController::stop()
         }
     }
     appendConsole(QStringLiteral("[MSM] 正在停止代理…"));
+    setStatus(QStringLiteral("正在停止…"));
+    emit statusChanged();
+    // 先尝试优雅关闭（Velocity 控制台支持 shutdown 命令）
     m_proc->write("shutdown\n");
-    // 8 秒未退出则强杀
+    // 3 秒未退出则强杀，避免长时间无响应
     QProcess *proc = m_proc;
-    QTimer::singleShot(8000, this, [this, proc]() {
+    QTimer::singleShot(3000, this, [this, proc]() {
         if (m_proc == proc && running())
             m_proc->kill();
     });

@@ -81,44 +81,63 @@ Item {
                 text: I18n.t("将多台同时运行的服务器聚合到一个入口端口：玩家统一连接代理端口，游戏内用 /server 名称 切换服务器。启动代理前会自动生成配置并修补各后端（online-mode=false）。", I18n.lang)
             }
 
-            // ---- P2 实例页签 ----
-            Flow {
-                width: parent.width; spacing: 8
-                Repeater {
+            // ---- P2 实例选择（单个向下箭头下拉）----
+            Row {
+                spacing: 10; width: parent.width; height: 32
+                ComboBox {
+                    id: proxyCombo
+                    height: 32; width: 300
+                    palette.text: Theme.text
                     model: proxyManager.proxies
-                    Rectangle {
-                        radius: 6; height: 30
-                        width: tabRow.implicitWidth + 20
-                        color: index === page.currentIndex ? Theme.accent : Theme.panel
-                        border.color: index === page.currentIndex ? Theme.accent : Theme.border
-                        Row {
-                            id: tabRow
-                            anchors.centerIn: parent; spacing: 6
+                    textRole: "name"
+                    currentIndex: page.currentIndex
+                    onActivated: page.currentIndex = index
+                    enabled: count > 0
+                    delegate: ItemDelegate {
+                        width: proxyCombo.width
+                        contentItem: Row {
+                            spacing: 6; anchors.verticalCenter: parent.verticalCenter
                             Rectangle {
                                 anchors.verticalCenter: parent.verticalCenter
                                 width: 8; height: 8; radius: 4
                                 color: modelData.running ? "#43d17a" : Theme.border
                             }
                             Label {
-                                anchors.verticalCenter: parent.verticalCenter
                                 text: modelData.name + " :" + modelData.port
-                                      + (modelData.running ? " · " + modelData.players : "")
-                                font.pixelSize: 12
-                                color: index === page.currentIndex ? "white" : Theme.text
+                                      + (modelData.running ? " · " + modelData.players + " 人在线" : "")
+                                color: Theme.text; font.pixelSize: 12
                             }
                         }
-                        MouseArea { anchors.fill: parent; onClicked: page.currentIndex = index }
+                        highlighted: proxyCombo.highlightedIndex === index
+                    }
+                    contentItem: Row {
+                        spacing: 6; anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 12
+                        Rectangle {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 8; height: 8; radius: 4
+                            color: currentProxyModel.running ? "#43d17a" : Theme.border
+                            property var currentProxyModel: proxyManager.proxies[proxyCombo.currentIndex] || {}
+                        }
+                        Label {
+                            text: (proxyManager.proxies[proxyCombo.currentIndex]
+                                   ? proxyManager.proxies[proxyCombo.currentIndex].name + " :"
+                                     + proxyManager.proxies[proxyCombo.currentIndex].port
+                                     + (proxyManager.proxies[proxyCombo.currentIndex].running
+                                        ? " · " + proxyManager.proxies[proxyCombo.currentIndex].players + " 人在线" : "")
+                                   : I18n.t("无代理实例", I18n.lang))
+                            color: Theme.text; font.pixelSize: 12
+                        }
                     }
                 }
                 Button {
-                    height: 30
+                    height: 32
                     text: "+ " + I18n.t("新建代理", I18n.lang)
                     palette.windowText: Theme.text; palette.buttonText: Theme.text
                     background: Rectangle { color: parent.hovered ? Theme.panel : Theme.bg; radius: 6; border.color: Theme.border }
                     onClicked: page.currentIndex = proxyManager.addProxy("")
                 }
                 Button {
-                    height: 30
+                    height: 32
                     visible: page.currentIndex > 0
                     enabled: page.proxy && !page.proxy.running
                     text: I18n.t("删除实例", I18n.lang)
