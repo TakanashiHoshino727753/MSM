@@ -38,6 +38,10 @@
 #include <QStandardPaths>
 #include <QCryptographicHash>
 #include <QElapsedTimer>
+#include <QRandomGenerator>
+#include <QNetworkInterface>
+#include <QHostAddress>
+#include <QDateTime>
 #ifdef Q_OS_WIN
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -622,6 +626,42 @@ void WebUIServer::setDownloadCatalog(DownloadCatalog *dc)
     }
 }
 
+// ---------------- 移动端配对 ----------------
+
+// 生成一次性配对码（格式 ABC-1234），刷新并重置使用状态；配对码 10 分钟内有效。
+QString WebUIServer::generatePairCode()
+{
+    const QString chars = QStringLiteral("ABCDEFGHJKLMNPQRSTUVWXYZ23456789"); // 去掉易混字符
+    QString code;
+    for (int i = 0; i < 7; ++i) {
+        if (i == 3) code += QLatin1Char('-');
+        else code += chars.at(QRandomGenerator::global()->bounded(chars.size()));
+    }
+    m_pairCode = code;
+    m_pairUsed = false;
+    m_pairGenMs = QDateTime::currentMSecsSinceEpoch();
+    qInfo() << "[WebUI] 生成移动端配对码:" << code;
+    return code;
+}
+
+// 返回配对 URI（msm://token@host:port?t=...），手机扫码后解析出 host/port/token 直连。
+QString WebUIServer::pairUri() const
+{
+    const QString tok = m_settings->webuiToken();
+    QString host = QStringLiteral("127.0.0.1");
+    // 暴露到 LAN 时给出本机首选非回环 IP，方便手机同网段直连
+    if (m_settings->webuiExposeLan()) {
+        const QList<QHostAddress> addrs = QNetworkInterface::allAddresses();
+        for (const QHostAddress &a : addrs) {
+            if (a.protocol() == QAbstractSocket::IPv4Protocol && !a.isLoopback()) {
+                host = a.toString();
+                break;
+            }
+        }
+    }
+    return QStringLiteral("msm://token@%1:%2?t=%3").arg(host).arg(m_port).arg(tok);
+}
+
 void WebUIServer::dispatch(const QString &method, const QString &path, const QString &query,
                            const QMap<QString, QString> &hdr, const QByteArray &body, QTcpSocket *sock)
 {
@@ -633,6 +673,32 @@ void WebUIServer::dispatch(const QString &method, const QString &path, const QSt
         return;
     }
     if (path == QStringLiteral("/favicon.ico")) { sendStatus(sock, 204, QString()); return; }
+
+    // 移动端配对端点：免令牌校验（否则手机永远拿不到令牌）。配对码换取真实 token。
+    if (path == QStringLiteral("/api/pair") && method == QStringLiteral("POST")) {
+        QJsonObject bj;
+        if (!body.isEmpty()) {
+            QJsonParseError err;
+            const QJsonDocument d = QJsonDocument::fromJson(body, &err);
+            if (d.isObject()) bj = d.object();
+        }
+        const QString code = bj.value(QStringLiteral("code")).toString().trimmed().toUpper();
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        const bool expired = (now - m_pairGenMs) > 10 * 60 * 1000; // 10 分钟过期
+        if (m_pairCode.isEmpty() || code != m_pairCode || m_pairUsed || expired) {
+            qWarning() << "[WebUI] 配对失败: code=" << code
+                       << "used=" << m_pairUsed << "expired=" << expired;
+            sendStatus(sock, 403, QStringLiteral("Invalid or expired pair code"));
+            return;
+        }
+        m_pairUsed = true; // 一次性：用后即废
+        sendJson(sock, QJsonObject{
+            {QStringLiteral("token"), m_settings->webuiToken()},
+            {QStringLiteral("port"), m_port},
+            {QStringLiteral("https"), m_https}
+        });
+        return;
+    }
 
     if (!path.startsWith(QStringLiteral("/api/"))) { sendStatus(sock, 404, QStringLiteral("Not Found")); return; }
 
@@ -653,6 +719,21 @@ void WebUIServer::dispatch(const QString &method, const QString &path, const QSt
     }
 
     const QString api = path.mid(4); // 去掉 "/api"
+
+    // 移动端配对信息（需鉴权）：返回当前配对码、配对 URI、剩余有效期秒数，供 WebUI 配对页展示。
+    if (api == QStringLiteral("/paircode") && method == QStringLiteral("GET")) {
+        if (m_pairCode.isEmpty())
+            generatePairCode(); // 首次访问自动生成一个，避免用户找不到入口
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        const int remainSec = int((10 * 60 * 1000 - (now - m_pairGenMs)) / 1000);
+        sendJson(sock, QJsonObject{
+            {QStringLiteral("code"), m_pairCode},
+            {QStringLiteral("uri"), pairUri()},
+            {QStringLiteral("remainSec"), remainSec > 0 ? remainSec : 0},
+            {QStringLiteral("used"), m_pairUsed}
+        });
+        return;
+    }
 
     // 服务器集合
     if (api == QStringLiteral("/servers") && method == QStringLiteral("GET")) {

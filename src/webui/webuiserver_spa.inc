@@ -139,6 +139,7 @@ table td.t{color:var(--text-muted);width:42%}
       <button data-tab="downloads">⬇ 下载中心</button>
       <button data-tab="create">➕ 创建服务器</button>
       <button data-tab="import">📦 导入整合包</button>
+      <button data-tab="pair">📱 移动端配对</button>
       <button data-tab="settings">⚙ 应用设置</button>
     </div>
     <div class="mon">
@@ -155,6 +156,7 @@ table td.t{color:var(--text-muted);width:42%}
     <section id="page-downloads" class="page"></section>
     <section id="page-create" class="page"></section>
     <section id="page-import" class="page"></section>
+    <section id="page-pair" class="page"></section>
     <section id="page-settings" class="page"></section>
   </main>
 </div>
@@ -359,9 +361,58 @@ function switchTab(tab){
   else if(tab==='downloads')renderDownloads();
   else if(tab==='create')renderCreate();
   else if(tab==='import')renderImport();
+  else if(tab==='pair')enterPair();
   else if(tab==='settings')renderSettings();
 }
 function stopTimers(){Object.values(timers).forEach(clearInterval);timers={};}
+
+// ---------------- 移动端配对 ----------------
+function enterPair(){
+  curTab='pair';
+  const el=document.getElementById('page-pair');
+  el.innerHTML=
+    '<h2>📱 '+T('移动端配对')+'</h2>'+
+    '<p class="muted">'+T('用手机 App 扫码或输入配对码连接本服务器管理面板。配对码 10 分钟内有效，使用一次后作废。')+'</p>'+
+    '<div id="pairQR" style="width:200px;height:200px;background:#fff;padding:8px;border-radius:8px;margin:12px 0;"></div>'+
+    '<div class="kv"><span>'+T('配对码')+'</span><b id="pairCode" style="font-size:24px;letter-spacing:2px;">...</b></div>'+
+    '<div class="kv"><span>'+T('连接 URI')+'</span><code id="pairUri" style="word-break:break-all;">...</code></div>'+
+    '<div class="kv"><span>'+T('有效期')+'</span><b id="pairRemain">...</b></div>'+
+    '<div style="margin-top:10px;">'+
+      '<button onclick="refreshPair()" class="primary">'+T('刷新配对码')+'</button> '+
+      '<button onclick="copyPairUri()">'+T('复制 URI')+'</button>'+
+    '</div>';
+  renderPair();
+  timers.pair=setInterval(renderPair,2000);
+}
+function renderPair(){
+  api('/api/paircode').then(d=>{
+    document.getElementById('pairCode').textContent=d.code||'';
+    document.getElementById('pairUri').textContent=d.uri||'';
+    const r=document.getElementById('pairRemain');
+    if(r)r.textContent=(d.remainSec||0)+'s'+(d.used?' ('+T('已使用')+')':'');
+    const box=document.getElementById('pairQR');
+    if(box){
+      if(window.qrcode && d.uri){
+        box.innerHTML='';
+        try{
+          const qr=qrcode(0,'M');qr.addData(d.uri);qr.make();
+          box.innerHTML=qr.createImgTag(4,8);
+        }catch(e){box.textContent='QR '+T('生成失败');}
+      }else{
+        box.innerHTML='<div style="color:#888;font-size:12px;display:flex;align-items:center;justify-content:center;height:100%;text-align:center;padding:8px;">'+
+          T('二维码库未加载；请将下方 URI 用任意工具生成二维码，或在手机 App 中粘贴 URI / 输入配对码。')+'</div>';
+      }
+    }
+  }).catch(()=>{});
+}
+function refreshPair(){
+  api('/api/paircode',{method:'POST'}).then(()=>{renderPair();toast(T('已刷新'));}).catch(()=>toast(T('失败')));
+}
+function copyPairUri(){
+  const u=document.getElementById('pairUri').textContent;
+  if(navigator.clipboard)navigator.clipboard.writeText(u);
+  toast(T('已复制'));
+}
 
 // ---------------- 代理聚合（第2/8项） ----------------
 function enterProxy(){

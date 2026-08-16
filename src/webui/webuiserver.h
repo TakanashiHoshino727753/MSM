@@ -70,6 +70,11 @@ public:
     // 接入主下载目录（DownloadCatalog），供 WebUI 触发一键优化模组检索/安装
     void setDownloadCatalog(DownloadCatalog *dc);
 
+    // 移动端配对：生成一次性配对码（手机 App 凭码换取 webuiToken），每次调用刷新并重置使用状态。
+    Q_INVOKABLE QString generatePairCode();
+    // 返回当前配对 URI（含 host:port 与 token），供桌面端 WebUI 渲染二维码，手机扫码直连。
+    Q_INVOKABLE QString pairUri() const;
+
 signals:
     void runningChanged();
     void portChanged();
@@ -134,4 +139,9 @@ private:
     QSslConfiguration m_sslConf;   // HTTPS 时的 SSL 配置（明文模式不使用）
 
     QMap<QTcpSocket *, QByteArray> m_buffers;
+
+    // 移动端配对：一次性配对码（手机 App 凭码换取 webuiToken）
+    QString m_pairCode;
+    bool m_pairUsed = false;
+    qint64 m_pairGenMs = 0;    // 配对码生成时间（毫秒），用于过期判定
 };
