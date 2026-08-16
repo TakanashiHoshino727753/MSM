@@ -29,11 +29,12 @@ Item {
             list[i].running = running.indexOf(list[i].name) >= 0
         boundServers = list
     }
-    Component.onCompleted: { refreshBackends(); refreshBoundServers() }
-    onVisibleChanged: if (visible) { refreshBackends(); refreshBoundServers() }
+    Component.onCompleted: { refreshBackends(); refreshBoundServers(); refreshAllServers() }
+    onVisibleChanged: if (visible) { refreshBackends(); refreshBoundServers(); refreshAllServers() }
     onProxyChanged: {
         refreshBackends()
         refreshBoundServers()
+        refreshAllServers()
         consoleArea.text = page.proxy ? page.proxy.getConsole() : ""
     }
 
@@ -269,7 +270,7 @@ Item {
                 }
             }
 
-                    // ---- 绑定到本代理的服务器（第2项：绑定服务器置于代理标签页下 + 手动启停联动）----
+                    // ---- 绑定到本代理的服务器（复选框形式；解绑需二次确认）----
             Label {
                 text: I18n.t("绑定到本代理的服务器", I18n.lang)
                 font.pixelSize: 15; font.bold: true; color: Theme.text
@@ -277,48 +278,65 @@ Item {
             Label {
                 width: parent.width; wrapMode: Text.Wrap
                 color: Theme.textMuted; font.pixelSize: 11
-                text: I18n.t("在此处把服务器“绑定”到本代理后，它们会出现在下面列表并可在此直接启停；与上方“聚合后端”的区别是：绑定是持久归属关系，聚合是运行时转发范围。", I18n.lang)
+                text: I18n.t("勾选服务器即将其持久绑定到本代理（聚合其流量并可在下方直接启停）；取消勾选会解绑。与上方“聚合后端”的区别是：绑定是持久归属关系，聚合是运行时转发范围。", I18n.lang)
             }
+            // 全部服务器（含 running / isBound 标记），供复选框列表展示
+            property var allServers: []
+            function refreshAllServers() {
+                if (!page.proxy) { allServers = []; return }
+                var list = serverManager.serverSummary()
+                var running = serverController.runningServerNames()
+                for (var i = 0; i < list.length; ++i) {
+                    list[i].running = running.indexOf(list[i].name) >= 0
+                    list[i].isBound = (list[i].proxyId === page.proxy.instanceId)
+                }
+                allServers = list
+            }
+            property var pendingUnbind: null   // 待确认解绑的服务器名
+            function doUnbind(name) {
+                serverManager.setServerProxy(name, "")
+                page.refreshAllServers()
+                page.refreshBoundServers()
+            }
+
             Rectangle {
                 width: parent.width
                 color: Theme.panel; radius: Theme.radius; border.color: Theme.border
-                height: boundCol.implicitHeight + 20
+                height: bindListCol.implicitHeight + 20
                 Column {
-                    id: boundCol
+                    id: bindListCol
                     anchors { left: parent.left; right: parent.right; top: parent.top; margins: 10 }
-                    spacing: 8
-                    Row {
-                        spacing: 10; width: parent.width
-                        ComboBox {
-                            id: bindCombo
-                            width: 240
-                            palette.text: Theme.text
-                            // 仅列出未绑定到任何代理的服务器，避免重复绑定
-                            model: serverManager.serverSummary().filter(function(s){ return !s.proxyId || s.proxyId === (page.proxy ? page.proxy.instanceId : ""); })
-                            textRole: "name"
-                            displayText: I18n.t("选择服务器以绑定到本代理", I18n.lang)
-                        }
-                        Button {
-                            text: I18n.t("绑定", I18n.lang)
-                            enabled: bindCombo.currentIndex >= 0
-                            palette.windowText: "white"; palette.buttonText: "white"
-                            background: Rectangle { color: parent.enabled ? (parent.hovered ? Theme.accentHover : Theme.accent) : Theme.panelAlt; radius: 6 }
-                            onClicked: {
-                                var s = bindCombo.model[bindCombo.currentIndex]
-                                serverManager.setServerProxy(s.name, page.proxy.instanceId)
-                                page.refreshBoundServers()
-                            }
-                        }
-                    }
+                    spacing: 6
                     Repeater {
-                        model: page.boundServers
+                        model: page.allServers
                         Rectangle {
                             width: parent.width
                             color: "transparent"
-                            height: boundRow.implicitHeight + 12
+                            height: bindRow.implicitHeight
                             Row {
-                                id: boundRow
-                                spacing: 10; width: parent.width
+                                id: bindRow
+                                spacing: 10; width: parent.width; height: 30
+                                anchors.verticalCenter: parent.verticalCenter
+                                CheckBox {
+                                    id: bindChk
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    checked: modelData.isBound
+                                    palette.text: Theme.text
+                                    onCheckedChanged: {
+                                        if (checked) {
+                                            // 勾选 = 绑定
+                                            serverManager.setServerProxy(modelData.name, page.proxy.instanceId)
+                                            page.refreshAllServers()
+                                            page.refreshBoundServers()
+                                        } else {
+                                            // 取消勾选 = 解绑，需二次确认
+                                            pendingUnbind = modelData.name
+                                            confirmUnbind.open()
+                                            // 先恢复勾选，确认后再真正解绑
+                                            bindChk.checked = true
+                                        }
+                                    }
+                                }
                                 Rectangle {
                                     anchors.verticalCenter: parent.verticalCenter
                                     width: 8; height: 8; radius: 4
@@ -327,23 +345,14 @@ Item {
                                 Label { width: 200; elide: Text.ElideRight; text: modelData.name; color: Theme.text; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
                                 Label { width: 120; text: modelData.type; color: Theme.textMuted; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
                                 Button {
-                                    height: 26
+                                    height: 26; visible: modelData.isBound
                                     text: modelData.running ? I18n.t("停止", I18n.lang) : I18n.t("启动", I18n.lang)
                                     palette.windowText: Theme.text; palette.buttonText: Theme.text
                                     background: Rectangle { color: parent.hovered ? Theme.panel : Theme.bg; radius: 6; border.color: Theme.border }
                                     onClicked: {
                                         if (modelData.running) page.proxy.stopBackend(modelData.name)
                                         else page.proxy.startBackend(modelData.name)
-                                        page.refreshBoundServers()
-                                    }
-                                }
-                                Button {
-                                    height: 26
-                                    text: I18n.t("解绑", I18n.lang)
-                                    palette.windowText: "#e05f5f"; palette.buttonText: "#e05f5f"
-                                    background: Rectangle { color: parent.hovered ? Theme.panel : Theme.bg; radius: 6; border.color: Theme.border }
-                                    onClicked: {
-                                        serverManager.setServerProxy(modelData.name, "")
+                                        page.refreshAllServers()
                                         page.refreshBoundServers()
                                     }
                                 }
@@ -351,9 +360,46 @@ Item {
                         }
                     }
                     Label {
-                        visible: page.boundServers.length === 0
+                        visible: page.allServers.length === 0
                         color: Theme.textMuted; font.pixelSize: 12
-                        text: I18n.t("暂未绑定任何服务器。在上方选择并点击“绑定”。", I18n.lang)
+                        text: I18n.t("暂未发现任何服务器。请先在“服务器”页添加或扫描服务器。", I18n.lang)
+                    }
+                }
+            }
+
+            // 解绑二次确认弹窗
+            Popup {
+                id: confirmUnbind
+                anchors.centerIn: Overlay.overlay
+                modal: true; dim: true; closePolicy: Popup.NoAutoClose
+                width: 360
+                background: Rectangle { color: Theme.bg; radius: 10; border.color: Theme.border }
+                Column {
+                    spacing: 14; padding: 18; width: parent.width
+                    Label {
+                        width: parent.width; wrapMode: Text.Wrap
+                        color: Theme.text; font.pixelSize: 13
+                        text: I18n.t("确认将服务器“%1”从本代理解绑？解绑后其流量将不再经此代理转发。", I18n.lang).arg(page.pendingUnbind || "")
+                    }
+                    Row {
+                        spacing: 10; width: parent.width; layoutDirection: Qt.RightToLeft
+                        Button {
+                            text: I18n.t("确认解绑", I18n.lang)
+                            palette.windowText: "#e05f5f"; palette.buttonText: "#e05f5f"
+                            background: Rectangle { color: parent.hovered ? Theme.panel : Theme.bg; radius: 6; border.color: "#e05f5f" }
+                            onClicked: {
+                                var n = page.pendingUnbind
+                                page.pendingUnbind = null
+                                confirmUnbind.close()
+                                page.doUnbind(n)
+                            }
+                        }
+                        Button {
+                            text: I18n.t("取消", I18n.lang)
+                            palette.windowText: Theme.text; palette.buttonText: Theme.text
+                            background: Rectangle { color: parent.hovered ? Theme.panel : Theme.bg; radius: 6; border.color: Theme.border }
+                            onClicked: { page.pendingUnbind = null; confirmUnbind.close() }
+                        }
                     }
                 }
             }
