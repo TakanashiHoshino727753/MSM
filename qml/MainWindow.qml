@@ -17,6 +17,21 @@ ApplicationWindow {
     flags: Qt.Window | Qt.FramelessWindowHint
     color: "transparent"
     property string closeMode: "hide"   // 点 X 仅收起托盘，由 C++ 控制
+    // 整体淡入淡出（替代瞬时显隐）
+    opacity: 0
+    NumberAnimation { id: winFadeIn; target: window; property: "opacity"; from: 0; to: 1; duration: 280; easing.type: Easing.OutCubic }
+    NumberAnimation {
+        id: winFadeOut
+        target: window; property: "opacity"; from: 1; to: 0; duration: 200; easing.type: Easing.InCubic
+        onStopped: window.hide()
+    }
+    onVisibleChanged: if (visible) winFadeIn.start()
+    onClosing: (close) => {
+        if (closeMode === "hide") {
+            close.accepted = false
+            winFadeOut.start()
+        }
+    }
 
     // 当前主区域显示的页面 key（overview / proxy / server:<name>），用于同步 TabBar 高亮
     property string currentKey: "overview"

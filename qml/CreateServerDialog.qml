@@ -16,6 +16,13 @@ ApplicationWindow {
     color: "transparent"
     flags: Qt.Window | Qt.FramelessWindowHint
     modality: Qt.ApplicationModal
+    // 整体淡入淡出（替代瞬时显隐）
+    visible: false
+    opacity: 0
+    property bool _fadingOut: false
+    NumberAnimation { id: fadeIn; target: window; property: "opacity"; from: 0; to: 1; duration: 240; easing.type: Easing.OutCubic }
+    NumberAnimation { id: fadeOut; target: window; property: "opacity"; from: 1; to: 0; duration: 180; easing.type: Easing.InCubic; onStopped: window.close() }
+    onClosing: (close) => { if (!_fadingOut) { close.accepted = false; _fadingOut = true; fadeOut.start() } }
 
     property var chosenLoaders: []
 
@@ -64,8 +71,9 @@ ApplicationWindow {
         typeBox.currentIndex = 0
         verBox.currentIndex = 0
         eulaBox.checked = createServer.eulaAccepted
+        window.opacity = 0
         window.show()
-        enterAnim.start()
+        fadeIn.start()
         window.requestActivate()
     }
 
@@ -135,15 +143,8 @@ ApplicationWindow {
         radius: Theme.radius
         color: Theme.bg
         clip: true
-        // 入场动画：轻微滑入 + 淡入。frame 默认 opacity:1 兜底可见，
-        // 动画运行时从 0.55 淡入到 1，即使动画未触发也不会不可见。
         x: 0
         opacity: 1
-        ParallelAnimation {
-            id: enterAnim
-            NumberAnimation { target: frame; property: "x"; from: 40; to: 0; duration: 220; easing.type: Easing.OutCubic }
-            NumberAnimation { target: frame; property: "opacity"; from: 0.55; to: 1; duration: 220; easing.type: Easing.OutCubic }
-        }
 
         ColumnLayout {
             anchors.fill: parent
