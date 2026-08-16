@@ -38,6 +38,25 @@ Item {
         consoleArea.text = page.proxy ? page.proxy.getConsole() : ""
     }
 
+    // 全部服务器（含 running / isBound 标记），供绑定复选框列表展示
+    property var allServers: []
+    function refreshAllServers() {
+        if (!page.proxy) { allServers = []; return }
+        var list = serverManager.serverSummary()
+        var running = serverController.runningServerNames()
+        for (var i = 0; i < list.length; ++i) {
+            list[i].running = running.indexOf(list[i].name) >= 0
+            list[i].isBound = (list[i].proxyId === page.proxy.instanceId)
+        }
+        allServers = list
+    }
+    property var pendingUnbind: null   // 待确认解绑的服务器名
+    function doUnbind(name) {
+        serverManager.setServerProxy(name, "")
+        page.refreshAllServers()
+        page.refreshBoundServers()
+    }
+
     ScrollView {
         anchors.fill: parent
         contentWidth: width
@@ -93,6 +112,12 @@ Item {
                     currentIndex: page.currentIndex
                     onActivated: page.currentIndex = index
                     enabled: count > 0
+                    // 隐藏默认双箭头指示器，统一用单个向下箭头
+                    indicator: null
+                    background: Rectangle {
+                        color: proxyCombo.hovered ? Theme.panel : Theme.bg
+                        radius: Theme.radius; border.color: Theme.border; border.width: 1
+                    }
                     delegate: ItemDelegate {
                         width: proxyCombo.width
                         contentItem: Row {
@@ -109,16 +134,21 @@ Item {
                             }
                         }
                         highlighted: proxyCombo.highlightedIndex === index
+                        background: Rectangle { color: highlighted ? Theme.panelAlt : "transparent" }
                     }
-                    contentItem: Row {
-                        spacing: 6; anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 12
+                    contentItem: RowLayout {
+                        spacing: 6
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.left: parent.left; anchors.leftMargin: 12
+                        anchors.right: parent.right; anchors.rightMargin: 10
                         Rectangle {
-                            anchors.verticalCenter: parent.verticalCenter
                             width: 8; height: 8; radius: 4
-                            color: currentProxyModel.running ? "#43d17a" : Theme.border
-                            property var currentProxyModel: proxyManager.proxies[proxyCombo.currentIndex] || {}
+                            color: (proxyManager.proxies[proxyCombo.currentIndex]
+                                    ? (proxyManager.proxies[proxyCombo.currentIndex].running ? "#43d17a" : Theme.border)
+                                    : Theme.border)
                         }
                         Label {
+                            Layout.fillWidth: true
                             text: (proxyManager.proxies[proxyCombo.currentIndex]
                                    ? proxyManager.proxies[proxyCombo.currentIndex].name + " :"
                                      + proxyManager.proxies[proxyCombo.currentIndex].port
@@ -126,6 +156,9 @@ Item {
                                         ? " · " + proxyManager.proxies[proxyCombo.currentIndex].players + " 人在线" : "")
                                    : I18n.t("无代理实例", I18n.lang))
                             color: Theme.text; font.pixelSize: 12
+                        }
+                        Label {
+                            text: "▾"; color: Theme.textMuted; font.pixelSize: 12
                         }
                     }
                 }
@@ -299,25 +332,6 @@ Item {
                 color: Theme.textMuted; font.pixelSize: 11
                 text: I18n.t("勾选服务器即将其持久绑定到本代理（聚合其流量并可在下方直接启停）；取消勾选会解绑。与上方“聚合后端”的区别是：绑定是持久归属关系，聚合是运行时转发范围。", I18n.lang)
             }
-            // 全部服务器（含 running / isBound 标记），供复选框列表展示
-            property var allServers: []
-            function refreshAllServers() {
-                if (!page.proxy) { allServers = []; return }
-                var list = serverManager.serverSummary()
-                var running = serverController.runningServerNames()
-                for (var i = 0; i < list.length; ++i) {
-                    list[i].running = running.indexOf(list[i].name) >= 0
-                    list[i].isBound = (list[i].proxyId === page.proxy.instanceId)
-                }
-                allServers = list
-            }
-            property var pendingUnbind: null   // 待确认解绑的服务器名
-            function doUnbind(name) {
-                serverManager.setServerProxy(name, "")
-                page.refreshAllServers()
-                page.refreshBoundServers()
-            }
-
             Rectangle {
                 width: parent.width
                 color: Theme.panel; radius: Theme.radius; border.color: Theme.border

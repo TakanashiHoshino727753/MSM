@@ -220,7 +220,7 @@ ApplicationWindow {
                         topRightRadius: Theme.radius; bottomRightRadius: Theme.radius
                         // 角标：有活动异常时显示红点
                         Rectangle {
-                            visible: serverController && serverController.errorRecords().length > 0
+                            visible: serverController && serverController.errorRecords.length > 0
                             width: 8; height: 8; radius: 4
                             color: Theme.danger
                             anchors { top: parent.top; right: parent.right; topMargin: 6; rightMargin: 8 }

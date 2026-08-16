@@ -24,7 +24,7 @@ Item {
     property bool hasActiveError: serverPath ? computeActiveError() : false
     function computeActiveError() {
         if (!serverPath) return false;
-        var recs = serverController.errorRecords();
+        var recs = serverController.errorRecords;
         for (var i = 0; i < recs.length; ++i)
             if (recs[i].path === root.serverPath) return true;
         return false;
@@ -34,7 +34,7 @@ Item {
     function refreshMyError() {
         root.myError = null;
         if (!serverPath) return;
-        var recs = serverController.errorRecords();
+        var recs = serverController.errorRecords;
         for (var i = 0; i < recs.length; ++i)
             if (recs[i].path === root.serverPath) { root.myError = recs[i]; break; }
     }

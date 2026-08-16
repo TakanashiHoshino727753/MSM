@@ -135,13 +135,13 @@ ApplicationWindow {
         radius: Theme.radius
         color: Theme.bg
         clip: true
-        // 入场滑动动画：从右侧滑入 + 淡入（挂在内层 frame 上，Window 本身不支持 transform）
-        x: 60
-        opacity: 0
+        // 入场滑动动画：从右侧轻微滑入（挂在内层 frame 上，Window 本身不支持 transform）。
+        // 注意：frame 默认即可见（opacity:1, x:0），动画仅作增强；即使动画未触发也不影响显示。
+        x: 0
+        opacity: 1
         ParallelAnimation {
             id: enterAnim
-            NumberAnimation { target: frame; property: "x"; from: 60; to: 0; duration: 220; easing.type: Easing.OutCubic }
-            NumberAnimation { target: frame; property: "opacity"; from: 0; to: 1; duration: 220; easing.type: Easing.OutCubic }
+            NumberAnimation { target: frame; property: "x"; from: 40; to: 0; duration: 200; easing.type: Easing.OutCubic }
         }
 
         ColumnLayout {

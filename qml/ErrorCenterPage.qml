@@ -7,8 +7,8 @@ import Qt.labs.qmlmodels
 // 跟踪自动重拉起进度，并提供手动干预（现在重试 / 停止重试 / 标记已解决 / 查看日志）。
 Page {
     id: root
-    property var records: serverController.errorRecords()
-    function refresh() { root.records = serverController.errorRecords(); }
+    property var records: serverController.errorRecords
+    function refresh() { root.records = serverController.errorRecords; }
     Component.onCompleted: {
         serverController.errorRecordsChanged.connect(root.refresh);
     }
