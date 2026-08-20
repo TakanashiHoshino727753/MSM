@@ -36,7 +36,7 @@ SettingsController::SettingsController(QObject *parent) : QObject(parent)
     // 统一经由默认 QSettings()（作用域由 main 设为 MSM/MinecraftServerManager）。
     QSettings s;
     m_language = s.value(QStringLiteral("app/language"), QStringLiteral("简体中文")).toString();
-    m_webui = s.value(QStringLiteral("app/webui"), false).toBool();
+    m_webui = s.value(QStringLiteral("app/webui"), true).toBool();
     m_webuiPort = s.value(QStringLiteral("app/webuiPort"), 25575).toInt();
     m_webuiToken = s.value(QStringLiteral("app/webuiToken")).toString();
     if (m_webuiToken.isEmpty())

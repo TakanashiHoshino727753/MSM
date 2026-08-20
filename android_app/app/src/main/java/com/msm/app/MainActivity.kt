@@ -32,6 +32,13 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 Surface {
                     when {
+                        screen == "scanner" -> QrScannerScreen(
+                            onResult = {
+                                if (it.startsWith("msm://")) vm.connectWithUri(it)
+                                screen = "list"
+                            },
+                            onCancel = { screen = "list" }
+                        )
                         !state.connected -> ConnectScreen(
                             connecting = state.connecting,
                             error = state.error,
@@ -39,13 +46,6 @@ class MainActivity : ComponentActivity() {
                             onPair = { h, p, s, c -> vm.connectWithPair(h, p, s, c) },
                             onScan = { screen = "scanner" },
                             onUri = { vm.connectWithUri(it) }
-                        )
-                        screen == "scanner" -> QrScannerScreen(
-                            onResult = {
-                                if (it.startsWith("msm://")) vm.connectWithUri(it)
-                                screen = "list"
-                            },
-                            onCancel = { screen = "list" }
                         )
                         state.selected != null && screen == "detail" -> ServerDetailScreen(
                             detail = state.selected!!,

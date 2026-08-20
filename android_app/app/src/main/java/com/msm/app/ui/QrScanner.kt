@@ -65,8 +65,13 @@ fun QrScannerScreen(onResult: (String) -> Unit, onCancel: () -> Unit) {
                                     scanner.process(img)
                                         .addOnSuccessListener { barcodes ->
                                             for (b in barcodes) {
-                                                if (b.format == Barcode.FORMAT_QR_CODE || b.valueType == Barcode.TYPE_URL) {
-                                                    b.rawValue?.let { onResult(it) }
+                                                val v = b.rawValue
+                                                if (!v.isNullOrBlank()) {
+                                                    if (v.startsWith("msm://") ||
+                                                        b.format == Barcode.FORMAT_QR_CODE ||
+                                                        b.valueType == Barcode.TYPE_URL) {
+                                                        onResult(v)
+                                                    }
                                                 }
                                             }
                                         }

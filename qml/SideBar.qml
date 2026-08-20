@@ -74,6 +74,18 @@ Rectangle {
             }
             contentItem: Label { text: parent.text; color: Theme.text; horizontalAlignment: Text.AlignLeft; verticalAlignment: Text.AlignVCenter }
         }
+        Button {
+            height: Theme.controlHeight
+            Layout.alignment: Qt.AlignHCenter
+            leftPadding: 6; rightPadding: 6; topPadding: 6; bottomPadding: 6
+            text: I18n.t("移动端配对", I18n.lang)
+            onClicked: pairPopup.open()
+            background: Rectangle {
+                color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: Theme.radius
+                Behavior on color { ColorAnimation { duration: 100 } }
+            }
+            contentItem: Label { text: parent.text; color: Theme.text; horizontalAlignment: Text.AlignLeft; verticalAlignment: Text.AlignVCenter }
+        }
 
         Item { Layout.fillHeight: false; Layout.preferredHeight: 14 }
 
@@ -140,5 +152,60 @@ Rectangle {
         }
 
         Item { Layout.fillHeight: true }
+    }
+
+    // 移动端配对弹窗：展示 WebUI 配对二维码，手机 App 扫码即可连接本机控制台
+    Popup {
+        id: pairPopup
+        anchors.centerIn: Overlay.overlay
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        background: Rectangle { color: Theme.panel; radius: Theme.radius; border.color: Theme.border }
+        contentItem: ColumnLayout {
+            spacing: 14
+            Label {
+                text: I18n.t("移动端配对", I18n.lang)
+                color: Theme.text
+                font.pixelSize: 15; font.bold: true
+            }
+            Rectangle {
+                Layout.alignment: Qt.AlignHCenter
+                width: 220; height: 220
+                color: "#ffffff"; radius: 6
+                Image {
+                    id: pairQr
+                    anchors.fill: parent
+                    anchors.margins: 10
+                    fillMode: Image.PreserveAspectFit
+                    cache: false
+                }
+            }
+            Label {
+                Layout.preferredWidth: 300
+                text: I18n.t("用手机 App 的“扫码连接”扫描上方二维码。确保手机与本机在同一局域网，且 Web 控制台已启用。", I18n.lang)
+                color: Theme.textMuted
+                font.pixelSize: 12
+                wrapMode: Text.Wrap
+            }
+            Label {
+                Layout.preferredWidth: 300
+                text: webuiServer ? webuiServer.pairUri() : ""
+                color: Theme.textMuted
+                font.pixelSize: 10
+                elide: Text.ElideMiddle
+                wrapMode: Text.Wrap
+            }
+            Button {
+                Layout.alignment: Qt.AlignHCenter
+                text: I18n.t("关闭", I18n.lang)
+                onClicked: pairPopup.close()
+            }
+        }
+        onOpened: {
+            // 每次打开都重新取配对 URI 生成二维码（token/端口可能变化）
+            if (webuiServer)
+                pairQr.source = "image://qr/" + encodeURIComponent(webuiServer.pairUri())
+        }
     }
 }

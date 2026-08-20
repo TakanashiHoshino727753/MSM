@@ -61,6 +61,7 @@
 #include "javamanager.h"
 #include "settingscontroller.h"
 #include "webuiserver.h"
+#include "qrimageprovider.h"
 #include "botcontroller.h"
 #include "installcoordinator.h"
 #include "proxycontroller.h"
@@ -954,6 +955,8 @@ int main(int argc, char *argv[])
     // 此时所有上下文属性对象（控制器）尚未析构，绑定求值访问到的仍是有效对象，
     // 避免退出时大量 "Cannot read property 'xxx' of null" 报错。
     QQmlApplicationEngine engine;
+    // 二维码图片提供者：QML 通过 image://qr/<encodedUri> 直接渲染配对二维码位图
+    engine.addImageProvider(QStringLiteral("qr"), new QrImageProvider);
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed,
                      &app, []() { QCoreApplication::exit(-1); }, Qt::QueuedConnection);
 
