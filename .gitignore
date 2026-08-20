@@ -87,3 +87,11 @@ CMakeLists.txt.user*
 /deploy/
 *_windeploy.log
 msm.log
+
+# 构建日志与本地环境文件
+*.log
+local.properties
+
+# Android 构建产物
+android_app/**/build/
+android_app/.gradle/
