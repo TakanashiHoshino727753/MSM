@@ -4,6 +4,7 @@
 #include <QSettings>
 #include <QStandardPaths>
 #include <QDir>
+#include <QCoreApplication>
 
 // 控制器（MSM 自身）设置逻辑层（C++）：开机自启（Windows 注册表）、
 // 界面语言、WebUI 开关与端口、QQ 机器人（NapCat / NoneBot）开关与路径、
@@ -46,8 +47,29 @@ class SettingsController : public QObject
 
     Q_PROPERTY(QString defaultServerDir READ defaultServerDir WRITE setDefaultServerDir NOTIFY defaultServerDirChanged)
 
+    // 外观个性化：用户从电脑中选择背景图/背景音乐文件，MSM 复制到 dataDir/skin/ 下持久使用
+    Q_PROPERTY(bool bgEnabled READ bgEnabled WRITE setBgEnabled NOTIFY bgEnabledChanged)
+    Q_PROPERTY(QString bgImagePath READ bgImagePath WRITE setBgImagePath NOTIFY bgImagePathChanged)
+    Q_PROPERTY(bool bgmEnabled READ bgmEnabled WRITE setBgmEnabled NOTIFY bgmEnabledChanged)
+    Q_PROPERTY(QString bgmPath READ bgmPath WRITE setBgmPath NOTIFY bgmPathChanged)
+    Q_PROPERTY(double bgmVolume READ bgmVolume WRITE setBgmVolume NOTIFY bgmVolumeChanged)
+
 public:
     explicit SettingsController(QObject *parent = nullptr);
+
+    // 皮肤目录：dataDir()/skin/，MSM 把用户选择的背景图/音乐复制到这里
+    static QString skinDir() {
+        return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+               + QStringLiteral("/MSM/skin");
+    }
+    // 背景图目录：程序同目录/backgroundpic/（用户从电脑选的图片复制到此处，供 MainWindow 铺背景）
+    static QString bgImageDir() {
+        return QCoreApplication::applicationDirPath() + QStringLiteral("/backgroundpic");
+    }
+    // 背景音乐目录：程序同目录/backgroundmusic/（用户从电脑选的音乐复制到此处，供 BGM 循环播放）
+    static QString bgmDir() {
+        return QCoreApplication::applicationDirPath() + QStringLiteral("/backgroundmusic");
+    }
 
     bool autoStart() const { return m_autoStart; }
     void setAutoStart(bool v);
@@ -121,6 +143,25 @@ public:
         emit defaultServerDirChanged();
     }
 
+    bool bgEnabled() const { return m_bgEnabled; }
+    void setBgEnabled(bool v);
+    QString bgImagePath() const { return m_bgImagePath; }
+    void setBgImagePath(const QString &v);
+    bool bgmEnabled() const { return m_bgmEnabled; }
+    void setBgmEnabled(bool v);
+    QString bgmPath() const { return m_bgmPath; }
+    void setBgmPath(const QString &v);
+    double bgmVolume() const { return m_bgmVolume; }
+    void setBgmVolume(double v);
+
+    // 把用户从电脑中选中的背景图/音乐文件复制到 skinDir()（覆盖式），
+    // 成功返回 true。QML 通过 FileDialog 拿到本地路径后调用。
+    Q_INVOKABLE bool importSkinImage(const QString &srcFile);
+    Q_INVOKABLE bool importSkinMusic(const QString &srcFile);
+    // 清除已导入的皮肤（删除 skinDir 下对应文件并清空设置）
+    Q_INVOKABLE void clearSkinImage();
+    Q_INVOKABLE void clearSkinMusic();
+
     Q_INVOKABLE void apply();   // 持久化所有设置（QSettings + 注册表）
     Q_INVOKABLE void regenerateWebuiToken();   // 重新生成访问令牌
 
@@ -152,6 +193,12 @@ signals:
 
     void defaultServerDirChanged();
 
+    void bgEnabledChanged();
+    void bgImagePathChanged();
+    void bgmEnabledChanged();
+    void bgmPathChanged();
+    void bgmVolumeChanged();
+
 private:
     void loadAutoStart();
     void saveAutoStart();
@@ -180,5 +227,11 @@ private:
     int m_botUsageInterval = 300;
     bool m_botLinkedStart = false;
     bool m_bot = false;
+
+    bool m_bgEnabled = false;
+    QString m_bgImagePath;
+    bool m_bgmEnabled = false;
+    QString m_bgmPath;
+    double m_bgmVolume = 0.5;
 
 };

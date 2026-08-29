@@ -68,30 +68,17 @@ if(NOT WIN32)
 endif()
 
 # QML 模块：UI 层单独抽离到 qml/，C++ 通过上下文属性注入，不在模块内注册类型
+# 用 GLOB 自动扫描 qml 目录，新增 .qml/.js 文件无需手动登记（CONFIGURE_DEPENDS 让 CMake 在新增文件时自动重配）
+# 注意：QML_FILES 只接受相对于当前源目录的路径，故用 RELATIVE 取 "qml/xxx.qml" 形式
+file(GLOB QML_SOURCES CONFIGURE_DEPENDS RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}
+    qml/*.qml
+    qml/*.js
+)
 qt_add_qml_module(MinecraftServerManager
     URI MinecraftServerManager
     VERSION 1.0
     QML_FILES
-        qml/Theme.qml
-        qml/TitleBar.qml
-        qml/SideBar.qml
-        qml/ServerCard.qml
-        qml/ServerPage.qml
-        qml/ModalPopup.qml
-        qml/MainWindow.qml
-        qml/ErrorCenterPage.qml
-        qml/DownloadCenter.qml
-        qml/DownloadsPanel.qml
-        qml/CreateServerDialog.qml
-        qml/ImportModpackDialog.qml
-        qml/ControllerSettings.qml
-        qml/ProxyPage.qml
-        qml/ComboBoxEx.qml
-        qml/ComboBoxEditable.qml
-        qml/AccentButton.qml
-        qml/SubtleButton.qml
-        qml/PropsNames.js
-        qml/I18n.qml
+        ${QML_SOURCES}
     RESOURCES
         Resources.qrc
 )

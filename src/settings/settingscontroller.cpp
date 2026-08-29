@@ -10,6 +10,8 @@
 #include <QCoreApplication>
 #include <QFileInfo>
 #include <QDir>
+#include <QFile>
+#include <QUrl>
 #include <QRandomGenerator>
 #ifdef Q_OS_WIN
 #define NOMINMAX
@@ -46,7 +48,9 @@ SettingsController::SettingsController(QObject *parent) : QObject(parent)
 #ifdef Q_OS_LINUX
     m_webuiExposeLan = s.value(QStringLiteral("app/webuiExposeLan"), true).toBool();
 #else
-    m_webuiExposeLan = s.value(QStringLiteral("app/webuiExposeLan"), false).toBool();
+    // Windows 桌面端默认也暴露到局域网，方便手机 App 扫码直连本机控制台。
+    // 令牌校验在两种平台都强制生效，安全性不受影响。
+    m_webuiExposeLan = s.value(QStringLiteral("app/webuiExposeLan"), true).toBool();
 #endif
     m_webuiCertPath = s.value(QStringLiteral("app/webuiCertPath")).toString();
     m_webuiKeyPath = s.value(QStringLiteral("app/webuiKeyPath")).toString();
@@ -65,6 +69,14 @@ SettingsController::SettingsController(QObject *parent) : QObject(parent)
     m_webhookCrash = s.value(QStringLiteral("app/webhookCrash"), true).toBool();
     m_webhookState = s.value(QStringLiteral("app/webhookState"), true).toBool();
     m_webhookPlayer = s.value(QStringLiteral("app/webhookPlayer"), false).toBool();
+
+    // 外观个性化：背景图/背景音乐路径存的是 skinDir() 下的相对文件名；
+    // 开关控制是否启用。首次运行均关闭。
+    m_bgEnabled = s.value(QStringLiteral("app/bgEnabled"), false).toBool();
+    m_bgImagePath = s.value(QStringLiteral("app/bgImage")).toString();
+    m_bgmEnabled = s.value(QStringLiteral("app/bgmEnabled"), false).toBool();
+    m_bgmPath = s.value(QStringLiteral("app/bgmPath")).toString();
+    m_bgmVolume = s.value(QStringLiteral("app/bgmVolume"), 0.5).toDouble();
 
     loadAutoStart();
 }
@@ -255,14 +267,16 @@ void SettingsController::apply()
         "app/nonebotDir", "app/botUsageInterval", "app/botLinkedStart",
         "app/botEnabled", "app/webhookUrl", "app/webhookType",
         "app/webhookEnabled", "app/webhookCrash", "app/webhookState",
-        "app/webhookPlayer",
+        "app/webhookPlayer", "app/bgEnabled", "app/bgImage", "app/bgmEnabled",
+        "app/bgmPath", "app/bgmVolume",
     };
     const QVariant vals[] = {
         m_language, m_webui, m_webuiPort, m_webuiToken, m_webuiExposeLan,
         m_webuiCertPath, m_webuiKeyPath, m_showOnStartup, m_napcat, m_napcatPath,
         m_nonebot, m_nonebotDir, m_botUsageInterval, m_botLinkedStart, m_bot,
         m_webhookUrl, m_webhookType, m_webhookEnabled, m_webhookCrash,
-        m_webhookState, m_webhookPlayer,
+        m_webhookState, m_webhookPlayer, m_bgEnabled, m_bgImagePath,
+        m_bgmEnabled, m_bgmPath, m_bgmVolume,
     };
     static_assert(sizeof(keys) / sizeof(*keys) == sizeof(vals) / sizeof(*vals),
                   "settings key/value count mismatch");
@@ -272,4 +286,110 @@ void SettingsController::apply()
 
     s.sync();
     saveAutoStart();
+}
+
+void SettingsController::setBgEnabled(bool v)
+{
+    if (m_bgEnabled != v) { m_bgEnabled = v; emit bgEnabledChanged(); }
+}
+void SettingsController::setBgImagePath(const QString &v)
+{
+    const QString p = stripFileUrl(v);
+    if (m_bgImagePath != p) { m_bgImagePath = p; emit bgImagePathChanged(); }
+}
+void SettingsController::setBgmEnabled(bool v)
+{
+    if (m_bgmEnabled != v) { m_bgmEnabled = v; emit bgmEnabledChanged(); }
+}
+void SettingsController::setBgmPath(const QString &v)
+{
+    const QString p = stripFileUrl(v);
+    if (m_bgmPath != p) { m_bgmPath = p; emit bgmPathChanged(); }
+}
+void SettingsController::setBgmVolume(double v)
+{
+    const double n = qBound(0.0, v, 1.0);
+    if (m_bgmVolume != n) { m_bgmVolume = n; emit bgmVolumeChanged(); }
+}
+
+// 把用户从电脑中选中的文件复制到目标目录（backgroundpic / backgroundmusic，覆盖式），
+// 文件名固定为 base + 原扩展名（如 bgimage.jpg / bgm.mp3），返回该相对文件名。
+// FileDialog 可能返回 file:/// 前缀，先用 stripFileUrl 规整。
+static QString copySkinFile(const QString &srcFile, const QString &dstDir, const QString &base)
+{
+    const QString src = SettingsController::stripFileUrl(srcFile);
+    if (src.isEmpty())
+        return QString();
+    if (!QFile::exists(src))
+        return QString();
+    QDir().mkpath(dstDir);
+    // 保留原扩展名，便于 QtMultimedia / Image 识别格式
+    const QString ext = QFileInfo(src).suffix();
+    const QString dstName = base + (ext.isEmpty() ? QString() : (QStringLiteral(".") + ext));
+    const QString dst = dstDir + QLatin1Char('/') + dstName;
+    if (QFile::exists(dst))
+        QFile::remove(dst);
+    if (!QFile::copy(src, dst))
+        return QString();
+    return dstName;
+}
+
+bool SettingsController::importSkinImage(const QString &srcFile)
+{
+    // [DBG] 诊断背景图导入
+    {
+        QFile d(bgImageDir() + QStringLiteral("/_dbg.txt"));
+        if (d.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+            QTextStream ts(&d);
+            ts << "importSkinImage called, raw=" << srcFile
+               << " stripped=" << stripFileUrl(srcFile)
+               << " bgImageDir=" << bgImageDir() << "\n";
+        }
+    }
+    const QString name = copySkinFile(srcFile, bgImageDir(), QStringLiteral("bgimage"));
+    {
+        QFile d(bgImageDir() + QStringLiteral("/_dbg.txt"));
+        if (d.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+            QTextStream ts(&d);
+            ts << "  -> name=" << name << " (empty means failed)\n";
+        }
+    }
+    if (name.isEmpty())
+        return false;
+    m_bgImagePath = name;
+    setBgEnabled(true);   // 选图成功后自动开启背景图，选完即生效
+    emit bgImagePathChanged();
+    return true;
+}
+bool SettingsController::importSkinMusic(const QString &srcFile)
+{
+    const QString name = copySkinFile(srcFile, bgmDir(), QStringLiteral("bgm"));
+    if (name.isEmpty())
+        return false;
+    m_bgmPath = name;
+    setBgmEnabled(true);   // 选乐成功后自动开启背景音乐，选完即生效
+    emit bgmPathChanged();
+    return true;
+}
+void SettingsController::clearSkinImage()
+{
+    const QString f = bgImageDir() + QStringLiteral("/") + m_bgImagePath;
+    const QString fallback = bgImageDir() + QStringLiteral("/bgimage");
+    if (QFile::exists(f))
+        QFile::remove(f);
+    if (QFile::exists(fallback))
+        QFile::remove(fallback);
+    m_bgImagePath.clear();
+    emit bgImagePathChanged();
+}
+void SettingsController::clearSkinMusic()
+{
+    const QString f = bgmDir() + QStringLiteral("/") + m_bgmPath;
+    const QString fallback = bgmDir() + QStringLiteral("/bgm");
+    if (QFile::exists(f))
+        QFile::remove(f);
+    if (QFile::exists(fallback))
+        QFile::remove(fallback);
+    m_bgmPath.clear();
+    emit bgmPathChanged();
 }

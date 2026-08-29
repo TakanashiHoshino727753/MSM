@@ -135,32 +135,49 @@ ApplicationWindow {
         onAccepted: downloadCatalog.saveDir = selectedFolder.toString().replace(/^file:\/\/\/?/, "")
     }
 
-    // frame：带圆角的窗口主体。窗口本身透明，靠此矩形绘制背景并 clip 出圆角外观。
+    // 背景图层（全窗口最底层，自带圆角裁剪）：所有窗口复用
+    BackgroundLayer {
+        radius: window.visibility === Window.Maximized ? 0 : Theme.radius
+    }
+
+    // 标题栏（不透明，不受界面控件透明度影响）：放在 frame 外，作为 window 根独立分支
+    TitleBar {
+        id: titleBar
+        title: I18n.t("下载中心", I18n.lang)
+        window: window
+        Layout.fillWidth: true
+        anchors { top: parent.top; left: parent.left; right: parent.right }
+        onDownloadsClicked: downloadsPanel.open()
+    }
+
+    // frame：带圆角的窗口主体。窗口本身透明，靠此矩形绘制透明背景并 clip 出圆角外观；
+    // 整体受界面控件透明度控制（标题栏已独立在 frame 外）。
     Rectangle {
         id: frame
-        anchors.fill: parent
+        anchors { top: titleBar.bottom; left: parent.left; right: parent.right; bottom: parent.bottom }
         radius: Theme.radius
-        color: Theme.bg
+        color: "transparent"   // 透明：BackgroundLayer 背景图透出
+        opacity: appController.uiTransparency
         clip: true
-        // 入场滑动动画：从右侧滑入 + 淡入（挂在内层 frame 上，Window 本身不支持 transform）
+        // 入场滑动动画：从右侧滑入（opacity 由 uiTransparency 绑定控制，避免冲突）
         x: 60
-        opacity: 0
         ParallelAnimation {
             id: enterAnim
             NumberAnimation { target: frame; property: "x"; from: 60; to: 0; duration: 220; easing.type: Easing.OutCubic }
-            NumberAnimation { target: frame; property: "opacity"; from: 0; to: 1; duration: 220; easing.type: Easing.OutCubic }
+        }
+
+        // 区域底色层：受区域底色透明度控制（0=全透，1=不透明），与主窗口主区域一致
+        Rectangle {
+            anchors.fill: parent
+            radius: frame.radius
+            color: Theme.bg
+            opacity: appController.bgLayerOpacity
+            z: -1
         }
 
         ColumnLayout {
             anchors.fill: parent
             spacing: 0
-
-            TitleBar {
-                title: I18n.t("下载中心", I18n.lang)
-            window: window
-            Layout.fillWidth: true
-            onDownloadsClicked: downloadsPanel.open()
-        }
 
         // 工具栏：主分类一行 + 服务端子类型一行 + 搜索/目录一行
         ColumnLayout {

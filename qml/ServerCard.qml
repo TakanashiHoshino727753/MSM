@@ -9,6 +9,7 @@ Rectangle {
     width: 250; height: 130
     radius: Theme.radius
     color: Theme.panelAlt
+    // 透明度由所在页面/容器的 uiTransparency 统一控制，自身不设独立 opacity
     border.color: hovered ? Theme.accent : Theme.border
     antialiasing: true
     property string name: I18n.t("未命名服务器", I18n.lang)

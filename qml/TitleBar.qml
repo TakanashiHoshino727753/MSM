@@ -8,6 +8,7 @@ Rectangle {
     id: root
     height: Theme.titleBarHeight
     color: Theme.panel
+    // 标题栏保持不透明（按需求），不透明底色
     // 顶部两角跟随窗口圆角（最大化时窗口由系统接管，圆角归零）
     topLeftRadius: Window.window && Window.window.visibility === Window.Maximized ? 0 : Theme.radius
     topRightRadius: Window.window && Window.window.visibility === Window.Maximized ? 0 : Theme.radius

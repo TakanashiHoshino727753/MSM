@@ -7,12 +7,22 @@ import QtQuick.Layouts
 Rectangle {
     id: root
     width: 127
-    color: Theme.panel
+    color: "transparent"   // 根透明，避免整体半透明；仅背景层半透明
     // 组合式布局：侧边栏位于标题栏之下、独立成块，无边框；仅左下角跟随窗口圆角（最大化时归零）
     topLeftRadius: 0
     bottomLeftRadius: Window.window && Window.window.visibility === Window.Maximized ? 0 : Theme.radius
     signal downloadClicked()
     signal settingsClicked()
+
+    // 侧边栏背景层：受区域底色透明度控制，为主区域底色的约 1.1 倍（0.2 起步，上限 1）
+    Rectangle {
+        anchors.fill: parent
+        color: Theme.panel
+        opacity: Math.min(1.0, 0.2 + appController.bgLayerOpacity * 1.1)
+        topLeftRadius: 0
+        bottomLeftRadius: Window.window && Window.window.visibility === Window.Maximized ? 0 : Theme.radius
+        z: -1
+    }
 
     // 折线图绘制：newest 在最右，随新采样点自右向左滑动（固定容量，不挤压）
     function drawLineChart(ctx, w, h, history, capacity) {
@@ -47,6 +57,8 @@ Rectangle {
         anchors.margins: 12
         anchors.topMargin: 14
         spacing: 8
+        // 侧边栏内所有控件（按钮/文字/图表）受界面控件透明度控制（0=全透，1=不透明）
+        opacity: appController.uiTransparency
 
         Label { text: I18n.t("功能", I18n.lang); color: Theme.textMuted; font.pixelSize: 11 }
 
@@ -160,8 +172,9 @@ Rectangle {
         anchors.centerIn: Overlay.overlay
         modal: true
         focus: true
+        opacity: appController.uiTransparency   // 配对弹窗整体受界面控件透明度控制
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-        background: Rectangle { color: Theme.panel; radius: Theme.radius; border.color: Theme.border }
+        background: Rectangle { color: Theme.panel; radius: Theme.radius; border.color: Theme.border; opacity: appController.bgLayerOpacity }
         contentItem: ColumnLayout {
             spacing: 14
             Label {

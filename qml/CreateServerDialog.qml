@@ -138,14 +138,28 @@ ApplicationWindow {
         }
     }
 
+    // 背景图层（全窗口最底层，自带圆角裁剪）：所有窗口复用
+    BackgroundLayer {
+        radius: window.visibility === Window.Maximized ? 0 : Theme.radius
+    }
+
     Rectangle {
         id: frame
         anchors.fill: parent
         radius: Theme.radius
-        color: Theme.bg
+        color: "transparent"   // 透明：BackgroundLayer 背景图透出
+        opacity: appController.uiTransparency   // 整体受界面控件透明度控制（含内嵌标题栏）
         clip: true
         x: 0
-        opacity: 1
+
+        // 区域底色层：受区域底色透明度控制（0=全透，1=不透明），与主窗口主区域一致
+        Rectangle {
+            anchors.fill: parent
+            radius: frame.radius
+            color: Theme.bg
+            opacity: appController.bgLayerOpacity
+            z: -1
+        }
 
         ColumnLayout {
             anchors.fill: parent

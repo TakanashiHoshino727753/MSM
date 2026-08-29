@@ -200,25 +200,42 @@ public:
         setupTray();
     }
 
-    // 初始化 BGM 播放器：资源缺失时优雅降级（bgmAvailable=false，开关无效）
+    // 初始化 BGM 播放器：资源缺失时优雅降级（bgmAvailable=false，开关无效）。
+    // 资源优先级：用户在设置里从电脑选中的文件（复制到 backgroundmusic/bgm.<ext>）>
+    // exe 同目录 bgm.mp3 > qrc:/audio/bgm.mp3。这样用户无需把文件丢进程序目录。
     void setupBgm()
     {
         m_bgm = new QMediaPlayer(this);
         m_bgm->setAudioOutput(new QAudioOutput(this));
         m_bgm->setLoops(QMediaPlayer::Infinite);
-        // 优先级：exe 同目录 bgm.mp3 > qrc:/audio/bgm.mp3；用户可直接丢文件到 exe 目录启用
+        // m_sc 可能尚未设置（构造期早于 setSettingsController），用 QSettings 兜底读取 bgm 路径
+        const QString bgmPath = m_sc ? m_sc->bgmPath()
+                                     : QSettings().value(QStringLiteral("app/bgmPath")).toString();
+        const QString skinBgm = SettingsController::bgmDir() + QLatin1Char('/') + bgmPath;
         const QString local = QCoreApplication::applicationDirPath() + QStringLiteral("/bgm.mp3");
-        if (QFile::exists(local)) {
-            m_bgm->setSource(QUrl::fromLocalFile(local));
-            m_bgmAvailable = true;
+        QString src;
+        if (!bgmPath.isEmpty() && QFile::exists(skinBgm)) {
+            src = skinBgm;
+        } else if (QFile::exists(local)) {
+            src = local;
         } else if (QFile::exists(QStringLiteral(":/audio/bgm.mp3"))) {
-            m_bgm->setSource(QUrl(QStringLiteral("qrc:/audio/bgm.mp3")));
+            src = QStringLiteral("qrc:/audio/bgm.mp3");
+        }
+        if (!src.isEmpty()) {
+            m_bgm->setSource(QUrl::fromLocalFile(src));
             m_bgmAvailable = true;
         } else {
             m_bgmAvailable = false;
         }
-        QSettings s;
-        m_bgmEnabled = s.value(QStringLiteral("ui/bgm"), false).toBool();
+        // 开关与音量统一从 SettingsController 读取（app/bgmEnabled、app/bgmVolume）
+        if (m_sc) {
+            m_bgmEnabled = m_sc->bgmEnabled();
+            if (m_bgm->audioOutput())
+                m_bgm->audioOutput()->setVolume(m_sc->bgmVolume());
+        } else {
+            QSettings s;
+            m_bgmEnabled = s.value(QStringLiteral("ui/bgm"), false).toBool();
+        }
         if (m_bgmEnabled && m_bgmAvailable)
             m_bgm->play();
     }
@@ -346,6 +363,11 @@ public:
 signals:
     void themeApplied(bool dark, const QColor &accent);
     void bgmEnabledChanged();
+    void bgmVolumeChanged();
+    void bgImagePathChanged();
+    void bgScrimOpacityChanged();
+    void uiTransparencyChanged();
+    void bgLayerOpacityChanged();
 
 public slots:
     void showMainWindow()            { showUnique(QStringLiteral("MainWindow")); }
@@ -389,12 +411,37 @@ public:
     Q_PROPERTY(QString appVersion READ appVersion CONSTANT)
     QString appVersion() const;
 
-    // 背景音乐（BGM）开关：持久化到 QSettings，启用且资源存在时循环播放
+    // 背景音乐（BGM）开关/音量：资源为用户在设置里从电脑选中的文件（复制到 skinDir/bgm），
+    // 回退到 exe 同目录 bgm.mp3 或 qrc:/audio/bgm.mp3。启用且资源存在时循环播放。
     Q_PROPERTY(bool bgmEnabled READ bgmEnabled NOTIFY bgmEnabledChanged)
     Q_PROPERTY(bool bgmAvailable READ bgmAvailable CONSTANT)
+    Q_PROPERTY(double bgmVolume READ bgmVolume WRITE setBgmVolume NOTIFY bgmVolumeChanged)
     bool bgmEnabled() const;
     bool bgmAvailable() const;
+    double bgmVolume() const;
     Q_INVOKABLE void setBgmEnabled(bool on);
+    Q_INVOKABLE void setBgmVolume(double v);
+    // 背景图在背景图目录下的绝对路径，供 QML 直接绑定（空字符串表示未设置）。
+    // NOTIFY bgImagePathChanged 让选择新图后 MainWindow 的背景层自动刷新。
+    Q_PROPERTY(QString bgImageFullPath READ bgImageFullPath NOTIFY bgImagePathChanged)
+    QString bgImageFullPath() const;
+    // 背景图是否可用（已启用且路径非空）——QML 据此显示背景层与压暗遮罩。
+    Q_PROPERTY(bool bgImageVisible READ bgImageVisible NOTIFY bgImagePathChanged)
+    bool bgImageVisible() const;
+    // 背景图压暗强度（0~1），越大图片越暗、控件越清晰；用户可在设置里调节，持久化。
+    Q_PROPERTY(double bgScrimOpacity READ bgScrimOpacity WRITE setBgScrimOpacity NOTIFY bgScrimOpacityChanged)
+    double bgScrimOpacity() const;
+    Q_INVOKABLE void setBgScrimOpacity(double v);
+    // 界面透明度（0~1）：统一控制所有半透明控件（侧边栏背景、主区域容器、卡片、页签条等）
+    // 从各自最小值到不透明的等比例映射。1=完全不透明，0=各自最小值（最透）。持久化。
+    Q_PROPERTY(double uiTransparency READ uiTransparency WRITE setUiTransparency NOTIFY uiTransparencyChanged)
+    double uiTransparency() const;
+    Q_INVOKABLE void setUiTransparency(double v);
+    // 区域底色透明度（0~1）：控制主区域底色与侧边栏底色。主区域从 0（全透）到 1；
+    // 侧边栏从 0.2（起始）等比例到 1，始终为主区域的同斜率偏移，二者等比联动。持久化。
+    Q_PROPERTY(double bgLayerOpacity READ bgLayerOpacity WRITE setBgLayerOpacity NOTIFY bgLayerOpacityChanged)
+    double bgLayerOpacity() const;
+    Q_INVOKABLE void setBgLayerOpacity(double v);
 
 
     void closeAllWindows()
@@ -461,7 +508,41 @@ private:
     bool m_bgmAvailable = false;
 
 public:
-    void setSettingsController(SettingsController *sc) { m_sc = sc; }
+    void setSettingsController(SettingsController *sc) {
+        m_sc = sc;
+        // m_sc 就绪后再建立转发：背景图路径/开关变化 → 通知 QML 刷新背景层
+        // （不能放构造函数，那时 m_sc 还是 nullptr，connect 不会建立 → 选图/开关不实时刷新，需重启才生效）
+        if (m_sc) {
+            connect(m_sc, &SettingsController::bgImagePathChanged,
+                    this, &AppController::bgImagePathChanged);
+            connect(m_sc, &SettingsController::bgEnabledChanged,
+                    this, &AppController::bgImagePathChanged);
+        }
+        // m_sc 就绪后按真实设置刷新 BGM 源/音量/开关（构造期 setupBgm 用的是 QSettings 兜底值）
+        if (m_sc && m_bgm) {
+            const QString bgmPath = m_sc->bgmPath();
+            const QString skinBgm = SettingsController::bgmDir() + QLatin1Char('/') + bgmPath;
+            const QString local = QCoreApplication::applicationDirPath() + QStringLiteral("/bgm.mp3");
+            QString src;
+            if (!bgmPath.isEmpty() && QFile::exists(skinBgm))
+                src = skinBgm;
+            else if (QFile::exists(local))
+                src = local;
+            else if (QFile::exists(QStringLiteral(":/audio/bgm.mp3")))
+                src = QStringLiteral("qrc:/audio/bgm.mp3");
+            if (!src.isEmpty()) {
+                m_bgm->setSource(QUrl::fromLocalFile(src));
+                m_bgmAvailable = true;
+            } else {
+                m_bgmAvailable = false;
+            }
+            m_bgmEnabled = m_sc->bgmEnabled();
+            if (m_bgm->audioOutput())
+                m_bgm->audioOutput()->setVolume(m_sc->bgmVolume());
+            if (m_bgmEnabled && m_bgmAvailable)
+                m_bgm->play();
+        }
+    }
 
 private:
     void loadDict()
@@ -554,16 +635,97 @@ bool AppController::bgmEnabled() const { return m_bgmEnabled; }
 
 bool AppController::bgmAvailable() const { return m_bgmAvailable; }
 
+double AppController::bgmVolume() const
+{
+    return m_bgm && m_bgm->audioOutput() ? m_bgm->audioOutput()->volume() : 0.5;
+}
+
 void AppController::setBgmEnabled(bool on)
 {
     m_bgmEnabled = on;
-    QSettings s;
-    s.setValue(QStringLiteral("ui/bgm"), on);
+    if (m_sc)
+        m_sc->setBgmEnabled(on);   // 持久化到 app/bgmEnabled
+    else {
+        QSettings s;
+        s.setValue(QStringLiteral("ui/bgm"), on);
+    }
     if (on && m_bgmAvailable && m_bgm)
         m_bgm->play();
     else if (m_bgm)
         m_bgm->stop();
     emit bgmEnabledChanged();
+}
+
+void AppController::setBgmVolume(double v)
+{
+    const double n = qBound(0.0, v, 1.0);
+    if (m_bgm && m_bgm->audioOutput())
+        m_bgm->audioOutput()->setVolume(n);
+    if (m_sc)
+        m_sc->setBgmVolume(n);
+    emit bgmVolumeChanged();
+}
+
+// 背景图在背景图目录下的绝对路径；未设置时返回空串（QML 据此隐藏背景层）
+QString AppController::bgImageFullPath() const
+{
+    if (!m_sc || !m_sc->bgEnabled())
+        return QString();
+    const QString rel = m_sc->bgImagePath();
+    if (rel.isEmpty())
+        return QString();
+    const QString full = SettingsController::bgImageDir() + QLatin1Char('/') + rel;
+    // QML Image 需要 file:// URL，否则 Windows 本地路径 "d:/..." 会被当成协议 "d" 而加载失败
+    return QUrl::fromLocalFile(full).toString();
+}
+
+bool AppController::bgImageVisible() const
+{
+    return !bgImageFullPath().isEmpty();
+}
+
+double AppController::bgScrimOpacity() const
+{
+    QSettings s;
+    // 默认 0.45：既能看清图片，又保证控件可读
+    return s.value(QStringLiteral("bg/scrimOpacity"), 0.45).toDouble();
+}
+
+void AppController::setBgScrimOpacity(double v)
+{
+    v = qBound(0.0, v, 1.0);
+    QSettings s;
+    s.setValue(QStringLiteral("bg/scrimOpacity"), v);
+    emit bgScrimOpacityChanged();
+}
+
+double AppController::uiTransparency() const
+{
+    QSettings s;
+    // 默认 1.0：完全不透明（各控件各自最小值在 QML 侧映射）
+    return s.value(QStringLiteral("ui/transparency"), 1.0).toDouble();
+}
+
+void AppController::setUiTransparency(double v)
+{
+    v = qBound(0.0, v, 1.0);
+    QSettings s;
+    s.setValue(QStringLiteral("ui/transparency"), v);
+    emit uiTransparencyChanged();
+}
+
+double AppController::bgLayerOpacity() const
+{
+    QSettings s;
+    return s.value(QStringLiteral("ui/bgLayerOpacity"), 1.0).toDouble();
+}
+
+void AppController::setBgLayerOpacity(double v)
+{
+    v = qBound(0.0, v, 1.0);
+    QSettings s;
+    s.setValue(QStringLiteral("ui/bgLayerOpacity"), v);
+    emit bgLayerOpacityChanged();
 }
 
 void AppController::setTheme(bool dark, const QColor &accent)
@@ -838,10 +1000,7 @@ int main(int argc, char *argv[])
     botController.setNonebotDir(settingsController.nonebotDir());
     botController.setUsageInterval(settingsController.botUsageInterval());
     botController.setBotLinkedStart(settingsController.botLinkedStart());   // 联动启动开关（默认关闭）
-    qDebug() << "[APP] before setBotEnabled; linkedStart=" << settingsController.botLinkedStart()
-             << "botEnabled=" << settingsController.botEnabled();
     botController.setBotEnabled(settingsController.botEnabled());
-    qDebug() << "[APP] after setBotEnabled";
     QObject::connect(&settingsController, &SettingsController::botEnabledChanged,
                      &botController, [&]() { botController.setBotEnabled(settingsController.botEnabled()); });
     QObject::connect(&settingsController, &SettingsController::napcatPathChanged,

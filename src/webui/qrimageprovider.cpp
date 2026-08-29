@@ -22,15 +22,16 @@ QImage QrImageProvider::requestImage(const QString &id, QSize *size, const QSize
         return QImage();
 
     QJSEngine eng;
-    eng.evaluate(QLatin1String(QRCODE_JS));
-    if (eng.hasError())
-        return QImage();
-
     eng.globalObject().setProperty("__qrdata", data);
-    // typeNumber=0 让库自动选择最小可用版本；纠错级别 M
+    // 注意：必须把「加载 QRCODE_JS 库」和「调用生成」放在同一次 evaluate 中。
+    // QJSEngine 每次 evaluate 的顶层 var 作用域相互隔离，分两次 evaluate 会导致第二次
+    // 找不到第一次定义的 qrcode 全局对象，从而 evaluate 报错、返回空图。
+    // 该 qrcode-generator 版本不支持 typeNumber=0 自动选版本，故固定用版本 10（纠错 M，
+    // 容量 ~270 字节，足以容纳配对 URI）。
     const QString js = QStringLiteral(
         "(function(){"
-        "  var qr = qrcode(0, 'M');"
+        "%1"
+        "  var qr = qrcode(10, 'M');"
         "  qr.addData(__qrdata);"
         "  qr.make();"
         "  var n = qr.getModuleCount();"
@@ -41,10 +42,13 @@ QImage QrImageProvider::requestImage(const QString &id, QSize *size, const QSize
         "    rows.push(row);"
         "  }"
         "  return JSON.stringify({ n: n, rows: rows });"
-        "})()");
+        "})()")
+        .arg(QLatin1String(QRCODE_JS));
     QJSValue res = eng.evaluate(js);
-    if (res.isError())
+    if (res.isError()) {
+        qWarning() << "[QrImageProvider] evaluate error:" << res.toString();
         return QImage();
+    }
 
     const QJsonObject obj = QJsonDocument::fromJson(res.toString().toUtf8()).object();
     const int n = obj.value(QStringLiteral("n")).toInt();

@@ -82,11 +82,18 @@ ApplicationWindow {
         return (it && it.objectName === "ServerPageRoot") ? it : null
     }
 
+    // 背景图层（全窗口最底层，自带圆角裁剪）：所有窗口复用
+    BackgroundLayer {
+        id: bgLayer
+        radius: window.visibility === Window.Maximized ? 0 : Theme.radius
+    }
+
     Rectangle {
         id: frame
         anchors.fill: parent
         radius: window.visibility === Window.Maximized ? 0 : Theme.radius
-        color: Theme.bg
+        // 未启用背景图时用主题底色（否则全透明看不见）；启用时透明让背景图透出
+        color: appController.bgImageVisible ? "transparent" : Theme.bg
         border.width: 0
         clip: true
 
@@ -152,35 +159,39 @@ ApplicationWindow {
     SideBar {
         id: sideBar
         anchors { top: titleBar.bottom; bottom: frame.bottom; left: frame.left }
-        z: 0
+        z: 3   // 在背景图(z:0)/遮罩(z:1)之上
         onDownloadClicked: appController.openDownloadCenter()
         onSettingsClicked: appController.openControllerSettings()
     }
 
-    // 主区域：锚到侧边栏右缘，仅左侧有一条分隔线，其余无边框
+    // 主区域底色层（受区域底色透明度控制，0=全透；不属于"控件"，不受界面控件透明度影响）
+    Rectangle {
+        anchors { top: titleBar.bottom; left: sideBar.right; right: parent.right; bottom: parent.bottom }
+        color: "transparent"
+        bottomRightRadius: window.visibility === Window.Maximized ? 0 : Theme.radius
+        // 主区域底色渐变：bgLayerOpacity 控制
+        Rectangle {
+            anchors.fill: parent
+            bottomRightRadius: parent.bottomRightRadius
+            gradient: Gradient {
+                orientation: Gradient.Vertical
+                GradientStop { position: 0.0; color: Theme.accent; }
+                GradientStop { position: 0.18; color: Theme.accentSoft; }
+            }
+            opacity: appController.bgLayerOpacity
+        }
+    }
+    // 主区域左侧分隔线（底色，不受控件透明度影响）
+    Rectangle {
+        width: 1; anchors { top: titleBar.bottom; bottom: frame.bottom; left: sideBar.right }
+        color: Theme.border; opacity: 0.4
+    }
+
+    // 主区域控件容器：所有文字/按钮/页签/各页面（服务器详情、代理聚合、异常纠错）整体受界面控件透明度控制
     Item {
         anchors { top: titleBar.bottom; left: sideBar.right; right: parent.right; bottom: parent.bottom }
-        // 内容区整体底色（页签条 + 下方区域）明显跟随主色调，与标题栏/侧边栏同色系
-        Rectangle {
-            anchors.fill: parent; color: Theme.accentSoft
-            // 右下角跟随窗口圆角（frame 的 clip 不会裁剪子项的圆角，需在此单独设置）
-            bottomRightRadius: window.visibility === Window.Maximized ? 0 : Theme.radius
-            // 顶部渐变高光：让主区域更有层次（背景美化）
-            Rectangle {
-                anchors.fill: parent
-                bottomRightRadius: parent.bottomRightRadius
-                gradient: Gradient {
-                    orientation: Gradient.Vertical
-                    GradientStop { position: 0.0; color: Theme.accent; }
-                    GradientStop { position: 0.18; color: Theme.accentSoft; }
-                }
-                opacity: 0.18
-            }
-        }
-        Rectangle {
-            width: 1; anchors.left: parent.left; color: Theme.border
-            anchors { top: parent.top; bottom: parent.bottom }
-        }
+        z: 2   // 在背景图(z:0)/遮罩(z:1)之上，位于顶层控件层
+        opacity: appController.uiTransparency   // 全局控件透明度：扫描全部文字与控件
 
         ColumnLayout {
             // 内部整体留出左右内边距，避开左侧分隔线（否则页签与内容贴着左边线很难看）
@@ -188,7 +199,7 @@ ApplicationWindow {
             TabBar {
                 id: tabBar
                 spacing: 0                              // 去掉按键间距
-                // 整条页签条用淡主色染色（圆角与按键外圆角对齐）
+                // 整条页签条用淡主色染色（圆角与按键外圆角对齐）；透明度由父容器 uiTransparency 统一控制
                 background: Rectangle { color: Theme.accentSoft; radius: Theme.radius }
                 // 服务器总览那一组：选中态底色用主色调，文字跟随深浅色（Theme.text）
                 TabButton {

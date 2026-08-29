@@ -12,6 +12,7 @@ Popup {
     margins: 0
     modal: false
     focus: true
+    opacity: appController.uiTransparency   // 下载面板整体受界面控件透明度控制
 
     x: (parent ? parent.width - width - 12 : 0)
     y: 52
@@ -21,13 +22,14 @@ Popup {
         radius: Theme.radius
         border.color: Theme.border
         border.width: 1
+        opacity: appController.bgLayerOpacity   // 受区域底色透明度控制（与主窗口一致）
     }
 
-    // 用不透明 Rectangle 作为面板内容底色：部分平台/合成器下 Popup 的 background 可能未被绘制，
-    // 导致头部（透明）直接透出后面窗口。这里让内容自身不透明，确保各平台都不透。
+    // 内容底色也受区域底色透明度控制，透出背景图
     Rectangle {
         anchors.fill: parent
         color: Theme.panel
+        opacity: appController.bgLayerOpacity
         radius: Theme.radius
 
         ColumnLayout {

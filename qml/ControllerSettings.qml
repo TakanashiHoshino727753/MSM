@@ -61,21 +61,34 @@ ApplicationWindow {
         enterAnim.start()
     }
 
-    // 背景：纯色 + 轻微主色染色，避免依赖外部图片资源
+    // 背景图层（全窗口最底层，自带圆角裁剪）：所有窗口复用
+    BackgroundLayer {
+        radius: window.visibility === Window.Maximized ? 0 : Theme.radius
+    }
+
+    // 背景：透明 + 轻微主色染色，背景图透过显示（避免依赖外部图片资源）
     // 注意：clip 只按矩形裁剪，铺满的子 Rectangle 必须自带圆角，否则会盖掉窗口圆角
     Rectangle {
         id: frame
         anchors.fill: parent
         radius: window.visibility === Window.Maximized ? 0 : Theme.radius
-        color: Theme.bg
+        color: "transparent"   // 透明：BackgroundLayer 背景图透出
+        opacity: appController.uiTransparency   // 整体受界面控件透明度控制
         clip: true
-        // 入场滑动动画：从右侧滑入 + 淡入（挂在内层 frame 上，Window 本身不支持 transform）
+        // 入场滑动动画：从右侧滑入（挂在内层 frame 上，Window 本身不支持 transform；opacity 由 uiTransparency 绑定控制，避免冲突）
         x: 60
-        opacity: 0
         ParallelAnimation {
             id: enterAnim
             NumberAnimation { target: frame; property: "x"; from: 60; to: 0; duration: 220; easing.type: Easing.OutCubic }
-            NumberAnimation { target: frame; property: "opacity"; from: 0; to: 1; duration: 220; easing.type: Easing.OutCubic }
+        }
+
+        // 区域底色层：受区域底色透明度控制（0=全透，1=不透明），与主窗口主区域一致
+        Rectangle {
+            anchors.fill: parent
+            radius: frame.radius
+            color: Theme.bg
+            opacity: appController.bgLayerOpacity
+            z: -1
         }
 
         Rectangle {
@@ -102,17 +115,26 @@ ApplicationWindow {
             Layout.fillHeight: true
             spacing: 0
 
-            // 左侧设置导航（与侧边栏同色系，弱化分类说明）
+            // 左侧设置导航（与侧边栏同色系，弱化分类说明）：底色受区域底色透明度（1.1倍/0.2下限），控件受界面控件透明度
             Rectangle {
                 Layout.preferredWidth: 200
                 Layout.fillHeight: true
-                color: Theme.panel
+                color: "transparent"
                 // 左下角跟随窗口圆角（frame 的 clip 不会裁剪子项的圆角，需在此单独设置）
                 bottomLeftRadius: window.visibility === Window.Maximized ? 0 : Theme.radius
+                // 导航底色层：受区域底色透明度控制，为主区域底色的约 1.1 倍（0.2 起步，上限 1）
+                Rectangle {
+                    anchors.fill: parent
+                    color: Theme.panel
+                    opacity: Math.min(1.0, 0.2 + appController.bgLayerOpacity * 1.1)
+                    bottomLeftRadius: parent.bottomLeftRadius
+                    z: -1
+                }
                     ColumnLayout {
                         anchors.fill: parent
                         anchors.margins: 12
                         spacing: 4
+                        opacity: appController.uiTransparency   // 导航内所有控件/文字受界面控件透明度控制
                         Label { text: I18n.t("设置分类", I18n.lang); color: Theme.textMuted; font.bold: true; font.pixelSize: 11 }
 
                         Button {
@@ -298,7 +320,66 @@ ApplicationWindow {
                                     }
                                 }
                             }
-                            // 背景音乐（BGM）：启用后循环播放 exe 同目录的 bgm.mp3（缺失则开关旁提示不可用）
+                            // —— 个性化：背景图 + 背景音乐（用户从电脑选文件，MSM 复制到 skin 目录）——
+                            Label { text: I18n.t("个性化", I18n.lang); color: Theme.text; font.bold: true; font.pixelSize: 15 }
+
+                            // 背景图
+                            RowLayout {
+                                Layout.fillWidth: true
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 2
+                                    Label { text: I18n.t("背景图", I18n.lang); color: Theme.text }
+                                    Label {
+                                        text: settingsController.bgImagePath
+                                              ? I18n.t("已选择，将随 MSM 复制到皮肤目录", I18n.lang)
+                                              : I18n.t("未设置（点击右侧选择电脑中的图片）", I18n.lang)
+                                        color: Theme.textMuted; font.pixelSize: 11
+                                        wrapMode: Text.Wrap
+                                    }
+                                }
+                                Button {
+                                    text: I18n.t("选择图片", I18n.lang)
+                                    onClicked: bgImageDialog.open()
+                                }
+                                Button {
+                                    text: I18n.t("清除", I18n.lang)
+                                    enabled: settingsController.bgImagePath
+                                    onClicked: { settingsController.clearSkinImage(); settingsController.apply() }
+                                }
+                                Switch {
+                                    checked: settingsController.bgEnabled
+                                    enabled: settingsController.bgImagePath
+                                    onToggled: { settingsController.bgEnabled = checked; settingsController.apply() }
+                                }
+                            }
+
+                            // 滑块1：界面控件透明度——控制所有控件（卡片/页签条/侧边栏按钮与文字图表等），最小值 0（全透）
+                            Slider {
+                                Layout.fillWidth: true
+                                from: 0; to: 1; stepSize: 0.05
+                                value: appController.uiTransparency
+                                onMoved: appController.setUiTransparency(value)
+                            }
+                            Label {
+                                text: I18n.t("界面控件透明度（向右更不透明，向左全透明；标题栏不受影响）", I18n.lang)
+                                color: Theme.textMuted; font.pixelSize: 11
+                            }
+
+                            // 滑块2：区域底色透明度——控制主区域与侧边栏底色。
+                            // 主区域从 0（全透）到 1；侧边栏从 0.2 起始等比例到 1（二者同斜率偏移，等比联动）。
+                            Slider {
+                                Layout.fillWidth: true
+                                from: 0; to: 1; stepSize: 0.05
+                                value: appController.bgLayerOpacity
+                                onMoved: appController.setBgLayerOpacity(value)
+                            }
+                            Label {
+                                text: I18n.t("区域底色透明度（主区域 0→不透明；侧边栏约 1.1 倍、0.2 起始）", I18n.lang)
+                                color: Theme.textMuted; font.pixelSize: 11
+                            }
+
+                            // 背景音乐
                             RowLayout {
                                 Layout.fillWidth: true
                                 ColumnLayout {
@@ -306,16 +387,55 @@ ApplicationWindow {
                                     spacing: 2
                                     Label { text: I18n.t("背景音乐", I18n.lang); color: Theme.text }
                                     Label {
-                                        visible: !appController.bgmAvailable
-                                        text: I18n.t("（将 bgm.mp3 放入程序目录即可启用）", I18n.lang)
+                                        text: settingsController.bgmPath
+                                              ? I18n.t("已选择，将随 MSM 复制到皮肤目录", I18n.lang)
+                                              : I18n.t("未设置（点击右侧选择电脑中的音频文件）", I18n.lang)
                                         color: Theme.textMuted; font.pixelSize: 11
+                                        wrapMode: Text.Wrap
                                     }
                                 }
+                                Button {
+                                    text: I18n.t("选择音乐", I18n.lang)
+                                    onClicked: bgMusicDialog.open()
+                                }
+                                Button {
+                                    text: I18n.t("清除", I18n.lang)
+                                    enabled: settingsController.bgmPath
+                                    onClicked: { settingsController.clearSkinMusic(); settingsController.apply() }
+                                }
                                 Switch {
-                                    id: bgmToggle
                                     checked: appController.bgmEnabled
                                     enabled: appController.bgmAvailable
-                                    onToggled: appController.setBgmEnabled(bgmToggle.checked)
+                                    onToggled: appController.setBgmEnabled(checked)
+                                }
+                            }
+
+                            // 背景音乐音量
+                            Slider {
+                                Layout.fillWidth: true
+                                from: 0; to: 1; stepSize: 0.05
+                                value: appController.bgmVolume
+                                onMoved: appController.setBgmVolume(value)
+                            }
+
+                            FileDialog {
+                                id: bgImageDialog
+                                title: I18n.t("选择背景图片", I18n.lang)
+                                nameFilters: ["图片 (*.png *.jpg *.jpeg *.bmp *.webp)"]
+                                fileMode: FileDialog.OpenFile
+                                onAccepted: {
+                                    if (settingsController.importSkinImage(bgImageDialog.selectedFile))
+                                        settingsController.apply()
+                                }
+                            }
+                            FileDialog {
+                                id: bgMusicDialog
+                                title: I18n.t("选择背景音乐", I18n.lang)
+                                nameFilters: ["音频 (*.mp3 *.ogg *.wav *.flac *.m4a)"]
+                                fileMode: FileDialog.OpenFile
+                                onAccepted: {
+                                    if (settingsController.importSkinMusic(bgMusicDialog.selectedFile))
+                                        settingsController.apply()
                                 }
                             }
                         }
