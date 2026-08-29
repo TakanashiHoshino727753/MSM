@@ -17,6 +17,8 @@ Item {
         color: "transparent"
         radius: root.radius
         clip: true
+        // clip 默认按矩形裁剪，圆角需启用 layer 才会作为遮罩生效（否则图片四角方）
+        layer.enabled: true
 
         Image {
             id: bgImage
