@@ -150,6 +150,8 @@ ApplicationWindow {
         color: "transparent"   // 透明：BackgroundLayer 背景图透出
         opacity: appController.uiTransparency   // 整体受界面控件透明度控制（含内嵌标题栏）
         clip: true
+        // 开启 layer：frame 内方角子项按圆角裁剪，避免盖住背景图圆角四角
+        layer.enabled: true
         x: 0
 
         // 区域底色层：受区域底色透明度控制（0=全透，1=不透明），与主窗口主区域一致

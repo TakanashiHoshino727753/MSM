@@ -159,6 +159,8 @@ ApplicationWindow {
         color: "transparent"   // 透明：BackgroundLayer 背景图透出
         opacity: appController.uiTransparency
         clip: true
+        // 开启 layer：frame 内方角子项按圆角裁剪，避免盖住背景图圆角四角
+        layer.enabled: true
         // 入场滑动动画：从右侧滑入（opacity 由 uiTransparency 绑定控制，避免冲突）
         x: 60
         ParallelAnimation {

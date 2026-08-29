@@ -96,6 +96,9 @@ ApplicationWindow {
         color: appController.bgImageVisible ? "transparent" : Theme.bg
         border.width: 0
         clip: true
+        // 开启 layer：让 frame 内所有子项（侧边栏背景/主区域底色等方角矩形）按圆角裁剪，
+        // 否则它们会盖住底层背景图的圆角四角，导致开启背景图后四角变方
+        layer.enabled: true
 
         TitleBar {
             id: titleBar
