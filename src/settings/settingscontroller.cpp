@@ -74,6 +74,12 @@ SettingsController::SettingsController(QObject *parent) : QObject(parent)
     // 开关控制是否启用。首次运行均关闭。
     m_bgEnabled = s.value(QStringLiteral("app/bgEnabled"), false).toBool();
     m_bgImagePath = s.value(QStringLiteral("app/bgImage")).toString();
+    // 壁纸轮换（bg/ 命名空间，独立于 app/ 以兼容旧的单图设置）
+    m_bgImageFolder = s.value(QStringLiteral("bg/folder")).toString();
+    m_bgImageList = s.value(QStringLiteral("bg/list")).toStringList();
+    m_bgImageMode = s.value(QStringLiteral("bg/mode"), QStringLiteral("sequential")).toString();
+    m_bgImageInterval = s.value(QStringLiteral("bg/interval"), 10).toInt();
+    m_bgImageIndex = s.value(QStringLiteral("bg/index"), 0).toInt();
     m_bgmEnabled = s.value(QStringLiteral("app/bgmEnabled"), false).toBool();
     m_bgmPath = s.value(QStringLiteral("app/bgmPath")).toString();
     m_bgmVolume = s.value(QStringLiteral("app/bgmVolume"), 0.5).toDouble();
@@ -269,6 +275,7 @@ void SettingsController::apply()
         "app/webhookEnabled", "app/webhookCrash", "app/webhookState",
         "app/webhookPlayer", "app/bgEnabled", "app/bgImage", "app/bgmEnabled",
         "app/bgmPath", "app/bgmVolume",
+        "bg/folder", "bg/list", "bg/mode", "bg/interval", "bg/index",
     };
     const QVariant vals[] = {
         m_language, m_webui, m_webuiPort, m_webuiToken, m_webuiExposeLan,
@@ -277,6 +284,8 @@ void SettingsController::apply()
         m_webhookUrl, m_webhookType, m_webhookEnabled, m_webhookCrash,
         m_webhookState, m_webhookPlayer, m_bgEnabled, m_bgImagePath,
         m_bgmEnabled, m_bgmPath, m_bgmVolume,
+        m_bgImageFolder, QVariant::fromValue(m_bgImageList), m_bgImageMode,
+        m_bgImageInterval, m_bgImageIndex,
     };
     static_assert(sizeof(keys) / sizeof(*keys) == sizeof(vals) / sizeof(*vals),
                   "settings key/value count mismatch");
@@ -392,4 +401,114 @@ void SettingsController::clearSkinMusic()
         QFile::remove(fallback);
     m_bgmPath.clear();
     emit bgmPathChanged();
+}
+
+// ---------- 壁纸轮换 ----------
+
+static QStringList scanImageFiles(const QString &folder)
+{
+    QStringList out;
+    if (folder.isEmpty() || !QFile::exists(folder))
+        return out;
+    static const QStringList exts = {QStringLiteral("*.png"), QStringLiteral("*.jpg"),
+                                     QStringLiteral("*.jpeg"), QStringLiteral("*.bmp"),
+                                     QStringLiteral("*.webp"), QStringLiteral("*.gif")};
+    QDir dir(folder);
+    for (const QString &e : exts) {
+        const QStringList files = dir.entryList(QStringList() << e, QDir::Files, QDir::Name);
+        for (const QString &f : files)
+            out.append(QDir::cleanPath(dir.absoluteFilePath(f)));
+    }
+    return out;
+}
+
+void SettingsController::setBgImageFolder(const QString &v)
+{
+    const QString folder = stripFileUrl(v);
+    if (m_bgImageFolder != folder) {
+        m_bgImageFolder = folder;
+        emit bgImageFolderChanged();
+    }
+    const QStringList list = scanImageFiles(folder);
+    if (m_bgImageList != list) {
+        m_bgImageList = list;
+        emit bgImageListChanged();
+    }
+    m_bgImageIndex = 0;
+    emit bgImageIndexChanged();
+    if (!list.isEmpty())
+        setBgEnabled(true);
+}
+
+void SettingsController::addBgImages(const QStringList &files)
+{
+    bool changed = false;
+    for (const QString &f : files) {
+        const QString p = stripFileUrl(f);
+        if (p.isEmpty() || !QFile::exists(p))
+            continue;
+        const QString clean = QDir::cleanPath(p);
+        if (!m_bgImageList.contains(clean)) {
+            m_bgImageList.append(clean);
+            changed = true;
+        }
+    }
+    if (changed) {
+        emit bgImageListChanged();
+        setBgEnabled(true);
+    }
+}
+
+void SettingsController::removeBgImage(int index)
+{
+    if (index < 0 || index >= m_bgImageList.size())
+        return;
+    m_bgImageList.removeAt(index);
+    if (m_bgImageIndex >= m_bgImageList.size())
+        m_bgImageIndex = qMax(0, m_bgImageList.size() - 1);
+    emit bgImageListChanged();
+    emit bgImageIndexChanged();
+    if (m_bgImageList.isEmpty())
+        setBgEnabled(false);
+}
+
+void SettingsController::moveBgImage(int from, int to)
+{
+    if (from < 0 || from >= m_bgImageList.size() || to < 0 || to >= m_bgImageList.size() || from == to)
+        return;
+    // 移动后保持“当前播放项”指向同一张图：记录当前文件路径，移动后重新定位
+    const QString cur = (m_bgImageIndex >= 0 && m_bgImageIndex < m_bgImageList.size())
+                            ? m_bgImageList.at(m_bgImageIndex) : QString();
+    m_bgImageList.move(from, to);
+    if (!cur.isEmpty())
+        m_bgImageIndex = m_bgImageList.indexOf(cur);
+    emit bgImageListChanged();
+    emit bgImageIndexChanged();
+}
+
+void SettingsController::clearBgImages()
+{
+    m_bgImageFolder.clear();
+    m_bgImageList.clear();
+    m_bgImageIndex = 0;
+    emit bgImageFolderChanged();
+    emit bgImageListChanged();
+    emit bgImageIndexChanged();
+    setBgEnabled(false);
+}
+
+void SettingsController::setBgImageMode(const QString &v)
+{
+    if (m_bgImageMode != v) { m_bgImageMode = v; emit bgImageModeChanged(); }
+}
+void SettingsController::setBgImageInterval(int v)
+{
+    const int n = qBound(1, v, 1440);
+    if (m_bgImageInterval != n) { m_bgImageInterval = n; emit bgImageIntervalChanged(); }
+}
+void SettingsController::setBgImageIndex(int v)
+{
+    if (m_bgImageList.isEmpty()) { m_bgImageIndex = 0; return; }
+    const int n = qBound(0, v, m_bgImageList.size() - 1);
+    if (m_bgImageIndex != n) { m_bgImageIndex = n; emit bgImageIndexChanged(); }
 }

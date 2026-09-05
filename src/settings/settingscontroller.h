@@ -1,6 +1,7 @@
 #pragma once
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QDir>
@@ -53,6 +54,13 @@ class SettingsController : public QObject
     Q_PROPERTY(bool bgmEnabled READ bgmEnabled WRITE setBgmEnabled NOTIFY bgmEnabledChanged)
     Q_PROPERTY(QString bgmPath READ bgmPath WRITE setBgmPath NOTIFY bgmPathChanged)
     Q_PROPERTY(double bgmVolume READ bgmVolume WRITE setBgmVolume NOTIFY bgmVolumeChanged)
+
+    // 壁纸轮换：文件夹可包含多张壁纸，支持顺序/随机播放，用户可在程序内调整顺序
+    Q_PROPERTY(QString bgImageFolder READ bgImageFolder WRITE setBgImageFolder NOTIFY bgImageFolderChanged)
+    Q_PROPERTY(QStringList bgImageList READ bgImageList NOTIFY bgImageListChanged)
+    Q_PROPERTY(QString bgImageMode READ bgImageMode WRITE setBgImageMode NOTIFY bgImageModeChanged)   // "sequential" | "random"
+    Q_PROPERTY(int bgImageInterval READ bgImageInterval WRITE setBgImageInterval NOTIFY bgImageIntervalChanged)  // 分钟
+    Q_PROPERTY(int bgImageIndex READ bgImageIndex WRITE setBgImageIndex NOTIFY bgImageIndexChanged)
 
 public:
     explicit SettingsController(QObject *parent = nullptr);
@@ -154,6 +162,21 @@ public:
     double bgmVolume() const { return m_bgmVolume; }
     void setBgmVolume(double v);
 
+    QString bgImageFolder() const { return m_bgImageFolder; }
+    void setBgImageFolder(const QString &v);
+    QStringList bgImageList() const { return m_bgImageList; }
+    QString bgImageMode() const { return m_bgImageMode; }
+    void setBgImageMode(const QString &v);
+    int bgImageInterval() const { return m_bgImageInterval; }
+    void setBgImageInterval(int v);
+    int bgImageIndex() const { return m_bgImageIndex; }
+    void setBgImageIndex(int v);
+    // 添加多张图片到播放列表（folder 模式下也适用）；去重、非空则自动开启背景图
+    Q_INVOKABLE void addBgImages(const QStringList &files);
+    Q_INVOKABLE void removeBgImage(int index);
+    Q_INVOKABLE void moveBgImage(int from, int to);   // 调整播放顺序（用户可在程序内重排）
+    Q_INVOKABLE void clearBgImages();
+
     // 把用户从电脑中选中的背景图/音乐文件复制到 skinDir()（覆盖式），
     // 成功返回 true。QML 通过 FileDialog 拿到本地路径后调用。
     Q_INVOKABLE bool importSkinImage(const QString &srcFile);
@@ -199,6 +222,12 @@ signals:
     void bgmPathChanged();
     void bgmVolumeChanged();
 
+    void bgImageFolderChanged();
+    void bgImageListChanged();
+    void bgImageModeChanged();
+    void bgImageIntervalChanged();
+    void bgImageIndexChanged();
+
 private:
     void loadAutoStart();
     void saveAutoStart();
@@ -233,5 +262,12 @@ private:
     bool m_bgmEnabled = false;
     QString m_bgmPath;
     double m_bgmVolume = 0.5;
+
+    // 壁纸轮换
+    QString m_bgImageFolder;
+    QStringList m_bgImageList;
+    QString m_bgImageMode = QStringLiteral("sequential");
+    int m_bgImageInterval = 10;   // 分钟
+    int m_bgImageIndex = 0;
 
 };

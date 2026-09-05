@@ -6,6 +6,7 @@
 import QtQuick
 import QtQuick.Controls
 import MinecraftServerManager
+import Qt5Compat.GraphicalEffects
 import QtQuick.Window
 import QtQuick.Layouts
 
@@ -82,6 +83,17 @@ ApplicationWindow {
         return (it && it.objectName === "ServerPageRoot") ? it : null
     }
 
+    // 圆角遮罩源：供 frame 的 layer.effect 使用，把 frame 内所有子项（侧边栏背景/主区域底色等
+    // 方角矩形）按圆角裁剪，否则它们会盖住底层背景图的圆角四角，导致开启背景图后四角变方。
+    // 必须置于 frame 之外（非其子孙），否则会参与被遮罩内容导致反馈。
+    Rectangle {
+        id: frameMask
+        anchors.fill: parent
+        radius: window.visibility === Window.Maximized ? 0 : Theme.radius
+        color: "white"
+        visible: false
+    }
+
     // 背景图层（全窗口最底层，自带圆角裁剪）：所有窗口复用
     BackgroundLayer {
         id: bgLayer
@@ -96,9 +108,12 @@ ApplicationWindow {
         color: appController.bgImageVisible ? "transparent" : Theme.bg
         border.width: 0
         clip: true
-        // 开启 layer：让 frame 内所有子项（侧边栏背景/主区域底色等方角矩形）按圆角裁剪，
-        // 否则它们会盖住底层背景图的圆角四角，导致开启背景图后四角变方
-        layer.enabled: true
+        // 用 layer.effect + OpacityMask 把整个 frame（含子项）按圆角矩形遮罩，
+        // 这是裁掉四角方角、保证圆角的关键（clip:true 只裁矩形、layer.enabled 不裁子项）。
+        layer.enabled: radius > 0
+        layer.effect: OpacityMask {
+            maskSource: frameMask
+        }
 
         TitleBar {
             id: titleBar

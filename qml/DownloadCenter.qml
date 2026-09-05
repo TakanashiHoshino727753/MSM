@@ -17,6 +17,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Dialogs
 import MinecraftServerManager
+import Qt5Compat.GraphicalEffects
 
 ApplicationWindow {
     id: window
@@ -136,6 +137,16 @@ ApplicationWindow {
     }
 
     // 背景图层（全窗口最底层，自带圆角裁剪）：所有窗口复用
+    // 圆角遮罩源：供 frame 的 layer.effect 使用，把 frame 内所有子项按圆角裁剪。
+    // 几何必须与 frame 完全一致（位于标题栏之下、圆角在底边），否则遮罩错位。
+    Rectangle {
+        id: frameMask
+        anchors { top: titleBar.bottom; left: parent.left; right: parent.right; bottom: parent.bottom }
+        radius: Theme.radius
+        color: "white"
+        visible: false
+    }
+
     BackgroundLayer {
         radius: window.visibility === Window.Maximized ? 0 : Theme.radius
     }
@@ -159,8 +170,12 @@ ApplicationWindow {
         color: "transparent"   // 透明：BackgroundLayer 背景图透出
         opacity: appController.uiTransparency
         clip: true
-        // 开启 layer：frame 内方角子项按圆角裁剪，避免盖住背景图圆角四角
-        layer.enabled: true
+        // 用 layer.effect + OpacityMask 把整个 frame（含子项）按圆角矩形遮罩，
+        // 这是裁掉四角方角、保证圆角的关键（clip:true 只裁矩形、layer.enabled 不裁子项）。
+        layer.enabled: radius > 0
+        layer.effect: OpacityMask {
+            maskSource: frameMask
+        }
         // 入场滑动动画：从右侧滑入（opacity 由 uiTransparency 绑定控制，避免冲突）
         x: 60
         ParallelAnimation {

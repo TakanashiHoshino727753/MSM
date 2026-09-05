@@ -18,6 +18,7 @@
 #include <QEvent>
 #include <QHash>
 #include <QTimer>
+#include <QRandomGenerator>
 #include <QPalette>
 #include <QStyleFactory>
 #include <QColor>
@@ -198,6 +199,9 @@ public:
         loadDict();  // 先加载翻译字典，供 rebuildTrayMenu 使用
         setupBgm();
         setupTray();
+        m_bgRotTimer = new QTimer(this);
+        m_bgRotTimer->setSingleShot(false);
+        connect(m_bgRotTimer, &QTimer::timeout, this, &AppController::rotateBg);
     }
 
     // 初始化 BGM 播放器：资源缺失时优雅降级（bgmAvailable=false，开关无效）。
@@ -405,6 +409,10 @@ public slots:
     }
     void openControllerSettings()    { showUnique(QStringLiteral("ControllerSettings")); }
     void setTheme(bool dark, const QColor &accent);   // 持久化并应用主题（QML 调用）
+    // 壁纸轮换：定时器触发切下一张；根据模式（顺序/随机）更新当前索引并通知 QML 刷新
+    void rotateBg();
+    // 依据当前设置（开关/列表/模式/间隔）启停轮换定时器；设置变化时调用
+    void refreshBgRotation();
 
 public:
     // 应用版本号（标题栏副标题展示）
@@ -504,6 +512,7 @@ private:
     QHash<QString, QString> m_dict;
     SettingsController *m_sc = nullptr;
     QMediaPlayer *m_bgm = nullptr;
+    QTimer *m_bgRotTimer = nullptr;   // 壁纸轮换定时器
     bool m_bgmEnabled = false;
     bool m_bgmAvailable = false;
 
@@ -517,6 +526,18 @@ public:
                     this, &AppController::bgImagePathChanged);
             connect(m_sc, &SettingsController::bgEnabledChanged,
                     this, &AppController::bgImagePathChanged);
+            // 壁纸轮换：列表/模式/间隔/索引/开关变化都可能影响轮换状态
+            connect(m_sc, &SettingsController::bgImageListChanged,
+                    this, &AppController::refreshBgRotation);
+            connect(m_sc, &SettingsController::bgImageModeChanged,
+                    this, &AppController::refreshBgRotation);
+            connect(m_sc, &SettingsController::bgImageIntervalChanged,
+                    this, &AppController::refreshBgRotation);
+            connect(m_sc, &SettingsController::bgImageIndexChanged,
+                    this, &AppController::refreshBgRotation);
+            connect(m_sc, &SettingsController::bgEnabledChanged,
+                    this, &AppController::refreshBgRotation);
+            refreshBgRotation();
         }
         // m_sc 就绪后按真实设置刷新 BGM 源/音量/开关（构造期 setupBgm 用的是 QSettings 兜底值）
         if (m_sc && m_bgm) {
@@ -671,12 +692,47 @@ QString AppController::bgImageFullPath() const
 {
     if (!m_sc || !m_sc->bgEnabled())
         return QString();
-    const QString rel = m_sc->bgImagePath();
-    if (rel.isEmpty())
+    const QStringList list = m_sc->bgImageList();
+    if (list.isEmpty())
         return QString();
-    const QString full = SettingsController::bgImageDir() + QLatin1Char('/') + rel;
+    const int idx = qBound(0, m_sc->bgImageIndex(), list.size() - 1);
     // QML Image 需要 file:// URL，否则 Windows 本地路径 "d:/..." 会被当成协议 "d" 而加载失败
-    return QUrl::fromLocalFile(full).toString();
+    return QUrl::fromLocalFile(list.at(idx)).toString();
+}
+
+void AppController::refreshBgRotation()
+{
+    if (!m_sc || !m_sc->bgEnabled() || m_sc->bgImageList().size() < 2
+        || m_sc->bgImageMode() == QStringLiteral("off")) {
+        if (m_bgRotTimer)
+            m_bgRotTimer->stop();
+        return;
+    }
+    if (!m_bgRotTimer)
+        return;
+    // 间隔（分钟）转毫秒，至少 1 分钟；切换后若已在运行会平滑重启间隔
+    m_bgRotTimer->setInterval(qMax(1, m_sc->bgImageInterval()) * 60000);
+    m_bgRotTimer->start();
+}
+
+void AppController::rotateBg()
+{
+    if (!m_sc || !m_sc->bgEnabled())
+        return;
+    const QStringList list = m_sc->bgImageList();
+    if (list.size() < 2)
+        return;
+    const int cur = qBound(0, m_sc->bgImageIndex(), list.size() - 1);
+    int next = cur;
+    if (m_sc->bgImageMode() == QStringLiteral("random")) {
+        if (QRandomGenerator::system())
+            do { next = QRandomGenerator::system()->bounded(list.size()); }
+            while (next == cur && list.size() > 1);
+    } else {
+        next = (cur + 1) % list.size();
+    }
+    m_sc->setBgImageIndex(next);
+    emit bgImagePathChanged();   // 通知 BackgroundLayer 刷新当前壁纸
 }
 
 bool AppController::bgImageVisible() const

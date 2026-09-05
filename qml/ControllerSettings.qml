@@ -7,6 +7,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Dialogs
 import MinecraftServerManager
+import Qt5Compat.GraphicalEffects
 
 ApplicationWindow {
     id: window
@@ -61,13 +62,21 @@ ApplicationWindow {
         enterAnim.start()
     }
 
+    // 圆角遮罩源：供 frame 的 layer.effect 使用，把 frame 内所有子项按圆角裁剪
+    Rectangle {
+        id: frameMask
+        anchors.fill: parent
+        radius: window.visibility === Window.Maximized ? 0 : Theme.radius
+        color: "white"
+        visible: false
+    }
+
     // 背景图层（全窗口最底层，自带圆角裁剪）：所有窗口复用
     BackgroundLayer {
         radius: window.visibility === Window.Maximized ? 0 : Theme.radius
     }
 
     // 背景：透明 + 轻微主色染色，背景图透过显示（避免依赖外部图片资源）
-    // 注意：clip 只按矩形裁剪，铺满的子 Rectangle 必须自带圆角，否则会盖掉窗口圆角
     Rectangle {
         id: frame
         anchors.fill: parent
@@ -75,8 +84,12 @@ ApplicationWindow {
         color: "transparent"   // 透明：BackgroundLayer 背景图透出
         opacity: appController.uiTransparency   // 整体受界面控件透明度控制
         clip: true
-        // 开启 layer：frame 内方角子项（底色层/导航等）按圆角裁剪，避免盖住背景图圆角四角
-        layer.enabled: true
+        // 用 layer.effect + OpacityMask 把整个 frame（含子项）按圆角矩形遮罩，
+        // 这是裁掉四角方角、保证圆角的关键（clip:true 只裁矩形、layer.enabled 不裁子项）。
+        layer.enabled: radius > 0
+        layer.effect: OpacityMask {
+            maskSource: frameMask
+        }
         // 入场滑动动画：从右侧滑入（挂在内层 frame 上，Window 本身不支持 transform；opacity 由 uiTransparency 绑定控制，避免冲突）
         x: 60
         ParallelAnimation {
@@ -325,34 +338,85 @@ ApplicationWindow {
                             // —— 个性化：背景图 + 背景音乐（用户从电脑选文件，MSM 复制到 skin 目录）——
                             Label { text: I18n.t("个性化", I18n.lang); color: Theme.text; font.bold: true; font.pixelSize: 15 }
 
-                            // 背景图
-                            RowLayout {
+                            // 壁纸：支持文件夹多图 + 顺序/随机轮换 + 程序内调序
+                            ColumnLayout {
                                 Layout.fillWidth: true
-                                ColumnLayout {
+                                spacing: 8
+                                Label { text: I18n.t("壁纸", I18n.lang); color: Theme.text }
+
+                                // 操作行：选择文件夹 / 添加图片 / 清空 / 总开关
+                                RowLayout {
                                     Layout.fillWidth: true
-                                    spacing: 2
-                                    Label { text: I18n.t("背景图", I18n.lang); color: Theme.text }
-                                    Label {
-                                        text: settingsController.bgImagePath
-                                              ? I18n.t("已选择，将随 MSM 复制到皮肤目录", I18n.lang)
-                                              : I18n.t("未设置（点击右侧选择电脑中的图片）", I18n.lang)
-                                        color: Theme.textMuted; font.pixelSize: 11
-                                        wrapMode: Text.Wrap
+                                    Button { text: I18n.t("选择文件夹", I18n.lang); onClicked: bgFolderDialog.open() }
+                                    Button { text: I18n.t("添加图片", I18n.lang); onClicked: bgFilesDialog.open() }
+                                    Button {
+                                        text: I18n.t("清空", I18n.lang)
+                                        enabled: settingsController.bgImageList.length > 0
+                                        onClicked: { settingsController.clearBgImages(); settingsController.apply() }
+                                    }
+                                    Item { Layout.fillWidth: true }
+                                    Switch {
+                                        checked: settingsController.bgEnabled
+                                        enabled: settingsController.bgImageList.length > 0
+                                        onToggled: { settingsController.bgEnabled = checked; settingsController.apply() }
                                     }
                                 }
-                                Button {
-                                    text: I18n.t("选择图片", I18n.lang)
-                                    onClicked: bgImageDialog.open()
+
+                                // 文件夹路径提示
+                                Label {
+                                    text: settingsController.bgImageFolder
+                                          ? I18n.t("文件夹：", I18n.lang) + settingsController.bgImageFolder
+                                          : I18n.t("未选择文件夹（可手动添加图片）", I18n.lang)
+                                    color: Theme.textMuted; font.pixelSize: 11; wrapMode: Text.Wrap
                                 }
-                                Button {
-                                    text: I18n.t("清除", I18n.lang)
-                                    enabled: settingsController.bgImagePath
-                                    onClicked: { settingsController.clearSkinImage(); settingsController.apply() }
+
+                                // 播放列表（▶ 标记当前项；↑↓ 调整顺序，✕ 删除）
+                                ListView {
+                                    id: bgList
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: Math.min(180, contentHeight)
+                                    model: settingsController.bgImageList
+                                    clip: true
+                                    delegate: RowLayout {
+                                        width: bgList.width
+                                        spacing: 6
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: (index === settingsController.bgImageIndex ? "▶ " : "")
+                                                  + modelData.substring(Math.max(modelData.lastIndexOf('/'), modelData.lastIndexOf('\\')) + 1)
+                                            elide: Text.ElideMiddle
+                                            color: index === settingsController.bgImageIndex ? Theme.accent : Theme.text
+                                        }
+                                        Button { text: "↑"; enabled: index > 0; onClicked: { settingsController.moveBgImage(index, index - 1); settingsController.apply() } }
+                                        Button { text: "↓"; enabled: index < bgList.count - 1; onClicked: { settingsController.moveBgImage(index, index + 1); settingsController.apply() } }
+                                        Button { text: "✕"; onClicked: { settingsController.removeBgImage(index); settingsController.apply() } }
+                                    }
                                 }
-                                Switch {
-                                    checked: settingsController.bgEnabled
-                                    enabled: settingsController.bgImagePath
-                                    onToggled: { settingsController.bgEnabled = checked; settingsController.apply() }
+
+                                // 播放模式 + 切换间隔
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Label { text: I18n.t("播放模式", I18n.lang); color: Theme.text }
+                                    ComboBox {
+                                        id: bgModeCombo
+                                        model: [I18n.t("顺序播放", I18n.lang), I18n.t("随机播放", I18n.lang)]
+                                        currentIndex: settingsController.bgImageMode === "random" ? 1 : 0
+                                        onActivated: {
+                                            settingsController.setBgImageMode(currentIndex === 1 ? "random" : "sequential")
+                                            settingsController.apply()
+                                        }
+                                    }
+                                    Item { Layout.fillWidth: true }
+                                    Label { text: I18n.t("切换间隔(分钟)", I18n.lang); color: Theme.text }
+                                    SpinBox {
+                                        from: 1; to: 1440; stepSize: 1
+                                        value: settingsController.bgImageInterval
+                                        onValueChanged: { settingsController.setBgImageInterval(value); settingsController.apply() }
+                                    }
+                                }
+                                Label {
+                                    text: I18n.t("列表至少 2 张且已开启壁纸时才会自动轮换", I18n.lang)
+                                    color: Theme.textMuted; font.pixelSize: 11
                                 }
                             }
 
@@ -420,14 +484,22 @@ ApplicationWindow {
                                 onMoved: appController.setBgmVolume(value)
                             }
 
-                            FileDialog {
-                                id: bgImageDialog
-                                title: I18n.t("选择背景图片", I18n.lang)
-                                nameFilters: ["图片 (*.png *.jpg *.jpeg *.bmp *.webp)"]
-                                fileMode: FileDialog.OpenFile
+                            FolderDialog {
+                                id: bgFolderDialog
+                                title: I18n.t("选择壁纸文件夹", I18n.lang)
                                 onAccepted: {
-                                    if (settingsController.importSkinImage(bgImageDialog.selectedFile))
-                                        settingsController.apply()
+                                    settingsController.setBgImageFolder(bgFolderDialog.folder)
+                                    settingsController.apply()
+                                }
+                            }
+                            FileDialog {
+                                id: bgFilesDialog
+                                title: I18n.t("添加壁纸图片", I18n.lang)
+                                nameFilters: ["图片 (*.png *.jpg *.jpeg *.bmp *.webp *.gif)"]
+                                fileMode: FileDialog.OpenFiles
+                                onAccepted: {
+                                    settingsController.addBgImages(bgFilesDialog.selectedFiles)
+                                    settingsController.apply()
                                 }
                             }
                             FileDialog {
