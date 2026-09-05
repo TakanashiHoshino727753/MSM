@@ -1,0 +1,10 @@
+<RCC>
+    <qresource prefix="/">
+        <file>Main.qml</file>
+        <file>Theme.qml</file>
+        <file>ServerCard.qml</file>
+        <file>Chip.qml</file>
+        <file>BackgroundLayer.qml</file>
+        <file>icons/app.ico</file>
+    </qresource>
+</RCC>

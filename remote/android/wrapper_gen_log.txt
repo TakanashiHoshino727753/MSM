@@ -1,5 +1,0 @@
-﻿Configuration on demand is an incubating feature.
-> Task :wrapper
-
-BUILD SUCCESSFUL in 6s
-1 actionable task: 1 executed

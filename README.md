@@ -6,28 +6,24 @@ Minecraft 服务器可视化管理工具（Qt 6 C++ / Windows）。提供本地�
 
 ## 项目结构
 
-本仓库是**一个父项目 + 两个并列子项目**的结构：
+本仓库是**一个父项目 + 两个并列子项目（均在 `src/` 下）**的结构；两端均为 Qt 6 / C++ / QML：
 
 ```
 MinecraftServerManager/        ← 父项目（CMake 聚合，不直接产出程序）
-├── desktop/                   ← 子项目①：MSM 桌面端（Qt 6 / C++ / QML）
-│   ├── main.cpp               ← 程序入口
-│   ├── src/                   ← C++ 业务模块（core/download/java/server/webui/...）
-│   ├── qml/                   ← QML 界面层（含 Theme/I18n 单例与自定义控件）
-│   ├── Resources/ + Resources.qrc ← 图标等资源
-│   ├── i18n/                  ← 翻译文件
-│   └── qqbot/                 ← NoneBot 控制插件（msm_control.py 等）
-├── remote/                    ← 子项目②：MSM 远控端（移动端原生客户端）
-│   ├── android/               ← Android（Kotlin + Jetpack Compose，Gradle 构建）
-│   └── ios/                   ← iOS（Swift / SwiftUI，Xcode 构建）
-└── shared/                    ← 两端共用契约（WebUI JSON API 规范、配对 URI 等）
+├── src/                       ← 两个端 + 共用源码统一目录
+│   ├── desktop/               ← 子项目①：MSM 桌面端（Qt 6 / C++ / QML，服务端管理器）
+│   ├── remote/                ← 子项目②：MSM 远控端（Qt 6 / C++ / QML，原 MSM_Remote）
+│   └── shared/                ← 两端共用的功能模块（独立静态库）：统一日志 + 外观个性化（背景图/壁纸轮换/压暗）+ WebUI JSON API 契约
+└── _legacy_remote_native/     ← 旧版原生 Android/iOS 远控端（已归档，备查）
 ```
 
-- **桌面端 `desktop/`**：CMake 直接构建，产出主程序 `MinecraftServerManager`。
-- **远控端 `remote/`**：Android/iOS 各有官方构建体系，CMake 不参与编译（仅登记与存在性校验）。
-  请分别用 **Android Studio** 打开 `remote/android/`、**Xcode** 打开 `remote/ios/`。
-- **共用 `shared/`**：两端真正的耦合点是桌面端提供的 WebUI JSON API 契约，
-  统一在 `shared/README.md` 描述；两端各自按契约实现 / 调用，**无编译期代码依赖**。
+- **桌面端 `src/desktop/`**：CMake 直接构建，产出主程序 `MinecraftServerManager`。
+- **远控端 `src/remote/`**：Qt/C++ 客户端，经桌面端 WebUI JSON API（HTTPS）远程管理服务器，
+  产出 `MSM_Remote`；旧版 Android/iOS 原生客户端已归档至仓库根 `_legacy_remote_native/`。
+- **共用 `src/shared/`**：按功能拆为独立静态库模块，由两端各自链接（不再有单一 msm_shared 大库）：
+  ① `logging/` —— 统一日志 `msm_logging`（Qt 宏 `QT_DEBUG` 区分 Debug/Release）；
+  ② `appearance/` —— 外观个性化 `msm_appearance`（背景图/壁纸轮换/压暗/透明度，与桌面端壁纸逻辑共用同一套 QSettings 键）；
+  ③ WebUI JSON API 契约见 `src/shared/README.md`。
 
 构建桌面端：
 
@@ -129,16 +125,16 @@ cmake --build build --target MinecraftServerManager -j 8
 # 部署（复制 exe + qml / i18n / qqbot 源码目录，并执行 windeployqt 部署 Qt 运行时与 QML 插件）
 ```
 
-部署时需用 `windeployqt.exe MinecraftServerManager.exe --qmldir <源码 qml 目录>` 拉取 Qt DLL 与 QML 插件；HTTPS 依赖的 OpenSSL 3.x（`libcrypto-3-x64.dll` / `libssl-3-x64.dll`）需置于 exe 同目录。
+部署时需用 `windeployqt.exe MinecraftServerManager.exe --qmldir src/desktop/qml` 拉取 Qt DLL 与 QML 插件；HTTPS 依赖的 OpenSSL 3.x（`libcrypto-3-x64.dll` / `libssl-3-x64.dll`）需置于 exe 同目录。
 
 ---
 
 ## 未完成功能
 
-- **远控端（远程控制客户端）**：`remote/` 下的 Android（Kotlin + Jetpack Compose）与 iOS（SwiftUI）客户端
-  代码已完成：连接/配对、服务器列表与详情、启停与指令、控制台、异常纠错、看门狗、代理、优化模组、扫码接入。
-  **尚缺实机验证**——两端均在 Windows 上编写，未经过 Android Studio / Xcode 真机构建，
-  首次构建可能需微调 SDK 路径或依赖版本；配套反向连接隧道、端到端加密会话仍未实现。
+- **远控端（远程控制客户端）**：现统一为 Qt/C++/QML 客户端（`src/remote/`，自 MSM_Remote 合并而来），
+  经桌面端 WebUI JSON API 远程管理服务器：连接/配对、服务器列表与详情、启停与指令、控制台、
+  异常纠错、看门狗、代理、优化模组、扫码接入。旧版 Android/iOS 原生客户端已归档至 `_legacy_remote_native/`。
+  远控端自身功能已可在 Windows 上构建运行；配套反向连接隧道、端到端加密会话仍未实现。
 - **远端二维码生成**：已实现。桌面端内置 `QrImageProvider`（C++ 用内嵌 qrcode 库渲染位图），
   QML 通过 `image://qr/<uri>` 显示；WebUI 侧通过 `/qrcode.js` + `/api/paircode` 展示配对二维码。
 
@@ -170,6 +166,15 @@ cmake --build build --target MinecraftServerManager -j 8
 - **抽取共用契约 `shared/`**：两端唯一共用物是桌面端 WebUI JSON API，
   已在 `shared/README.md` 完整描述（鉴权、配对流程、`msm://` URI、全部端点与错误码约定）。
 - **修复 WebUI 打不开**（详见「待修复 Bug」）：根因为服务器连接从未被接管处理。
+
+## 更新日志（2026-09-05 · 架构再整合）
+
+- **源码统一到 `src/`**：桌面端、远控端、共用模块分别归入 `src/desktop/`、`src/remote/`、`src/shared/`；
+  旧版 Android/iOS 原生远控端归档至仓库根 `_legacy_remote_native/`。
+- **远控端落地为 Qt 客户端**：`src/remote/` 即原 `MSM_Remote`（Qt/C++/QML），与桌面端共用
+  `src/shared/msm_logging.cpp` 统一日志；壁纸相关能力（播放列表/轮换/压暗/透明度）已同步到远控端。
+- **统一日志（Qt 宏）**：`src/shared/msm_logging.cpp` 用 `QT_DEBUG` 区分——Debug 构建回显控制台并写
+  `*-debug.log`，Release 仅写常规 `logs/*.log`；桌面端 `msm.log`、远控端 `msm-remote.log`。
 
 ---
 

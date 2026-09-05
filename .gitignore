@@ -102,3 +102,12 @@ remote/ios/*.xcodeproj/
 remote/ios/*.xcworkspace/
 remote/ios/Pods/
 remote/ios/DerivedData/
+
+# 根目录构建日志（txt 后缀，*.log 不覆盖）
+/build_log.txt
+
+# 运行时日志目录
+/logs/
+
+# 旧版原生远控端（仅本地备查，不纳入版本库）
+/_legacy_remote_native/
