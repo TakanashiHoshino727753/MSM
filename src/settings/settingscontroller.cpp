@@ -79,6 +79,7 @@ SettingsController::SettingsController(QObject *parent) : QObject(parent)
     m_bgImageList = s.value(QStringLiteral("bg/list")).toStringList();
     m_bgImageMode = s.value(QStringLiteral("bg/mode"), QStringLiteral("sequential")).toString();
     m_bgImageInterval = s.value(QStringLiteral("bg/interval"), 10).toInt();
+    m_bgImageIntervalUnit = s.value(QStringLiteral("bg/intervalUnit"), QStringLiteral("min")).toString();
     m_bgImageIndex = s.value(QStringLiteral("bg/index"), 0).toInt();
     m_bgmEnabled = s.value(QStringLiteral("app/bgmEnabled"), false).toBool();
     m_bgmPath = s.value(QStringLiteral("app/bgmPath")).toString();
@@ -275,7 +276,7 @@ void SettingsController::apply()
         "app/webhookEnabled", "app/webhookCrash", "app/webhookState",
         "app/webhookPlayer", "app/bgEnabled", "app/bgImage", "app/bgmEnabled",
         "app/bgmPath", "app/bgmVolume",
-        "bg/folder", "bg/list", "bg/mode", "bg/interval", "bg/index",
+        "bg/folder", "bg/list", "bg/mode", "bg/interval", "bg/intervalUnit", "bg/index",
     };
     const QVariant vals[] = {
         m_language, m_webui, m_webuiPort, m_webuiToken, m_webuiExposeLan,
@@ -285,7 +286,7 @@ void SettingsController::apply()
         m_webhookState, m_webhookPlayer, m_bgEnabled, m_bgImagePath,
         m_bgmEnabled, m_bgmPath, m_bgmVolume,
         m_bgImageFolder, QVariant::fromValue(m_bgImageList), m_bgImageMode,
-        m_bgImageInterval, m_bgImageIndex,
+        m_bgImageInterval, m_bgImageIntervalUnit, m_bgImageIndex,
     };
     static_assert(sizeof(keys) / sizeof(*keys) == sizeof(vals) / sizeof(*vals),
                   "settings key/value count mismatch");
@@ -503,8 +504,13 @@ void SettingsController::setBgImageMode(const QString &v)
 }
 void SettingsController::setBgImageInterval(int v)
 {
-    const int n = qBound(1, v, 1440);
+    // 上限放宽：数值按单位解释（秒/分/时/天），原 1440 是“分钟”情形的上限，单位可为秒后不够用
+    const int n = qBound(1, v, 1000000);
     if (m_bgImageInterval != n) { m_bgImageInterval = n; emit bgImageIntervalChanged(); }
+}
+void SettingsController::setBgImageIntervalUnit(const QString &v)
+{
+    if (m_bgImageIntervalUnit != v) { m_bgImageIntervalUnit = v; emit bgImageIntervalUnitChanged(); }
 }
 void SettingsController::setBgImageIndex(int v)
 {

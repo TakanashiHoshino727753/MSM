@@ -59,7 +59,8 @@ class SettingsController : public QObject
     Q_PROPERTY(QString bgImageFolder READ bgImageFolder WRITE setBgImageFolder NOTIFY bgImageFolderChanged)
     Q_PROPERTY(QStringList bgImageList READ bgImageList NOTIFY bgImageListChanged)
     Q_PROPERTY(QString bgImageMode READ bgImageMode WRITE setBgImageMode NOTIFY bgImageModeChanged)   // "sequential" | "random"
-    Q_PROPERTY(int bgImageInterval READ bgImageInterval WRITE setBgImageInterval NOTIFY bgImageIntervalChanged)  // 分钟
+    Q_PROPERTY(int bgImageInterval READ bgImageInterval WRITE setBgImageInterval NOTIFY bgImageIntervalChanged)  // 数值（按 bgImageIntervalUnit 解释）
+    Q_PROPERTY(QString bgImageIntervalUnit READ bgImageIntervalUnit WRITE setBgImageIntervalUnit NOTIFY bgImageIntervalUnitChanged)  // 轮换间隔单位：sec/min/hour/day
     Q_PROPERTY(int bgImageIndex READ bgImageIndex WRITE setBgImageIndex NOTIFY bgImageIndexChanged)
 
 public:
@@ -169,6 +170,8 @@ public:
     Q_INVOKABLE void setBgImageMode(const QString &v);
     int bgImageInterval() const { return m_bgImageInterval; }
     Q_INVOKABLE void setBgImageInterval(int v);
+    QString bgImageIntervalUnit() const { return m_bgImageIntervalUnit; }
+    Q_INVOKABLE void setBgImageIntervalUnit(const QString &v);
     int bgImageIndex() const { return m_bgImageIndex; }
     Q_INVOKABLE void setBgImageIndex(int v);
     // 添加多张图片到播放列表（folder 模式下也适用）；去重、非空则自动开启背景图
@@ -226,6 +229,7 @@ signals:
     void bgImageListChanged();
     void bgImageModeChanged();
     void bgImageIntervalChanged();
+    void bgImageIntervalUnitChanged();
     void bgImageIndexChanged();
 
 private:
@@ -267,7 +271,8 @@ private:
     QString m_bgImageFolder;
     QStringList m_bgImageList;
     QString m_bgImageMode = QStringLiteral("sequential");
-    int m_bgImageInterval = 10;   // 分钟
+    int m_bgImageInterval = 10;   // 数值（配合单位解释）
     int m_bgImageIndex = 0;
+    QString m_bgImageIntervalUnit = QStringLiteral("min");   // 轮换间隔单位：sec/min/hour/day
 
 };

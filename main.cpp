@@ -538,6 +538,8 @@ public:
                     this, &AppController::refreshBgRotation);
             connect(m_sc, &SettingsController::bgImageIntervalChanged,
                     this, &AppController::refreshBgRotation);
+            connect(m_sc, &SettingsController::bgImageIntervalUnitChanged,
+                    this, &AppController::refreshBgRotation);
             connect(m_sc, &SettingsController::bgImageIndexChanged,
                     this, &AppController::refreshBgRotation);
             connect(m_sc, &SettingsController::bgEnabledChanged,
@@ -724,8 +726,15 @@ void AppController::refreshBgRotation()
     }
     if (!m_bgRotTimer)
         return;
-    // 间隔（分钟）转毫秒，至少 1 分钟；切换后若已在运行会平滑重启间隔
-    m_bgRotTimer->setInterval(qMax(1, m_sc->bgImageInterval()) * 60000);
+    // 间隔（数值 × 单位）转毫秒：sec/min/hour/day；至少 1 个数值，并钳到 int 上限避免大单位溢出
+    const auto unitToMs = [](const QString &u) -> qint64 {
+        if (u == QStringLiteral("sec"))  return 1000;
+        if (u == QStringLiteral("hour")) return 3600000;
+        if (u == QStringLiteral("day"))  return 86400000;
+        return 60000;   // "min" 及未知单位
+    };
+    const qint64 ms = qMax<qint64>(1, m_sc->bgImageInterval()) * unitToMs(m_sc->bgImageIntervalUnit());
+    m_bgRotTimer->setInterval(static_cast<int>(qMin<qint64>(ms, Q_INT64_C(2147483647))));
     m_bgRotTimer->start();
 }
 

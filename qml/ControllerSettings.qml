@@ -287,7 +287,7 @@ ApplicationWindow {
                             RowLayout {
                                 Layout.fillWidth: true
                                 Label { text: I18n.t("深色模式", I18n.lang); Layout.fillWidth: true; color: Theme.text }
-                                SwitchEx {
+                                Switch {
                                     id: darkToggle
                                     checked: Theme.dark
                                     onToggled: window.applyTheme(darkToggle.checked, Theme.accent)
@@ -355,7 +355,7 @@ ApplicationWindow {
                                         onClicked: { settingsController.clearBgImages(); settingsController.apply() }
                                     }
                                     Item { Layout.fillWidth: true }
-                                    SwitchEx {
+                                    Switch {
                                         checked: settingsController.bgEnabled
                                         enabled: settingsController.bgImageList.length > 0
                                         onToggled: { settingsController.bgEnabled = checked; settingsController.apply() }
@@ -409,12 +409,13 @@ ApplicationWindow {
                                         }
                                     }
                                     Item { Layout.fillWidth: true }
-                                    Label { text: I18n.t("切换间隔(分钟)", I18n.lang); color: Theme.text }
+                                    Label { text: I18n.t("切换间隔", I18n.lang); color: Theme.text }
                                     SpinBox {
-                                        from: 1; to: 1440; stepSize: 1
+                                        id: bgIntervalSpin
+                                        from: 1; to: 1000000; stepSize: 1
                                         value: settingsController.bgImageInterval
                                         onValueChanged: { settingsController.setBgImageInterval(value); settingsController.apply() }
-                                        Layout.preferredWidth: 88
+                                        Layout.preferredWidth: 100
                                         background: Rectangle {
                                             color: Theme.panelAlt
                                             border.color: Theme.border
@@ -438,6 +439,22 @@ ApplicationWindow {
                                             x: parent.width - width; y: parent.height / 2; width: 22; height: parent.height / 2
                                             color: "transparent"
                                             Text { text: "▼"; color: Theme.textMuted; anchors.centerIn: parent; font.pixelSize: 9 }
+                                        }
+                                    }
+                                    ComboBoxEx {
+                                        id: bgIntervalUnitCombo
+                                        Layout.fillWidth: false
+                                        Layout.preferredWidth: 96
+                                        model: [I18n.t("秒", I18n.lang), I18n.t("分钟", I18n.lang),
+                                                I18n.t("小时", I18n.lang), I18n.t("天", I18n.lang)]
+                                        currentIndex: {
+                                            var u = settingsController.bgImageIntervalUnit
+                                            return u === "sec" ? 0 : (u === "hour" ? 2 : (u === "day" ? 3 : 1))
+                                        }
+                                        onActivated: {
+                                            var units = ["sec", "min", "hour", "day"]
+                                            settingsController.setBgImageIntervalUnit(units[currentIndex])
+                                            settingsController.apply()
                                         }
                                     }
                                 }
@@ -494,7 +511,7 @@ ApplicationWindow {
                                     enabled: settingsController.bgmPath
                                     onClicked: { settingsController.clearSkinMusic(); settingsController.apply() }
                                 }
-                                SwitchEx {
+                                Switch {
                                     checked: appController.bgmEnabled
                                     enabled: appController.bgmAvailable
                                     onToggled: appController.setBgmEnabled(checked)
