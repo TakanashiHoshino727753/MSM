@@ -152,9 +152,9 @@ public:
     }
 
     bool bgEnabled() const { return m_bgEnabled; }
-    void setBgEnabled(bool v);
+    Q_INVOKABLE void setBgEnabled(bool v);
     QString bgImagePath() const { return m_bgImagePath; }
-    void setBgImagePath(const QString &v);
+    Q_INVOKABLE void setBgImagePath(const QString &v);
     bool bgmEnabled() const { return m_bgmEnabled; }
     void setBgmEnabled(bool v);
     QString bgmPath() const { return m_bgmPath; }
@@ -163,14 +163,14 @@ public:
     void setBgmVolume(double v);
 
     QString bgImageFolder() const { return m_bgImageFolder; }
-    void setBgImageFolder(const QString &v);
+    Q_INVOKABLE void setBgImageFolder(const QString &v);
     QStringList bgImageList() const { return m_bgImageList; }
     QString bgImageMode() const { return m_bgImageMode; }
-    void setBgImageMode(const QString &v);
+    Q_INVOKABLE void setBgImageMode(const QString &v);
     int bgImageInterval() const { return m_bgImageInterval; }
-    void setBgImageInterval(int v);
+    Q_INVOKABLE void setBgImageInterval(int v);
     int bgImageIndex() const { return m_bgImageIndex; }
-    void setBgImageIndex(int v);
+    Q_INVOKABLE void setBgImageIndex(int v);
     // 添加多张图片到播放列表（folder 模式下也适用）；去重、非空则自动开启背景图
     Q_INVOKABLE void addBgImages(const QStringList &files);
     Q_INVOKABLE void removeBgImage(int index);
