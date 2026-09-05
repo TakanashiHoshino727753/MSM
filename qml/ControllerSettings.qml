@@ -410,36 +410,12 @@ ApplicationWindow {
                                     }
                                     Item { Layout.fillWidth: true }
                                     Label { text: I18n.t("切换间隔", I18n.lang); color: Theme.text }
-                                    SpinBox {
+                                    SpinBoxEx {
                                         id: bgIntervalSpin
                                         from: 1; to: 1000000; stepSize: 1
                                         value: settingsController.bgImageInterval
                                         onValueChanged: { settingsController.setBgImageInterval(value); settingsController.apply() }
                                         Layout.preferredWidth: 100
-                                        background: Rectangle {
-                                            color: Theme.panelAlt
-                                            border.color: Theme.border
-                                            radius: 6
-                                        }
-                                        contentItem: TextInput {
-                                            text: control.value
-                                            color: Theme.text
-                                            horizontalAlignment: Qt.AlignHCenter
-                                            verticalAlignment: Qt.AlignVCenter
-                                            readOnly: !control.editable
-                                            font: control.font
-                                            validator: control.validator
-                                        }
-                                        up.indicator: Rectangle {
-                                            x: parent.width - width; width: 22; height: parent.height / 2
-                                            color: "transparent"
-                                            Text { text: "▲"; color: Theme.textMuted; anchors.centerIn: parent; font.pixelSize: 9 }
-                                        }
-                                        down.indicator: Rectangle {
-                                            x: parent.width - width; y: parent.height / 2; width: 22; height: parent.height / 2
-                                            color: "transparent"
-                                            Text { text: "▼"; color: Theme.textMuted; anchors.centerIn: parent; font.pixelSize: 9 }
-                                        }
                                     }
                                     ComboBoxEx {
                                         id: bgIntervalUnitCombo
@@ -619,11 +595,9 @@ ApplicationWindow {
                                     color: Theme.text
                                     background: Rectangle { color: Theme.panelAlt; radius: 6; border.color: Theme.border }
                                 }
-                                Button {
+                                SubtleButton {
                                     text: I18n.t("浏览", I18n.lang)
-                                    palette.buttonText: Theme.text; palette.windowText: Theme.text
                                     onClicked: dirDialog.open()
-                                    background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
                                 }
                 FolderDialog {
                     id: dirDialog
@@ -745,12 +719,10 @@ ApplicationWindow {
                                     color: webuiServer.running ? Theme.accent : Theme.textMuted
                                     elide: Text.ElideRight
                                 }
-                                Button {
+                                AccentButton {
                                     text: I18n.t("打开", I18n.lang)
                                     enabled: webuiServer.running
-                                    palette.buttonText: Theme.text; palette.windowText: Theme.text
                                     onClicked: Qt.openUrlExternally((webuiServer.https ? "https" : "http") + "://localhost:" + webuiServer.port + "/?token=" + encodeURIComponent(settingsController.webuiToken))
-                                    background: Rectangle { color: parent.enabled ? (parent.hovered ? Theme.panelAlt : Theme.bg) : Theme.bg; radius: 6; border.color: Theme.border }
                                 }
                             }
 
@@ -768,17 +740,13 @@ ApplicationWindow {
                                     selectByMouse: true
                                     background: Rectangle { color: Theme.panelAlt; radius: 6; border.color: Theme.border }
                                 }
-                                Button {
+                                SubtleButton {
                                     text: I18n.t("复制", I18n.lang)
-                                    palette.buttonText: Theme.text; palette.windowText: Theme.text
                                     onClicked: { tokenField.selectAll(); tokenField.copy(); toast(I18n.t("已复制访问令牌", I18n.lang)) }
-                                    background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
                                 }
-                                Button {
+                                SubtleButton {
                                     text: I18n.t("重新生成", I18n.lang)
-                                    palette.buttonText: Theme.text; palette.windowText: Theme.text
                                     onClicked: settingsController.regenerateWebuiToken()
-                                    background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
                                 }
                             }
 
@@ -822,11 +790,9 @@ ApplicationWindow {
                                     background: Rectangle { color: Theme.panelAlt; radius: 6; border.color: Theme.border }
                                     onEditingFinished: { settingsController.webuiCertPath = text; settingsController.apply() }
                                 }
-                                Button {
+                                SubtleButton {
                                     text: I18n.t("浏览", I18n.lang)
-                                    palette.buttonText: Theme.text; palette.windowText: Theme.text
                                     onClicked: certDialog.open()
-                                    background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
                                 }
                             }
                             RowLayout {
@@ -844,11 +810,9 @@ ApplicationWindow {
                                     background: Rectangle { color: Theme.panelAlt; radius: 6; border.color: Theme.border }
                                     onEditingFinished: { settingsController.webuiKeyPath = text; settingsController.apply() }
                                 }
-                                Button {
+                                SubtleButton {
                                     text: I18n.t("浏览", I18n.lang)
-                                    palette.buttonText: Theme.text; palette.windowText: Theme.text
                                     onClicked: keyDialog.open()
-                                    background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
                                 }
                             }
 
@@ -897,9 +861,8 @@ ApplicationWindow {
                                     model: botController.detectNapcatPaths()
                                     onEditTextChanged: { if (editText !== settingsController.napcatPath) { settingsController.napcatPath = editText; settingsController.apply() } }
                                 }
-                                Button {
+                                AccentButton {
                                     text: I18n.t("自动检测", I18n.lang)
-                                    palette.buttonText: Theme.text; palette.windowText: Theme.text
                                     onClicked: {
                                         var paths = botController.detectNapcatPaths()
                                         var p = botController.detectNapcatPath()
@@ -917,13 +880,10 @@ ApplicationWindow {
                                             napcatHint.text = I18n.t("未检测到 NapCat，请手动输入路径或浏览选择", I18n.lang)
                                         }
                                     }
-                                    background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
                                 }
-                                Button {
+                                SubtleButton {
                                     text: I18n.t("浏览", I18n.lang)
-                                    palette.buttonText: Theme.text; palette.windowText: Theme.text
                                     onClicked: napcatDialog.open()
-                                    background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
                                 }
                                 Component.onCompleted: {
                                     napcatCombo.setText(settingsController.napcatPath)
@@ -970,9 +930,8 @@ ApplicationWindow {
                                     model: botController.detectNonebotDirs()
                                     onEditTextChanged: { if (editText !== settingsController.nonebotDir) { settingsController.nonebotDir = editText; settingsController.apply() } }
                                 }
-                                Button {
+                                AccentButton {
                                     text: I18n.t("自动检测", I18n.lang)
-                                    palette.buttonText: Theme.text; palette.windowText: Theme.text
                                     onClicked: {
                                         var dirs = botController.detectNonebotDirs()
                                         var d = botController.detectNonebotDir()
@@ -990,13 +949,10 @@ ApplicationWindow {
                                             nonebotHint.text = I18n.t("未检测到 NoneBot，请手动输入目录或浏览选择", I18n.lang)
                                         }
                                     }
-                                    background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
                                 }
-                                Button {
+                                SubtleButton {
                                     text: I18n.t("浏览", I18n.lang)
-                                    palette.buttonText: Theme.text; palette.windowText: Theme.text
                                     onClicked: nonebotDialog.open()
-                                    background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
                                 }
                             }
                             Label {
@@ -1024,11 +980,9 @@ ApplicationWindow {
                                     color: botController.msmPluginState === "ok" ? Theme.accent : (botController.msmPluginState === "error" ? "#e06c5a" : Theme.textMuted)
                                     elide: Text.ElideRight
                                 }
-                                Button {
+                                AccentButton {
                                     text: I18n.t("安装 / 重装", I18n.lang)
-                                    palette.buttonText: Theme.text; palette.windowText: Theme.text
                                     onClicked: openMsmInstall()
-                                    background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
                                 }
                             }
                             Label { text: I18n.t("MSM 默认不主动推送：常态按间隔把设备占用(CPU/内存)更新到机器人 QQ 昵称，服务器异常退出时把日志私信管理员，其余只在执行指令后回传反馈。两者绑定运行，一起开/一起关。", I18n.lang); color: Theme.textMuted; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
@@ -1063,12 +1017,10 @@ ApplicationWindow {
                                     color: botController.nonebotState === "running" ? Theme.accent : Theme.textMuted
                                     elide: Text.ElideRight
                                 }
-                                Button {
+                                SubtleButton {
                                     text: I18n.t("测试推送", I18n.lang)
                                     enabled: botController.botEnabled
-                                    palette.buttonText: Theme.text; palette.windowText: Theme.text
                                     onClicked: botController.notify(I18n.t("这是一条来自 MSM 的测试推送", I18n.lang))
-                                    background: Rectangle { color: parent.enabled ? (parent.hovered ? Theme.panelAlt : Theme.bg) : Theme.bg; radius: 6; border.color: Theme.border }
                                 }
                             }
 
@@ -1084,11 +1036,9 @@ ApplicationWindow {
                                 spacing: 8
                                 Label { text: I18n.t("控制通道状态", I18n.lang); color: Theme.textMuted }
                                 Label { Layout.fillWidth: true; text: I18n.t("已锁定本机 + 令牌校验（最安全）", I18n.lang); color: Theme.accent; elide: Text.ElideRight }
-                                Button {
+                                SubtleButton {
                                     text: I18n.t("复制令牌", I18n.lang)
-                                    palette.buttonText: Theme.text; palette.windowText: Theme.text
                                     onClicked: { Clipboard.text = settingsController.webuiToken; toast(I18n.t("已复制访问令牌", I18n.lang)) }
-                                    background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
                                 }
                             }
                         }
@@ -1115,9 +1065,9 @@ ApplicationWindow {
                             }
                             RowLayout { spacing: 6
                                 Label { text: I18n.t("备份间隔(小时)", I18n.lang); color: Theme.text }
-                                SpinBox { from: 1; to: 168; value: backupController.intervalHours; onValueChanged: if (value !== backupController.intervalHours) backupController.intervalHours = value }
+                                SpinBoxEx { from: 1; to: 168; value: backupController.intervalHours; onValueChanged: if (value !== backupController.intervalHours) backupController.intervalHours = value }
                                 Label { text: I18n.t("保留份数", I18n.lang); color: Theme.text }
-                                SpinBox { from: 1; to: 50; value: backupController.retain; onValueChanged: if (value !== backupController.retain) backupController.retain = value }
+                                SpinBoxEx { from: 1; to: 50; value: backupController.retain; onValueChanged: if (value !== backupController.retain) backupController.retain = value }
                             }
                             RowLayout {
                                 Layout.fillWidth: true
@@ -1154,7 +1104,9 @@ ApplicationWindow {
                                 Label { text: I18n.t("启用 Webhook", I18n.lang); Layout.fillWidth: true; color: Theme.text }
                                 Switch { checked: settingsController.webhookEnabled; onToggled: { settingsController.webhookEnabled = checked; settingsController.apply() } }
                                 Label { text: I18n.t("类型", I18n.lang); color: Theme.text }
-                                ComboBox {
+                                ComboBoxEx {
+                                    Layout.fillWidth: false
+                                    Layout.preferredWidth: 130
                                     model: [I18n.t("Discord", I18n.lang), I18n.t("企业微信", I18n.lang), I18n.t("通用 JSON", I18n.lang)]
                                     Component.onCompleted: {
                                         var m = ["discord", "wecom", "generic"]
@@ -1202,9 +1154,9 @@ ApplicationWindow {
                             }
                             RowLayout { spacing: 6
                                 Label { text: I18n.t("最大重试", I18n.lang); color: Theme.text }
-                                SpinBox { from: 0; to: 50; value: serverController.maxRetries; onValueChanged: if (value !== serverController.maxRetries) serverController.maxRetries = value }
+                                SpinBoxEx { from: 0; to: 50; value: serverController.maxRetries; onValueChanged: if (value !== serverController.maxRetries) serverController.maxRetries = value }
                                 Label { text: I18n.t("退避基数(秒)", I18n.lang); color: Theme.text }
-                                SpinBox { from: 1; to: 300; value: serverController.backoffSec; onValueChanged: if (value !== serverController.backoffSec) serverController.backoffSec = value }
+                                SpinBoxEx { from: 1; to: 300; value: serverController.backoffSec; onValueChanged: if (value !== serverController.backoffSec) serverController.backoffSec = value }
                             }
                         }
                     }
@@ -1213,17 +1165,13 @@ ApplicationWindow {
 
                     RowLayout {
                         Layout.fillWidth: true
-                        Button {
+                        AccentButton {
                             text: I18n.t("打开下载中心", I18n.lang)
-                            palette.buttonText: "white"; palette.windowText: "white"
                             onClicked: appController.openDownloadCenter()
-                            background: Rectangle { color: parent.hovered ? Theme.accentHover : Theme.accent; radius: 6 }
                         }
-                        Button {
+                        SubtleButton {
                             text: I18n.t("导入整合包", I18n.lang)
-                            palette.buttonText: Theme.text; palette.windowText: Theme.text
                             onClicked: appController.openImportModpack()
-                            background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
                         }
                         Item { Layout.fillWidth: true }
                     }
@@ -1316,10 +1264,8 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     Layout.alignment: Qt.AlignRight
                     spacing: 8
-                    Button {
+                    AccentButton {
                         text: I18n.t("自动安装", I18n.lang)
-                        palette.buttonText: "white"; palette.windowText: "white"
-                        background: Rectangle { color: parent.hovered ? Theme.accentHover : Theme.accent; radius: 6 }
                         onClicked: {
                             if (botController.installMsmPlugin())
                                 msmPluginDialog.close()
@@ -1327,16 +1273,12 @@ ApplicationWindow {
                                 msmResult.text = I18n.t("安装失败：请查看程序日志，或改用手动安装。", I18n.lang)
                         }
                     }
-                    Button {
+                    SubtleButton {
                         text: I18n.t("我已手动装好，重试", I18n.lang)
-                        palette.buttonText: Theme.text; palette.windowText: Theme.text
-                        background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
                         onClicked: { msmPluginDialog.close(); botController.retryStartNonebot() }
                     }
-                    Button {
+                    SubtleButton {
                         text: I18n.t("取消", I18n.lang)
-                        palette.buttonText: Theme.text; palette.windowText: Theme.text
-                        background: Rectangle { color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: 6; border.color: Theme.border }
                         onClicked: msmPluginDialog.close()
                     }
                 }
