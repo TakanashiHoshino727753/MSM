@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Layouts
 import MinecraftServerManager
 
 // 统一滑块：轨道/已填充段/手柄均跟随主题色（深浅色自适应）。
