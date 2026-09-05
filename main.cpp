@@ -526,6 +526,11 @@ public:
                     this, &AppController::bgImagePathChanged);
             connect(m_sc, &SettingsController::bgEnabledChanged,
                     this, &AppController::bgImagePathChanged);
+            // 播放列表/当前索引变化也要通知背景层刷新（选文件夹/添加图片/切换当前项）
+            connect(m_sc, &SettingsController::bgImageListChanged,
+                    this, &AppController::bgImagePathChanged);
+            connect(m_sc, &SettingsController::bgImageIndexChanged,
+                    this, &AppController::bgImagePathChanged);
             // 壁纸轮换：列表/模式/间隔/索引/开关变化都可能影响轮换状态
             connect(m_sc, &SettingsController::bgImageListChanged,
                     this, &AppController::refreshBgRotation);
@@ -693,11 +698,20 @@ QString AppController::bgImageFullPath() const
     if (!m_sc || !m_sc->bgEnabled())
         return QString();
     const QStringList list = m_sc->bgImageList();
-    if (list.isEmpty())
-        return QString();
-    const int idx = qBound(0, m_sc->bgImageIndex(), list.size() - 1);
-    // QML Image 需要 file:// URL，否则 Windows 本地路径 "d:/..." 会被当成协议 "d" 而加载失败
-    return QUrl::fromLocalFile(list.at(idx)).toString();
+    if (!list.isEmpty()) {
+        const int idx = qBound(0, m_sc->bgImageIndex(), list.size() - 1);
+        // QML Image 需要 file:// URL，否则 Windows 本地路径 "d:/..." 会被当成协议 "d" 而加载失败
+        return QUrl::fromLocalFile(list.at(idx)).toString();
+    }
+    // 兼容旧版单图设置：app/bgImage 存的是 skinDir 下相对文件名，拼出绝对路径回退，
+    // 否则升级后老用户的旧壁纸会丢失（播放列表为空时原逻辑直接返回空）
+    const QString oldPath = m_sc->bgImagePath();
+    if (!oldPath.isEmpty()) {
+        const QString full = SettingsController::bgImageDir() + QLatin1Char('/') + oldPath;
+        if (QFile::exists(full))
+            return QUrl::fromLocalFile(full).toString();
+    }
+    return QString();
 }
 
 void AppController::refreshBgRotation()
