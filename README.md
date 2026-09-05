@@ -1,6 +1,40 @@
 # MSM - Minecraft Server Manager
 
-Minecraft 服务器可视化管理工具（Qt 6 C++ / Windows）。提供本地桌面端 + 内嵌 WebUI 远程面板 + QQ 机器人联动，覆盖服务端生命周期管理、自动化运维与公网暴露。
+Minecraft 服务器可视化管理工具（Qt 6 C++ / Windows）。提供本地桌面端 + 内嵌 WebUI 远程面板 + QQ 机器人联动 + 移动端远控，覆盖服务端生命周期管理、自动化运维与公网暴露。
+
+---
+
+## 项目结构
+
+本仓库是**一个父项目 + 两个并列子项目**的结构：
+
+```
+MinecraftServerManager/        ← 父项目（CMake 聚合，不直接产出程序）
+├── desktop/                   ← 子项目①：MSM 桌面端（Qt 6 / C++ / QML）
+│   ├── main.cpp               ← 程序入口
+│   ├── src/                   ← C++ 业务模块（core/download/java/server/webui/...）
+│   ├── qml/                   ← QML 界面层（含 Theme/I18n 单例与自定义控件）
+│   ├── Resources/ + Resources.qrc ← 图标等资源
+│   ├── i18n/                  ← 翻译文件
+│   └── qqbot/                 ← NoneBot 控制插件（msm_control.py 等）
+├── remote/                    ← 子项目②：MSM 远控端（移动端原生客户端）
+│   ├── android/               ← Android（Kotlin + Jetpack Compose，Gradle 构建）
+│   └── ios/                   ← iOS（Swift / SwiftUI，Xcode 构建）
+└── shared/                    ← 两端共用契约（WebUI JSON API 规范、配对 URI 等）
+```
+
+- **桌面端 `desktop/`**：CMake 直接构建，产出主程序 `MinecraftServerManager`。
+- **远控端 `remote/`**：Android/iOS 各有官方构建体系，CMake 不参与编译（仅登记与存在性校验）。
+  请分别用 **Android Studio** 打开 `remote/android/`、**Xcode** 打开 `remote/ios/`。
+- **共用 `shared/`**：两端真正的耦合点是桌面端提供的 WebUI JSON API 契约，
+  统一在 `shared/README.md` 描述；两端各自按契约实现 / 调用，**无编译期代码依赖**。
+
+构建桌面端：
+
+```bash
+cmake -S . -B build
+cmake --build build --target MinecraftServerManager
+```
 
 ---
 
@@ -101,14 +135,25 @@ cmake --build build --target MinecraftServerManager -j 8
 
 ## 未完成功能
 
-- **远控端（远程控制客户端）**：当前仅提供内嵌 WebUI 远程面板（见「七、WebUI 远程控制面板」）。独立的远控端（如独立桌面/移动远程客户端、配套反向连接隧道、端到端加密远控会话等）尚未实现，仅停留在规划阶段。
-- **远端二维码生成**：WebUI / 分享面板中用于「一键远程接入」的二维码（承载公网地址 / 隧道 token）尚未实现，目前无法生成远端二维码。
+- **远控端（远程控制客户端）**：`remote/` 下的 Android（Kotlin + Jetpack Compose）与 iOS（SwiftUI）客户端
+  代码已完成：连接/配对、服务器列表与详情、启停与指令、控制台、异常纠错、看门狗、代理、优化模组、扫码接入。
+  **尚缺实机验证**——两端均在 Windows 上编写，未经过 Android Studio / Xcode 真机构建，
+  首次构建可能需微调 SDK 路径或依赖版本；配套反向连接隧道、端到端加密会话仍未实现。
+- **远端二维码生成**：已实现。桌面端内置 `QrImageProvider`（C++ 用内嵌 qrcode 库渲染位图），
+  QML 通过 `image://qr/<uri>` 显示；WebUI 侧通过 `/qrcode.js` + `/api/paircode` 展示配对二维码。
 
 ## 待修复 Bug
 
 - ~~**窗口圆角丢失**：开启自定义背景图后，部分窗口四角变方。~~ **已修复（2026-09-05）**：改用 `Qt5Compat.GraphicalEffects` 的 `OpacityMask` 作为各窗口 `frame` 的 `layer.effect`，把整个窗口内容（含方角子项）统一按圆角矩形遮罩裁剪，并同步让 `BackgroundLayer` 的图片也经 `OpacityMask` 圆角化，彻底解决四角方角问题。
-- **WebUI 打不开**：内嵌 WebUI 远程面板无法启动 / 无法访问（具体为监听失败或页面无响应），原因待查（HTTPS 自签证书、端口占用或 SPA 资源未能正确加载均有嫌疑）。
-- **远端二维码无法生成**：依赖上述「远端二维码生成」功能，远端接入二维码始终无法生成。
+- ~~**WebUI 打不开**：内嵌 WebUI 远程面板无法访问（监听正常但页面无响应）。~~
+  **已修复（2026-09-05）**：根因是构造函数创建的是普通 `QTcpServer`，而真正接管连接的
+  `WebTcpServer`（重写 `incomingConnection`）因 `if (!m_server)` 判断**从未被创建**，
+  于是所有连接都走 `newConnection` → 空的 `onNewConnection()`，请求无人处理。
+  改为构造 `WebTcpServer`；同时修复 HTTPS 分支在 `encrypted()` 之后才连接 `readyRead`
+  导致握手完成瞬间到达的请求被挂起的问题（改为握手前连接），并补充监听失败日志。
+- ~~**远端二维码无法生成**：依赖 WebUI 运行状态，始终无法生成。~~
+  **已修复（2026-09-05）**：该问题由「WebUI 打不开」连带导致（服务未运行时 `pairUri()` 无意义），
+  WebUI 修复后配对二维码可正常生成；二维码渲染链路本身已完整实现。
 
 ## 更新日志（2026-08-29）
 
@@ -119,6 +164,12 @@ cmake --build build --target MinecraftServerManager -j 8
 
 - **壁纸轮换**：背景图支持文件夹多图与手动添加；设置页列表内可 ↑/↓ 调整播放顺序、✕ 删除；支持「顺序播放 / 随机播放」与切换间隔（分钟），≥2 张且开启时自动轮换。底层由 `AppController` 定时器驱动，`SettingsController` 持久化播放列表/模式/间隔/顺序。
 - **修复窗口圆角丢失**：采用 `Qt5Compat.GraphicalEffects` 的 `OpacityMask` 作为各窗口 `frame` 的 `layer.effect`，将窗口全部内容（含方角子项）按圆角矩形遮罩裁剪；`BackgroundLayer` 图片同样经 `OpacityMask` 圆角，彻底解决开启背景图后四角变方的问题。
+- **项目结构重构**：拆为「父项目 + 两个并列子项目」——桌面端源码整体迁入 `desktop/`，
+  远控端（`android_app/` + `ios_app/`）迁入 `remote/android`、`remote/ios`；
+  新增根 `CMakeLists.txt` 聚合两端，桌面端产物与构建方式不变。
+- **抽取共用契约 `shared/`**：两端唯一共用物是桌面端 WebUI JSON API，
+  已在 `shared/README.md` 完整描述（鉴权、配对流程、`msm://` URI、全部端点与错误码约定）。
+- **修复 WebUI 打不开**（详见「待修复 Bug」）：根因为服务器连接从未被接管处理。
 
 ---
 

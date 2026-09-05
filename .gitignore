@@ -92,6 +92,13 @@ msm.log
 *.log
 local.properties
 
-# Android 构建产物
-android_app/**/build/
-android_app/.gradle/
+# 远控端构建产物（Android / iOS）
+remote/android/**/build/
+remote/android/.gradle/
+remote/android/local.properties
+remote/android/*_log.txt
+remote/ios/**/build/
+remote/ios/*.xcodeproj/
+remote/ios/*.xcworkspace/
+remote/ios/Pods/
+remote/ios/DerivedData/

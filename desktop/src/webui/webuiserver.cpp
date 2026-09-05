@@ -81,8 +81,12 @@ WebUIServer::WebUIServer(ServerManager *sm, ServerController *sc, DownloadManage
     : QObject(parent), m_sm(sm), m_sc(sc), m_create(create),
       m_import(import), m_settings(settings), m_monitor(monitor), m_java(java)
 {
-    m_server = new QTcpServer(this);
-    connect(m_server, &QTcpServer::newConnection, this, &WebUIServer::onNewConnection);
+    // 必须用 WebTcpServer：它重写 incomingConnection()，把原生 socket 描述符直接交给
+    // handleIncoming() 处理（明文建 QTcpSocket / HTTPS 建 QSslSocket 握手）。
+    // 若用普通 QTcpServer，连接只会触发 newConnection → onNewConnection()（空实现），
+    // 端口虽在监听却永远没人处理请求 —— 这正是「WebUI 打不开」的根因。
+    // WebTcpServer 定义在本文件上方，构造时即可使用；不必再连 newConnection。
+    m_server = new WebTcpServer(this, this);
     // WebUI 使用独立的下载目录实例，与本地端界面互不干扰（仍共用底层 DownloadManager 完成真实下载）
     m_dm = dm;   // 保存底层下载管理器，供 WebUI 暴露统一的“下载任务”列表
     m_webCatalog = new DownloadCatalog(dm, this);
@@ -146,7 +150,8 @@ void WebUIServer::setEnabled(bool on)
             emit runningChanged();
         }
     } else {
-        m_server->close();
+        if (m_server)   // 防御性判空：未成功监听时关闭避免空指针崩溃
+            m_server->close();
         emit runningChanged();
     }
 }
@@ -154,7 +159,7 @@ void WebUIServer::setEnabled(bool on)
 // 重新监听（端口/暴露范围变化时），使用最新的 TLS 与绑定设置
 void WebUIServer::rebind()
 {
-    m_server->close();
+    if (m_server) m_server->close();
     if (!startListen()) {
         m_error = m_server->errorString();
         emit errorChanged();
@@ -184,8 +189,14 @@ bool WebUIServer::startListen()
         // WebTcpServer 已重写 incomingConnection 直接接管描述符，无需 newConnection 信号
     }
     const bool ok = m_server->listen(addr, m_port);
-    qInfo() << "[WebUI] 监听于" << (m_settings->webuiExposeLan() ? "0.0.0.0" : addr.toString())
-            << ":" << m_port << (m_https ? "(HTTPS)" : "(明文)");
+    if (!ok) {
+        // 监听失败必须留日志：否则用户只看到“打不开”而无从判断（端口占用 / 地址不可用等）
+        qWarning() << "[WebUI] 监听失败:" << m_server->errorString()
+                   << "地址=" << addr.toString() << "端口=" << m_port;
+    } else {
+        qInfo() << "[WebUI] 监听于" << (m_settings->webuiExposeLan() ? "0.0.0.0" : addr.toString())
+                << ":" << m_port << (m_https ? "(HTTPS)" : "(明文)");
+    }
     return ok;
 }
 
@@ -226,9 +237,12 @@ void WebUIServer::handleIncoming(qintptr socketDescriptor)
         return;
     }
     ssl->setSslConfiguration(m_sslConf);
-    // 握手完成后才能读解密数据；encrypted() 之后再连 readyRead 最稳妥
+    // 必须在握手【之前】连好 readyRead：localhost 上浏览器常在 TLS 握手完成的同一瞬间
+    // 就把 HTTP 请求发来；若等到 encrypted() 里再连接，这段空窗期到达的解密数据会进入
+    // QSslSocket 缓冲却无人读取（Qt 不会重放 readyRead），请求被永久挂起 → 页面空白。
+    connect(ssl, &QTcpSocket::readyRead, this, &WebUIServer::onReadyRead);
     connect(ssl, &QSslSocket::encrypted, this, [this, ssl]() {
-        connect(ssl, &QTcpSocket::readyRead, this, &WebUIServer::onReadyRead);
+        qInfo() << "[WebUI] TLS 握手完成 (fd=" << (int)ssl->socketDescriptor() << ")";
     });
     connect(ssl, &QTcpSocket::disconnected, this, &WebUIServer::onDisconnected);
     connect(ssl, QOverload<const QList<QSslError> &>::of(&QSslSocket::sslErrors),
