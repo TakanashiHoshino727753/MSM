@@ -287,7 +287,7 @@ ApplicationWindow {
                             RowLayout {
                                 Layout.fillWidth: true
                                 Label { text: I18n.t("深色模式", I18n.lang); Layout.fillWidth: true; color: Theme.text }
-                                Switch {
+                                SwitchEx {
                                     id: darkToggle
                                     checked: Theme.dark
                                     onToggled: window.applyTheme(darkToggle.checked, Theme.accent)
@@ -347,15 +347,15 @@ ApplicationWindow {
                                 // 操作行：选择文件夹 / 添加图片 / 清空 / 总开关
                                 RowLayout {
                                     Layout.fillWidth: true
-                                    Button { text: I18n.t("选择文件夹", I18n.lang); onClicked: bgFolderDialog.open() }
-                                    Button { text: I18n.t("添加图片", I18n.lang); onClicked: bgFilesDialog.open() }
-                                    Button {
+                                    AccentButton { text: I18n.t("选择文件夹", I18n.lang); onClicked: bgFolderDialog.open() }
+                                    AccentButton { text: I18n.t("添加图片", I18n.lang); onClicked: bgFilesDialog.open() }
+                                    SubtleButton {
                                         text: I18n.t("清空", I18n.lang)
                                         enabled: settingsController.bgImageList.length > 0
                                         onClicked: { settingsController.clearBgImages(); settingsController.apply() }
                                     }
                                     Item { Layout.fillWidth: true }
-                                    Switch {
+                                    SwitchEx {
                                         checked: settingsController.bgEnabled
                                         enabled: settingsController.bgImageList.length > 0
                                         onToggled: { settingsController.bgEnabled = checked; settingsController.apply() }
@@ -387,9 +387,9 @@ ApplicationWindow {
                                             elide: Text.ElideMiddle
                                             color: index === settingsController.bgImageIndex ? Theme.accent : Theme.text
                                         }
-                                        Button { text: "↑"; enabled: index > 0; onClicked: { settingsController.moveBgImage(index, index - 1); settingsController.apply() } }
-                                        Button { text: "↓"; enabled: index < bgList.count - 1; onClicked: { settingsController.moveBgImage(index, index + 1); settingsController.apply() } }
-                                        Button { text: "✕"; onClicked: { settingsController.removeBgImage(index); settingsController.apply() } }
+                                        SubtleButton { small: true; text: "↑"; enabled: index > 0; onClicked: { settingsController.moveBgImage(index, index - 1); settingsController.apply() } }
+                                        SubtleButton { small: true; text: "↓"; enabled: index < bgList.count - 1; onClicked: { settingsController.moveBgImage(index, index + 1); settingsController.apply() } }
+                                        SubtleButton { small: true; text: "✕"; onClicked: { settingsController.removeBgImage(index); settingsController.apply() } }
                                     }
                                 }
 
@@ -397,8 +397,10 @@ ApplicationWindow {
                                 RowLayout {
                                     Layout.fillWidth: true
                                     Label { text: I18n.t("播放模式", I18n.lang); color: Theme.text }
-                                    ComboBox {
+                                    ComboBoxEx {
                                         id: bgModeCombo
+                                        Layout.fillWidth: false
+                                        Layout.preferredWidth: 130
                                         model: [I18n.t("顺序播放", I18n.lang), I18n.t("随机播放", I18n.lang)]
                                         currentIndex: settingsController.bgImageMode === "random" ? 1 : 0
                                         onActivated: {
@@ -412,6 +414,31 @@ ApplicationWindow {
                                         from: 1; to: 1440; stepSize: 1
                                         value: settingsController.bgImageInterval
                                         onValueChanged: { settingsController.setBgImageInterval(value); settingsController.apply() }
+                                        Layout.preferredWidth: 88
+                                        background: Rectangle {
+                                            color: Theme.panelAlt
+                                            border.color: Theme.border
+                                            radius: 6
+                                        }
+                                        contentItem: TextInput {
+                                            text: control.value
+                                            color: Theme.text
+                                            horizontalAlignment: Qt.AlignHCenter
+                                            verticalAlignment: Qt.AlignVCenter
+                                            readOnly: !control.editable
+                                            font: control.font
+                                            validator: control.validator
+                                        }
+                                        up.indicator: Rectangle {
+                                            x: parent.width - width; width: 22; height: parent.height / 2
+                                            color: "transparent"
+                                            Text { text: "▲"; color: Theme.textMuted; anchors.centerIn: parent; font.pixelSize: 9 }
+                                        }
+                                        down.indicator: Rectangle {
+                                            x: parent.width - width; y: parent.height / 2; width: 22; height: parent.height / 2
+                                            color: "transparent"
+                                            Text { text: "▼"; color: Theme.textMuted; anchors.centerIn: parent; font.pixelSize: 9 }
+                                        }
                                     }
                                 }
                                 Label {
@@ -421,8 +448,7 @@ ApplicationWindow {
                             }
 
                             // 滑块1：界面控件透明度——控制所有控件（卡片/页签条/侧边栏按钮与文字图表等），最小值 0（全透）
-                            Slider {
-                                Layout.fillWidth: true
+                            SliderEx {
                                 from: 0; to: 1; stepSize: 0.05
                                 value: appController.uiTransparency
                                 onMoved: appController.setUiTransparency(value)
@@ -434,8 +460,7 @@ ApplicationWindow {
 
                             // 滑块2：区域底色透明度——控制主区域与侧边栏底色。
                             // 主区域从 0（全透）到 1；侧边栏从 0.2 起始等比例到 1（二者同斜率偏移，等比联动）。
-                            Slider {
-                                Layout.fillWidth: true
+                            SliderEx {
                                 from: 0; to: 1; stepSize: 0.05
                                 value: appController.bgLayerOpacity
                                 onMoved: appController.setBgLayerOpacity(value)
@@ -460,16 +485,16 @@ ApplicationWindow {
                                         wrapMode: Text.Wrap
                                     }
                                 }
-                                Button {
+                                AccentButton {
                                     text: I18n.t("选择音乐", I18n.lang)
                                     onClicked: bgMusicDialog.open()
                                 }
-                                Button {
+                                SubtleButton {
                                     text: I18n.t("清除", I18n.lang)
                                     enabled: settingsController.bgmPath
                                     onClicked: { settingsController.clearSkinMusic(); settingsController.apply() }
                                 }
-                                Switch {
+                                SwitchEx {
                                     checked: appController.bgmEnabled
                                     enabled: appController.bgmAvailable
                                     onToggled: appController.setBgmEnabled(checked)
@@ -477,8 +502,7 @@ ApplicationWindow {
                             }
 
                             // 背景音乐音量
-                            Slider {
-                                Layout.fillWidth: true
+                            SliderEx {
                                 from: 0; to: 1; stepSize: 0.05
                                 value: appController.bgmVolume
                                 onMoved: appController.setBgmVolume(value)
