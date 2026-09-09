@@ -13,7 +13,10 @@ Rectangle {
     topLeftRadius: Window.window && Window.window.visibility === Window.Maximized ? 0 : Theme.radius
     topRightRadius: Window.window && Window.window.visibility === Window.Maximized ? 0 : Theme.radius
     property var window
-    property string title: ""
+    property string titleText: ""            // 自定义标题文字（空=默认）
+    property string titleImageSource: ""     // 自定义标题图片 URL（file:// 或 qrc:），仅 image/mixed 模式使用
+    property string titleLayout: "text"      // "text" | "image" | "mixed"
+    readonly property string defaultTitleText: "Minecraft Server Manager"
     property bool showMin: true
     property bool showMax: true
     property bool closable: true
@@ -31,19 +34,31 @@ Rectangle {
         anchors.left: parent.left
         anchors.leftMargin: 10
         anchors.verticalCenter: parent.verticalCenter
+        // 自定义标题图片（image / mixed 模式且提供了图片）
         Image {
+            visible: (root.titleLayout === "image" || root.titleLayout === "mixed") && root.titleImageSource
+            source: root.titleImageSource
+            width: 20; height: 20
+            anchors.verticalCenter: parent.verticalCenter
+            fillMode: Image.PreserveAspectFit
+        }
+        // 默认程序图标（text 模式，或 image/mixed 但未提供图片）
+        Image {
+            visible: root.titleLayout === "text" || !root.titleImageSource
             source: "qrc:/icon/ApplicationIcon"
             width: 20; height: 20
             anchors.verticalCenter: parent.verticalCenter
             fillMode: Image.PreserveAspectFit
         }
         Label {
-            text: root.title
+            visible: root.titleLayout !== "image"
+            text: root.titleText !== "" ? root.titleText : root.defaultTitleText
             color: Theme.text
             font.pixelSize: 13
             anchors.verticalCenter: parent.verticalCenter
         }
         Text {
+            visible: root.titleLayout !== "image"
             text: appController.appVersion
             color: Theme.textMuted
             font.pixelSize: 11

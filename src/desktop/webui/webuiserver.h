@@ -10,6 +10,7 @@
 #include <QMap>
 #include <QByteArray>
 #include <QJsonObject>
+#include <QTimer>
 
 class ServerManager;
 class ServerController;
@@ -34,6 +35,8 @@ class WebUIServer : public QObject
     Q_PROPERTY(int port READ port NOTIFY portChanged)
     Q_PROPERTY(QString error READ error NOTIFY errorChanged)
     Q_PROPERTY(bool https READ isHttps NOTIFY runningChanged)   // 是否以 HTTPS 提供
+    Q_PROPERTY(bool paired READ isPaired NOTIFY pairedChanged)   // 移动端是否已配对（成功兑换过配对码）
+    Q_PROPERTY(bool mobileConnected READ isMobileConnected NOTIFY mobileConnectedChanged)  // 是否有移动端近期连入
 
 public:
     explicit WebUIServer(ServerManager *sm,
@@ -50,6 +53,8 @@ public:
     int port() const { return m_port; }
     QString error() const { return m_error; }
     bool isHttps() const { return m_https; }
+    bool isPaired() const { return m_pairUsed; }
+    bool isMobileConnected() const { return m_mobileConnected; }
 
     void setPort(int p);
     void setEnabled(bool on);
@@ -80,12 +85,15 @@ signals:
     void portChanged();
     void errorChanged();
     void themeChangeRequested(bool dark, const QColor &accent);
+    void pairedChanged();
+    void mobileConnectedChanged();
 
 private slots:
     void onNewConnection();
     void handleIncoming(qintptr socketDescriptor);
     void onReadyRead();
     void onDisconnected();
+    void evalMobileConnected();
 
 private:
     void dispatch(const QString &method, const QString &path, const QString &query,
@@ -114,6 +122,7 @@ private:
 
     QString m_spaHtml() const;
     QString generateQrSvg(const QString &data) const;  // 服务端用 QJSEngine + QRCODE_JS 生成二维码 SVG（data URI）
+    void markMobileActivity();   // 记录一次移动端活动（携带令牌的请求到达），更新连接状态
 
     QTcpServer *m_server = nullptr;
     ServerManager *m_sm = nullptr;
@@ -145,4 +154,9 @@ private:
     QString m_pairCode;
     bool m_pairUsed = false;
     qint64 m_pairGenMs = 0;    // 配对码生成时间（毫秒），用于过期判定
+
+    // 移动端连接状态：最近一次携带令牌的请求时刻；据此判定“已连接”
+    qint64 m_lastMobileActivityMs = 0;
+    bool m_mobileConnected = false;
+    QTimer *m_activityTimer = nullptr;
 };

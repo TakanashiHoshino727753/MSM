@@ -84,6 +84,9 @@ SettingsController::SettingsController(QObject *parent) : QObject(parent)
     m_bgmEnabled = s.value(QStringLiteral("app/bgmEnabled"), false).toBool();
     m_bgmPath = s.value(QStringLiteral("app/bgmPath")).toString();
     m_bgmVolume = s.value(QStringLiteral("app/bgmVolume"), 0.5).toDouble();
+    m_windowTitle = s.value(QStringLiteral("app/windowTitle")).toString();
+    m_titleImagePath = s.value(QStringLiteral("app/titleImage")).toString();
+    m_titleLayout = s.value(QStringLiteral("app/titleLayout"), QStringLiteral("text")).toString();
 
     loadAutoStart();
 }
@@ -276,6 +279,7 @@ void SettingsController::apply()
         "app/webhookEnabled", "app/webhookCrash", "app/webhookState",
         "app/webhookPlayer", "app/bgEnabled", "app/bgImage", "app/bgmEnabled",
         "app/bgmPath", "app/bgmVolume",
+        "app/windowTitle", "app/titleImage", "app/titleLayout",
         "bg/folder", "bg/list", "bg/mode", "bg/interval", "bg/intervalUnit", "bg/index",
     };
     const QVariant vals[] = {
@@ -285,6 +289,7 @@ void SettingsController::apply()
         m_webhookUrl, m_webhookType, m_webhookEnabled, m_webhookCrash,
         m_webhookState, m_webhookPlayer, m_bgEnabled, m_bgImagePath,
         m_bgmEnabled, m_bgmPath, m_bgmVolume,
+        m_windowTitle, m_titleImagePath, m_titleLayout,
         m_bgImageFolder, QVariant::fromValue(m_bgImageList), m_bgImageMode,
         m_bgImageInterval, m_bgImageIntervalUnit, m_bgImageIndex,
     };
@@ -320,6 +325,25 @@ void SettingsController::setBgmVolume(double v)
 {
     const double n = qBound(0.0, v, 1.0);
     if (m_bgmVolume != n) { m_bgmVolume = n; emit bgmVolumeChanged(); }
+}
+
+void SettingsController::setWindowTitle(const QString &v)
+{
+    if (m_windowTitle != v) { m_windowTitle = v; emit windowTitleChanged(); }
+}
+void SettingsController::setTitleImagePath(const QString &v)
+{
+    const QString p = stripFileUrl(v);
+    if (m_titleImagePath != p) { m_titleImagePath = p; emit titleImagePathChanged(); }
+}
+void SettingsController::setTitleLayout(const QString &v)
+{
+    if (m_titleLayout != v) { m_titleLayout = v; emit titleLayoutChanged(); }
+}
+QString SettingsController::titleImageUrl() const
+{
+    if (m_titleImagePath.isEmpty()) return QString();
+    return QUrl::fromLocalFile(skinDir() + QStringLiteral("/") + m_titleImagePath).toString();
 }
 
 // 把用户从电脑中选中的文件复制到目标目录（backgroundpic / backgroundmusic，覆盖式），
@@ -402,6 +426,24 @@ void SettingsController::clearSkinMusic()
         QFile::remove(fallback);
     m_bgmPath.clear();
     emit bgmPathChanged();
+}
+bool SettingsController::importTitleImage(const QString &srcFile)
+{
+    const QString name = copySkinFile(srcFile, skinDir(), QStringLiteral("titleimg"));
+    if (name.isEmpty())
+        return false;
+    m_titleImagePath = name;
+    emit titleImagePathChanged();
+    return true;
+}
+void SettingsController::clearTitleImage()
+{
+    const QString f = skinDir() + QStringLiteral("/") + m_titleImagePath;
+    const QString fallback = skinDir() + QStringLiteral("/titleimg");
+    if (QFile::exists(f)) QFile::remove(f);
+    if (QFile::exists(fallback)) QFile::remove(fallback);
+    m_titleImagePath.clear();
+    emit titleImagePathChanged();
 }
 
 // ---------- 壁纸轮换 ----------

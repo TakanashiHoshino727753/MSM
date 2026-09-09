@@ -118,7 +118,9 @@ ApplicationWindow {
         TitleBar {
             id: titleBar
             window: window
-            title: I18n.t("Minecraft Server Manager", I18n.lang)
+            titleText: settingsController.windowTitle
+            titleImageSource: settingsController.titleImageUrl
+            titleLayout: settingsController.titleLayout
             // 主界面和下载中心需要下载按钮；服务器详情页隐藏
             showDownloads: tabBar.currentIndex === 0
             // 切换页签时重新计算

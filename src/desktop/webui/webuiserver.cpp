@@ -123,6 +123,11 @@ WebUIServer::WebUIServer(ServerManager *sm, ServerController *sc, DownloadManage
         builder->create();
     });
     m_webCatalog->refresh();
+    // 移动端连接状态轮询：每 3 秒判定近期是否有携带令牌的请求到达
+    m_activityTimer = new QTimer(this);
+    m_activityTimer->setInterval(3000);
+    connect(m_activityTimer, &QTimer::timeout, this, &WebUIServer::evalMobileConnected);
+    m_activityTimer->start();
     // 设置中已启用则随启动自动开启（无需每次手动拨动开关）
     if (m_settings && m_settings->webuiEnabled())
         setEnabled(true);
@@ -656,6 +661,7 @@ QString WebUIServer::generatePairCode()
     m_pairCode = code;
     m_pairUsed = false;
     m_pairGenMs = QDateTime::currentMSecsSinceEpoch();
+    emit pairedChanged();
     qInfo() << "[WebUI] 生成移动端配对码:" << code;
     return code;
 }
@@ -676,6 +682,24 @@ QString WebUIServer::pairUri() const
         }
     }
     return QStringLiteral("msm://token@%1:%2?t=%3").arg(host).arg(m_port).arg(tok);
+}
+
+void WebUIServer::markMobileActivity()
+{
+    m_lastMobileActivityMs = QDateTime::currentMSecsSinceEpoch();
+    if (!m_mobileConnected) {
+        m_mobileConnected = true;
+        emit mobileConnectedChanged();
+    }
+}
+
+void WebUIServer::evalMobileConnected()
+{
+    const bool connected = (QDateTime::currentMSecsSinceEpoch() - m_lastMobileActivityMs) < 30000;
+    if (connected != m_mobileConnected) {
+        m_mobileConnected = connected;
+        emit mobileConnectedChanged();
+    }
 }
 
 // 服务端生成二维码：复用桌面端 QrImageProvider 的同一份 QRCODE_JS（经 QJSEngine 求值），
@@ -762,6 +786,8 @@ void WebUIServer::dispatch(const QString &method, const QString &path, const QSt
             return;
         }
         m_pairUsed = true; // 一次性：用后即废
+        markMobileActivity();
+        emit pairedChanged();
         sendJson(sock, QJsonObject{
             {QStringLiteral("token"), m_settings->webuiToken()},
             {QStringLiteral("port"), m_port},
@@ -777,6 +803,7 @@ void WebUIServer::dispatch(const QString &method, const QString &path, const QSt
         sendStatus(sock, 401, QStringLiteral("Unauthorized"));
         return;
     }
+    markMobileActivity();   // 通过令牌校验即记为一次移动端活动
 
     // query 已从 path 剥离，由 onReadyRead 解析后传入，避免参数被丢弃
     const QMap<QString, QString> q = HttpClient::parseQuery(query);

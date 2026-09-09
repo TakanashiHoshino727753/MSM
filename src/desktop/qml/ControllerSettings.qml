@@ -17,6 +17,10 @@ ApplicationWindow {
     color: "transparent"
 
     function applyTheme(dark, accent) { appController.setTheme(dark, accent) }
+    function refreshPairQr() {
+        if (typeof webuiServer !== "undefined" && webuiServer)
+            pairQrImg.source = "image://qr/" + encodeURIComponent(webuiServer.pairUri())
+    }
 
     // 设置分类导航：锚点机制。每个分类对应卡片在 flick 内容坐标中的真实 y（锚点）。
     // 当前分类 = 最后一个其锚点已越过视口顶（contentY）的分类；有锚点进出视口顶时更新。
@@ -120,7 +124,7 @@ ApplicationWindow {
             TitleBar {
                 id: titleBar
                 window: window
-                title: I18n.t("控制器设置", I18n.lang)
+                titleText: I18n.t("控制器设置", I18n.lang)
                 showDownloads: false
                 Layout.fillWidth: true
             }
@@ -501,6 +505,61 @@ ApplicationWindow {
                                 onMoved: appController.setBgmVolume(value)
                             }
 
+                            // 标题栏自定义：文字 / 图片 / 混排
+                            Label { text: I18n.t("标题栏", I18n.lang); color: Theme.text; font.bold: true; font.pixelSize: 15 }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                ColumnLayout {
+                                    Layout.fillWidth: true; spacing: 2
+                                    Label { text: I18n.t("标题文字（留空=默认）", I18n.lang); color: Theme.text }
+                                    TextField {
+                                        Layout.fillWidth: true
+                                        text: settingsController.windowTitle
+                                        placeholderText: I18n.t("留空使用默认标题", I18n.lang)
+                                        placeholderTextColor: Theme.textMuted
+                                        selectByMouse: true
+                                        background: Rectangle { color: Theme.panelAlt; radius: 6; border.color: Theme.border }
+                                        onEditingFinished: { settingsController.setWindowTitle(text); settingsController.apply() }
+                                    }
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label { text: I18n.t("标题图片", I18n.lang); color: Theme.text }
+                                TextField {
+                                    Layout.fillWidth: true
+                                    text: settingsController.titleImageUrl
+                                    readOnly: true
+                                    color: Theme.text
+                                    selectByMouse: true
+                                    background: Rectangle { color: Theme.panelAlt; radius: 6; border.color: Theme.border }
+                                }
+                                AccentButton { text: I18n.t("选择图片", I18n.lang); onClicked: titleImgDialog.open() }
+                                SubtleButton { text: I18n.t("清除", I18n.lang); enabled: settingsController.titleImagePath; onClicked: { settingsController.clearTitleImage(); settingsController.apply() } }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label { text: I18n.t("排布方式", I18n.lang); color: Theme.text }
+                                ComboBoxEx {
+                                    id: titleLayoutCombo
+                                    Layout.preferredWidth: 200
+                                    model: [I18n.t("仅文字", I18n.lang), I18n.t("仅图片", I18n.lang), I18n.t("图片+文字混排", I18n.lang)]
+                                    currentIndex: settingsController.titleLayout === "image" ? 1 : (settingsController.titleLayout === "mixed" ? 2 : 0)
+                                    onActivated: {
+                                        var modes = ["text", "image", "mixed"]
+                                        settingsController.setTitleLayout(modes[currentIndex])
+                                        settingsController.apply()
+                                    }
+                                }
+                            }
+                            FileDialog {
+                                id: titleImgDialog
+                                title: I18n.t("选择标题栏图片", I18n.lang)
+                                nameFilters: ["图片 (*.png *.jpg *.jpeg *.bmp *.webp *.gif)"]
+                                fileMode: FileDialog.OpenFile
+                                onAccepted: { if (settingsController.importTitleImage(titleImgDialog.selectedFile)) settingsController.apply() }
+                            }
+
                             FolderDialog {
                                 id: bgFolderDialog
                                 title: I18n.t("选择壁纸文件夹", I18n.lang)
@@ -771,6 +830,34 @@ ApplicationWindow {
                             Label {
                                 Layout.fillWidth: true
                                 text: I18n.t("默认仅本机(127.0.0.1)可访问，最为安全。开启“暴露到局域网”后将监听 0.0.0.0，局域网/手机可访问，但必须凭访问令牌，且存在被扫描的风险。", I18n.lang)
+                                color: Theme.textMuted; font.pixelSize: 12; wrapMode: Text.Wrap
+                            }
+
+                            // 移动端配对（主入口）：生成配对码 → 手机扫码直连本机控制台
+                            Rectangle { Layout.fillWidth: true; height: 1; color: Theme.border }
+                            Label { text: I18n.t("移动端配对", I18n.lang); color: Theme.text; font.bold: true; font.pixelSize: 15 }
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: 8
+                                Label { text: I18n.t("配对状态", I18n.lang); color: Theme.textMuted }
+                                Label { text: webuiServer.paired ? I18n.t("已配对", I18n.lang) : I18n.t("未配对", I18n.lang); color: webuiServer.paired ? Theme.success : Theme.textMuted }
+                                Label { text: I18n.t("连接状态", I18n.lang); color: Theme.textMuted }
+                                Label { text: webuiServer.mobileConnected ? I18n.t("已连接", I18n.lang) : I18n.t("未连接", I18n.lang); color: webuiServer.mobileConnected ? Theme.accent : Theme.textMuted }
+                                Item { Layout.fillWidth: true }
+                                AccentButton { text: I18n.t("生成配对码", I18n.lang); onClicked: { webuiServer.generatePairCode(); refreshPairQr() } }
+                            }
+                            Rectangle {
+                                Layout.alignment: Qt.AlignLeft
+                                width: 200; height: 200; color: "#ffffff"; radius: 6
+                                Image { id: pairQrImg; anchors.fill: parent; anchors.margins: 10; fillMode: Image.PreserveAspectFit; cache: false }
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: webuiServer.pairUri()
+                                color: Theme.textMuted; font.pixelSize: 10; elide: Text.ElideMiddle; wrapMode: Text.Wrap
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: I18n.t("用手机 App 的“扫码连接”扫描上方二维码。确保手机与本机在同一局域网，且 WebUI 已启用。", I18n.lang)
                                 color: Theme.textMuted; font.pixelSize: 12; wrapMode: Text.Wrap
                             }
 

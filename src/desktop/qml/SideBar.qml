@@ -86,17 +86,35 @@ Rectangle {
             }
             contentItem: Label { text: parent.text; color: Theme.text; horizontalAlignment: Text.AlignLeft; verticalAlignment: Text.AlignVCenter }
         }
-        Button {
-            height: Theme.controlHeight
+        // 移动端配对：左半边状态，右半边连接按键
+        Rectangle {
             Layout.alignment: Qt.AlignHCenter
-            leftPadding: 6; rightPadding: 6; topPadding: 6; bottomPadding: 6
-            text: I18n.t("移动端配对", I18n.lang)
-            onClicked: pairPopup.open()
-            background: Rectangle {
-                color: parent.hovered ? Theme.panelAlt : Theme.bg; radius: Theme.radius
-                Behavior on color { ColorAnimation { duration: 100 } }
+            width: parent.width - 24
+            radius: Theme.radius
+            color: Theme.bg
+            RowLayout {
+                spacing: 8
+                anchors.fill: parent
+                anchors.margins: 8
+                ColumnLayout {
+                    spacing: 5
+                    Label { text: I18n.t("移动端配对", I18n.lang); color: Theme.text; font.pixelSize: 12; font.bold: true }
+                    RowLayout { spacing: 5
+                        Rectangle { width: 8; height: 8; radius: 4; color: (webuiServer && webuiServer.paired) ? Theme.success : "#888" }
+                        Label { text: (webuiServer && webuiServer.paired) ? I18n.t("已配对", I18n.lang) : I18n.t("未配对", I18n.lang); color: Theme.textMuted; font.pixelSize: 11 }
+                    }
+                    RowLayout { spacing: 5
+                        Rectangle { width: 8; height: 8; radius: 4; color: (webuiServer && webuiServer.mobileConnected) ? Theme.accent : "#888" }
+                        Label { text: (webuiServer && webuiServer.mobileConnected) ? I18n.t("已连接", I18n.lang) : I18n.t("未连接", I18n.lang); color: Theme.textMuted; font.pixelSize: 11 }
+                    }
+                }
+                Item { Layout.fillWidth: true }
+                AccentButton {
+                    Layout.alignment: Qt.AlignVCenter
+                    text: I18n.t("快速链接", I18n.lang)
+                    onClicked: pairPopup.open()
+                }
             }
-            contentItem: Label { text: parent.text; color: Theme.text; horizontalAlignment: Text.AlignLeft; verticalAlignment: Text.AlignVCenter }
         }
 
         Item { Layout.fillHeight: false; Layout.preferredHeight: 14 }

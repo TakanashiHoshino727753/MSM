@@ -55,6 +55,15 @@ class SettingsController : public QObject
     Q_PROPERTY(QString bgmPath READ bgmPath WRITE setBgmPath NOTIFY bgmPathChanged)
     Q_PROPERTY(double bgmVolume READ bgmVolume WRITE setBgmVolume NOTIFY bgmVolumeChanged)
 
+    // 标题栏自定义：自定义文字 / 图片 / 混排布局
+    //   titleLayout: "text"=仅文字、"image"=仅自定义图片、"mixed"=图片+文字
+    //   windowTitle 为空回退默认标题；titleImagePath 为空（或 image 模式未提供图）回退文字
+    Q_PROPERTY(QString windowTitle READ windowTitle WRITE setWindowTitle NOTIFY windowTitleChanged)
+    Q_PROPERTY(QString titleImagePath READ titleImagePath WRITE setTitleImagePath NOTIFY titleImagePathChanged)
+    Q_PROPERTY(QString titleLayout READ titleLayout WRITE setTitleLayout NOTIFY titleLayoutChanged)
+    // 只读：标题图片完整 file:// URL（QML Image 直接使用）
+    Q_PROPERTY(QString titleImageUrl READ titleImageUrl NOTIFY titleImagePathChanged)
+
     // 壁纸轮换：文件夹可包含多张壁纸，支持顺序/随机播放，用户可在程序内调整顺序
     Q_PROPERTY(QString bgImageFolder READ bgImageFolder WRITE setBgImageFolder NOTIFY bgImageFolderChanged)
     Q_PROPERTY(QStringList bgImageList READ bgImageList NOTIFY bgImageListChanged)
@@ -163,6 +172,14 @@ public:
     double bgmVolume() const { return m_bgmVolume; }
     void setBgmVolume(double v);
 
+    QString windowTitle() const { return m_windowTitle; }
+    Q_INVOKABLE void setWindowTitle(const QString &v);
+    QString titleImagePath() const { return m_titleImagePath; }
+    Q_INVOKABLE void setTitleImagePath(const QString &v);
+    QString titleLayout() const { return m_titleLayout; }
+    Q_INVOKABLE void setTitleLayout(const QString &v);
+    QString titleImageUrl() const;
+
     QString bgImageFolder() const { return m_bgImageFolder; }
     Q_INVOKABLE void setBgImageFolder(const QString &v);
     QStringList bgImageList() const { return m_bgImageList; }
@@ -187,6 +204,8 @@ public:
     // 清除已导入的皮肤（删除 skinDir 下对应文件并清空设置）
     Q_INVOKABLE void clearSkinImage();
     Q_INVOKABLE void clearSkinMusic();
+    Q_INVOKABLE bool importTitleImage(const QString &srcFile);
+    Q_INVOKABLE void clearTitleImage();
 
     Q_INVOKABLE void apply();   // 持久化所有设置（QSettings + 注册表）
     Q_INVOKABLE void regenerateWebuiToken();   // 重新生成访问令牌
@@ -224,6 +243,10 @@ signals:
     void bgmEnabledChanged();
     void bgmPathChanged();
     void bgmVolumeChanged();
+
+    void windowTitleChanged();
+    void titleImagePathChanged();
+    void titleLayoutChanged();
 
     void bgImageFolderChanged();
     void bgImageListChanged();
@@ -266,6 +289,11 @@ private:
     bool m_bgmEnabled = false;
     QString m_bgmPath;
     double m_bgmVolume = 0.5;
+
+    // 标题栏自定义
+    QString m_windowTitle;
+    QString m_titleImagePath;
+    QString m_titleLayout = QStringLiteral("text");
 
     // 壁纸轮换
     QString m_bgImageFolder;
