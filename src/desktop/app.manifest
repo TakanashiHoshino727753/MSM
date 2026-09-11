@@ -10,9 +10,10 @@
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
-        <!-- highestAvailable：普通启动即可运行（调试时不强制弹 UAC、不被卡）；
-             真正需要管理员时（安装 JDK），由 javamanager 通过 ShellExecute "runas" 弹 UAC 提权安装 -->
-        <requestedExecutionLevel level="highestAvailable" uiAccess="false"/>
+        <!-- asInvoker：始终以调用者的最低权限运行（默认不弹 UAC）。
+             仅在确有需要时提权：JDK 安装到用户目录（managedDir）通常无需管理员；
+             若 Oracle 安装包自身 manifest 要求管理员，会由其自行弹 UAC 提权。 -->
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
       </requestedPrivileges>
     </security>
   </trustInfo>

@@ -86,19 +86,18 @@ Rectangle {
             }
             contentItem: Label { text: parent.text; color: Theme.text; horizontalAlignment: Text.AlignLeft; verticalAlignment: Text.AlignVCenter }
         }
-        // 移动端配对：左半边状态，右半边连接按键
+        // 移动端配对：状态指示（左/上）+ 连接按键（右/下）；侧边栏较窄，纵向排布避免溢出
+        Label { text: I18n.t("移动端配对", I18n.lang); color: Theme.textMuted; font.pixelSize: 11 }
         Rectangle {
-            Layout.alignment: Qt.AlignHCenter
-            width: parent.width - 24
+            Layout.fillWidth: true
             radius: Theme.radius
             color: Theme.bg
-            RowLayout {
-                spacing: 8
+            ColumnLayout {
                 anchors.fill: parent
                 anchors.margins: 8
-                ColumnLayout {
-                    spacing: 5
-                    Label { text: I18n.t("移动端配对", I18n.lang); color: Theme.text; font.pixelSize: 12; font.bold: true }
+                spacing: 6
+                // 状态指示（左对齐）
+                ColumnLayout { spacing: 5
                     RowLayout { spacing: 5
                         Rectangle { width: 8; height: 8; radius: 4; color: (webuiServer && webuiServer.paired) ? Theme.success : "#888" }
                         Label { text: (webuiServer && webuiServer.paired) ? I18n.t("已配对", I18n.lang) : I18n.t("未配对", I18n.lang); color: Theme.textMuted; font.pixelSize: 11 }
@@ -108,9 +107,9 @@ Rectangle {
                         Label { text: (webuiServer && webuiServer.mobileConnected) ? I18n.t("已连接", I18n.lang) : I18n.t("未连接", I18n.lang); color: Theme.textMuted; font.pixelSize: 11 }
                     }
                 }
-                Item { Layout.fillWidth: true }
+                // 连接按键（右对齐）
                 AccentButton {
-                    Layout.alignment: Qt.AlignVCenter
+                    Layout.alignment: Qt.AlignRight
                     text: I18n.t("快速链接", I18n.lang)
                     onClicked: pairPopup.open()
                 }

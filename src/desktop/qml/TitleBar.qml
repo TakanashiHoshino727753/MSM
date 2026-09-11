@@ -42,9 +42,9 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             fillMode: Image.PreserveAspectFit
         }
-        // 默认程序图标（text 模式，或 image/mixed 但未提供图片）
+        // 默认程序图标：仅当选择图片类布局但未提供图片时作回退；纯文字模式不显示图标
         Image {
-            visible: root.titleLayout === "text" || !root.titleImageSource
+            visible: (root.titleLayout === "image" || root.titleLayout === "mixed") && !root.titleImageSource
             source: "qrc:/icon/ApplicationIcon"
             width: 20; height: 20
             anchors.verticalCenter: parent.verticalCenter

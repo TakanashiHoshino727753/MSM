@@ -505,38 +505,9 @@ ApplicationWindow {
                                 onMoved: appController.setBgmVolume(value)
                             }
 
-                            // 标题栏自定义：文字 / 图片 / 混排
+                            // 标题栏自定义：先选排布方式，再按模式选图片 / 改文字
                             Label { text: I18n.t("标题栏", I18n.lang); color: Theme.text; font.bold: true; font.pixelSize: 15 }
-                            RowLayout {
-                                Layout.fillWidth: true
-                                ColumnLayout {
-                                    Layout.fillWidth: true; spacing: 2
-                                    Label { text: I18n.t("标题文字（留空=默认）", I18n.lang); color: Theme.text }
-                                    TextField {
-                                        Layout.fillWidth: true
-                                        text: settingsController.windowTitle
-                                        placeholderText: I18n.t("留空使用默认标题", I18n.lang)
-                                        placeholderTextColor: Theme.textMuted
-                                        selectByMouse: true
-                                        background: Rectangle { color: Theme.panelAlt; radius: 6; border.color: Theme.border }
-                                        onEditingFinished: { settingsController.setWindowTitle(text); settingsController.apply() }
-                                    }
-                                }
-                            }
-                            RowLayout {
-                                Layout.fillWidth: true
-                                Label { text: I18n.t("标题图片", I18n.lang); color: Theme.text }
-                                TextField {
-                                    Layout.fillWidth: true
-                                    text: settingsController.titleImageUrl
-                                    readOnly: true
-                                    color: Theme.text
-                                    selectByMouse: true
-                                    background: Rectangle { color: Theme.panelAlt; radius: 6; border.color: Theme.border }
-                                }
-                                AccentButton { text: I18n.t("选择图片", I18n.lang); onClicked: titleImgDialog.open() }
-                                SubtleButton { text: I18n.t("清除", I18n.lang); enabled: settingsController.titleImagePath; onClicked: { settingsController.clearTitleImage(); settingsController.apply() } }
-                            }
+                            // 1) 排布方式（最先选择）
                             RowLayout {
                                 Layout.fillWidth: true
                                 Label { text: I18n.t("排布方式", I18n.lang); color: Theme.text }
@@ -549,6 +520,41 @@ ApplicationWindow {
                                         var modes = ["text", "image", "mixed"]
                                         settingsController.setTitleLayout(modes[currentIndex])
                                         settingsController.apply()
+                                    }
+                                }
+                            }
+                            // 2) 仅图片 / 混排时可选图片
+                            ColumnLayout {
+                                visible: settingsController.titleLayout !== "text"
+                                Layout.fillWidth: true
+                                spacing: 4
+                                Label { text: I18n.t("标题图片", I18n.lang); color: Theme.text }
+                                TextField {
+                                    Layout.fillWidth: true
+                                    text: settingsController.titleImageUrl
+                                    readOnly: true
+                                    color: Theme.text
+                                    selectByMouse: true
+                                    background: Rectangle { color: Theme.panelAlt; radius: 6; border.color: Theme.border }
+                                }
+                                AccentButton { text: I18n.t("选择图片", I18n.lang); onClicked: titleImgDialog.open() }
+                                SubtleButton { text: I18n.t("清除", I18n.lang); enabled: settingsController.titleImagePath; onClicked: { settingsController.clearTitleImage(); settingsController.apply() } }
+                            }
+                            // 3) 仅文字 / 混排时可改文字
+                            RowLayout {
+                                visible: settingsController.titleLayout !== "image"
+                                Layout.fillWidth: true
+                                ColumnLayout {
+                                    Layout.fillWidth: true; spacing: 2
+                                    Label { text: I18n.t("标题文字（留空=默认）", I18n.lang); color: Theme.text }
+                                    TextField {
+                                        Layout.fillWidth: true
+                                        text: settingsController.windowTitle
+                                        placeholderText: I18n.t("留空使用默认标题", I18n.lang)
+                                        placeholderTextColor: Theme.textMuted
+                                        selectByMouse: true
+                                        background: Rectangle { color: Theme.panelAlt; radius: 6; border.color: Theme.border }
+                                        onEditingFinished: { settingsController.setWindowTitle(text); settingsController.apply() }
                                     }
                                 }
                             }
