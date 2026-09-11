@@ -35,6 +35,7 @@ class WebUIServer : public QObject
     Q_PROPERTY(int port READ port NOTIFY portChanged)
     Q_PROPERTY(QString error READ error NOTIFY errorChanged)
     Q_PROPERTY(bool https READ isHttps NOTIFY runningChanged)   // 是否以 HTTPS 提供
+    Q_PROPERTY(bool enabled READ enabled NOTIFY enabledChanged)   // 控制台总开关（未启用则所有方式均不监听）
     Q_PROPERTY(bool paired READ isPaired NOTIFY pairedChanged)   // 移动端是否已配对（成功兑换过配对码）
     Q_PROPERTY(bool mobileConnected READ isMobileConnected NOTIFY mobileConnectedChanged)  // 是否有移动端近期连入
 
@@ -82,6 +83,7 @@ public:
 
 signals:
     void runningChanged();
+    void enabledChanged();
     void portChanged();
     void errorChanged();
     void themeChangeRequested(bool dark, const QColor &accent);

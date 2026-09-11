@@ -86,35 +86,10 @@ Rectangle {
             }
             contentItem: Label { text: parent.text; color: Theme.text; horizontalAlignment: Text.AlignLeft; verticalAlignment: Text.AlignVCenter }
         }
-        // 移动端配对：状态指示（左/上）+ 连接按键（右/下）；侧边栏较窄，纵向排布避免溢出
-        Label { text: I18n.t("移动端配对", I18n.lang); color: Theme.textMuted; font.pixelSize: 11 }
-        Rectangle {
-            Layout.fillWidth: true
-            radius: Theme.radius
-            color: Theme.bg
-            ColumnLayout {
-                anchors.fill: parent
-                anchors.margins: 8
-                spacing: 6
-                // 状态指示（左对齐）
-                ColumnLayout { spacing: 5
-                    RowLayout { spacing: 5
-                        Rectangle { width: 8; height: 8; radius: 4; color: (webuiServer && webuiServer.paired) ? Theme.success : "#888" }
-                        Label { text: (webuiServer && webuiServer.paired) ? I18n.t("已配对", I18n.lang) : I18n.t("未配对", I18n.lang); color: Theme.textMuted; font.pixelSize: 11 }
-                    }
-                    RowLayout { spacing: 5
-                        Rectangle { width: 8; height: 8; radius: 4; color: (webuiServer && webuiServer.mobileConnected) ? Theme.accent : "#888" }
-                        Label { text: (webuiServer && webuiServer.mobileConnected) ? I18n.t("已连接", I18n.lang) : I18n.t("未连接", I18n.lang); color: Theme.textMuted; font.pixelSize: 11 }
-                    }
-                }
-                // 连接按键（右对齐）
-                AccentButton {
-                    Layout.alignment: Qt.AlignRight
-                    text: I18n.t("快速链接", I18n.lang)
-                    onClicked: pairPopup.open()
-                }
-            }
-        }
+        // 远程管理：由专用控件统一承载「各方式状态指示灯 + 快速链接按键 + 配对弹窗」，
+        // 作为单一条目排入侧边栏（控件自带 implicit 高度，不会再溢出压住下方条目）
+        Label { text: I18n.t("远程管理", I18n.lang); color: Theme.textMuted; font.pixelSize: 11 }
+        PairControl { Layout.fillWidth: true }
 
         Item { Layout.fillHeight: false; Layout.preferredHeight: 14 }
 
@@ -181,61 +156,5 @@ Rectangle {
         }
 
         Item { Layout.fillHeight: true }
-    }
-
-    // 移动端配对弹窗：展示 WebUI 配对二维码，手机 App 扫码即可连接本机控制台
-    Popup {
-        id: pairPopup
-        anchors.centerIn: Overlay.overlay
-        modal: true
-        focus: true
-        opacity: appController.uiTransparency   // 配对弹窗整体受界面控件透明度控制
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-        background: Rectangle { color: Theme.panel; radius: Theme.radius; border.color: Theme.border; opacity: appController.bgLayerOpacity }
-        contentItem: ColumnLayout {
-            spacing: 14
-            Label {
-                text: I18n.t("移动端配对", I18n.lang)
-                color: Theme.text
-                font.pixelSize: 15; font.bold: true
-            }
-            Rectangle {
-                Layout.alignment: Qt.AlignHCenter
-                width: 220; height: 220
-                color: "#ffffff"; radius: 6
-                Image {
-                    id: pairQr
-                    anchors.fill: parent
-                    anchors.margins: 10
-                    fillMode: Image.PreserveAspectFit
-                    cache: false
-                }
-            }
-            Label {
-                Layout.preferredWidth: 300
-                text: I18n.t("用手机 App 的“扫码连接”扫描上方二维码。确保手机与本机在同一局域网，且 Web 控制台已启用。", I18n.lang)
-                color: Theme.textMuted
-                font.pixelSize: 12
-                wrapMode: Text.Wrap
-            }
-            Label {
-                Layout.preferredWidth: 300
-                text: webuiServer ? webuiServer.pairUri() : ""
-                color: Theme.textMuted
-                font.pixelSize: 10
-                elide: Text.ElideMiddle
-                wrapMode: Text.Wrap
-            }
-            Button {
-                Layout.alignment: Qt.AlignHCenter
-                text: I18n.t("关闭", I18n.lang)
-                onClicked: pairPopup.close()
-            }
-        }
-        onOpened: {
-            // 每次打开都重新取配对 URI 生成二维码（token/端口可能变化）
-            if (webuiServer)
-                pairQr.source = "image://qr/" + encodeURIComponent(webuiServer.pairUri())
-        }
     }
 }

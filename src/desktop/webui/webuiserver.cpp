@@ -146,6 +146,7 @@ void WebUIServer::setEnabled(bool on)
 {
     if (m_enabled == on) return;
     m_enabled = on;
+    emit enabledChanged();
     if (on) {
         if (!startListen()) {
             m_error = m_server->errorString();
@@ -661,6 +662,13 @@ QString WebUIServer::generatePairCode()
     m_pairCode = code;
     m_pairUsed = false;
     m_pairGenMs = QDateTime::currentMSecsSinceEpoch();
+    // 重新生成配对码即视为“作废旧配对”：立即使已连设备离线，避免“未配对但已连接”
+    // （旧设备仍持有效 token 持续活动）。配对完成后 paired 与 mobileConnected 会再次置位，
+    // 届时状态自然回到“配对且连接”。
+    if (m_mobileConnected) {
+        m_mobileConnected = false;
+        emit mobileConnectedChanged();
+    }
     emit pairedChanged();
     qInfo() << "[WebUI] 生成移动端配对码:" << code;
     return code;
