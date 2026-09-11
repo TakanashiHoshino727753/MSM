@@ -10,7 +10,7 @@ Rectangle {
     color: "transparent"   // 根透明，避免整体半透明；仅背景层半透明
     // 组合式布局：侧边栏位于标题栏之下、独立成块，无边框；仅左下角跟随窗口圆角（最大化时归零）
     topLeftRadius: 0
-    bottomLeftRadius: Window.window && Window.window.visibility === Window.Maximized ? 0 : Theme.radius
+    bottomLeftRadius: window.isMaximized ? 0 : Theme.radius
     signal downloadClicked()
     signal settingsClicked()
 
@@ -20,7 +20,7 @@ Rectangle {
         color: Theme.panel
         opacity: Math.min(1.0, 0.2 + appController.bgLayerOpacity * 1.1)
         topLeftRadius: 0
-        bottomLeftRadius: Window.window && Window.window.visibility === Window.Maximized ? 0 : Theme.radius
+        bottomLeftRadius: window.isMaximized ? 0 : Theme.radius
         z: -1
     }
 

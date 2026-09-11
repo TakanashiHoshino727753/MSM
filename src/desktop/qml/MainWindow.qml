@@ -17,6 +17,11 @@ ApplicationWindow {
     visible: false
     flags: Qt.Window | Qt.FramelessWindowHint
     color: "transparent"
+    // 是否为“铺满”状态（最大化或全屏）。用统一属性驱动圆角/遮罩开关，避免
+    // 仅判断 Window.Maximized 时全屏（Window.FullScreen）被漏掉导致布局/遮罩异常。
+    property bool isMaximized: visibility === Window.Maximized || visibility === Window.FullScreen
+    onVisibilityChanged: isMaximized = (visibility === Window.Maximized || visibility === Window.FullScreen)
+
     property string closeMode: "hide"   // 点 X 仅收起托盘，由 C++ 控制
     // 整体淡入淡出（替代瞬时显隐）
     opacity: 0
@@ -89,7 +94,7 @@ ApplicationWindow {
     Rectangle {
         id: frameMask
         anchors.fill: parent
-        radius: window.visibility === Window.Maximized ? 0 : Theme.radius
+        radius: isMaximized ? 0 : Theme.radius
         color: "white"
         visible: false
     }
@@ -97,15 +102,16 @@ ApplicationWindow {
     // 背景图层（全窗口最底层，自带圆角裁剪）：所有窗口复用
     BackgroundLayer {
         id: bgLayer
-        radius: window.visibility === Window.Maximized ? 0 : Theme.radius
+        radius: isMaximized ? 0 : Theme.radius
     }
 
     Rectangle {
         id: frame
         anchors.fill: parent
-        radius: window.visibility === Window.Maximized ? 0 : Theme.radius
-        // 未启用背景图时用主题底色（否则全透明看不见）；启用时透明让背景图透出
-        color: appController.bgImageVisible ? "transparent" : Theme.bg
+        radius: isMaximized ? 0 : Theme.radius
+        // 底色始终用主题色兜底，frame 永不透明（BackgroundLayer 在其上叠加背景图）。
+        // 否则铺满态（最大化/全屏）遮罩失效时会透出桌面。
+        color: Theme.bg
         border.width: 0
         clip: true
         // 用 layer.effect + OpacityMask 把整个 frame（含子项）按圆角矩形遮罩，
